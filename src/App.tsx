@@ -3,24 +3,52 @@ import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
-import Index from "./pages/Index";
+import { AppProvider } from "./contexts/AppContext";
+
+// Pages
+import { Welcome } from "./pages/Welcome";
+import { Login } from "./pages/Login";
+import { CompanySelection } from "./pages/CompanySelection";
+import { SignupWizard } from "./pages/SignupWizard";
+import { Dashboard } from "./pages/Dashboard";
+import { UsersPage } from "./pages/UsersPage";
+import { SubscriptionsPage } from "./pages/SubscriptionsPage";
+import { LicensesPage } from "./pages/LicensesPage";
+import { LicenseReductionPage } from "./pages/LicenseReductionPage";
+import { BillingPage } from "./pages/BillingPage";
+import { DownloadsPage } from "./pages/DownloadsPage";
+import { SupportPage } from "./pages/SupportPage";
+import { ProfilePage } from "./pages/ProfilePage";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
 
 const App = () => (
   <QueryClientProvider client={queryClient}>
-    <TooltipProvider>
-      <Toaster />
-      <Sonner />
-      <BrowserRouter>
-        <Routes>
-          <Route path="/" element={<Index />} />
-          {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
-          <Route path="*" element={<NotFound />} />
-        </Routes>
-      </BrowserRouter>
-    </TooltipProvider>
+    <AppProvider>
+      <TooltipProvider>
+        <Toaster />
+        <Sonner />
+        <BrowserRouter>
+          <Routes>
+            <Route path="/" element={<Welcome />} />
+            <Route path="/login" element={<Login />} />
+            <Route path="/select-company" element={<CompanySelection />} />
+            <Route path="/signup" element={<SignupWizard />} />
+            <Route path="/dashboard" element={<Dashboard />} />
+            <Route path="/users" element={<UsersPage />} />
+            <Route path="/subscriptions" element={<SubscriptionsPage />} />
+            <Route path="/licenses" element={<LicensesPage />} />
+            <Route path="/licenses/reduce" element={<LicenseReductionPage />} />
+            <Route path="/billing" element={<BillingPage />} />
+            <Route path="/downloads" element={<DownloadsPage />} />
+            <Route path="/support" element={<SupportPage />} />
+            <Route path="/profile" element={<ProfilePage />} />
+            <Route path="*" element={<NotFound />} />
+          </Routes>
+        </BrowserRouter>
+      </TooltipProvider>
+    </AppProvider>
   </QueryClientProvider>
 );
 
