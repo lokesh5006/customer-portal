@@ -60,6 +60,7 @@ export interface SupportTicket {
   subject: string;
   description: string;
   status: 'open' | 'in-progress' | 'resolved' | 'closed';
+  priority?: 'high' | 'medium' | 'low';
   createdAt: string;
 }
 
