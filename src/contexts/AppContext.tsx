@@ -253,6 +253,10 @@ const initialInvoices: Invoice[] = [
 const initialTickets: SupportTicket[] = [
   { id: 'ticket-1', companyId: 'company-1', userId: 'user-5', category: 'Technical', subject: 'Installation issue on Windows 11', description: 'Cannot complete installation', status: 'resolved', createdAt: '2024-01-15' },
   { id: 'ticket-2', companyId: 'company-1', userId: 'user-6', category: 'Billing', subject: 'Invoice clarification', description: 'Need breakdown of charges', status: 'closed', createdAt: '2024-01-10' },
+  { id: 'ticket-3', companyId: 'company-1', userId: 'user-1', category: 'Account', subject: 'Adding more users to account', description: 'Need to add 5 more users', status: 'open', createdAt: '2024-01-18' },
+  { id: 'ticket-4', companyId: 'company-1', userId: 'user-3', category: 'Technical', subject: 'License activation failed', description: 'Getting error code 500 on activation', status: 'in-progress', createdAt: '2024-01-19' },
+  { id: 'ticket-5', companyId: 'company-2', userId: 'user-20', category: 'Technical', subject: 'Report export not working', description: 'PDF export fails for large reports', status: 'open', createdAt: '2024-01-20' },
+  { id: 'ticket-6', companyId: 'company-2', userId: 'user-23', category: 'Feature Request', subject: 'Dark mode support', description: 'Would like dark mode option', status: 'closed', createdAt: '2024-01-08' },
 ];
 
 const AppContext = createContext<AppContextType | null>(null);
