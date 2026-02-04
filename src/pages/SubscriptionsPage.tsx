@@ -2,11 +2,19 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useApp, Subscription } from '@/contexts/AppContext';
 import { MainLayout } from '@/components/layout/MainLayout';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import {
+  ListingPageHeader,
+  SearchFilterCard,
+  FilterField,
+  DataTable,
+  DataTableColumn,
+  PaginationControls,
+} from '@/components/listing';
 import {
   Dialog,
   DialogContent,
@@ -15,14 +23,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
 import { useToast } from '@/hooks/use-toast';
 import {
   CreditCard,
@@ -34,6 +34,7 @@ import {
   Check,
   Minus,
   Plus,
+  ShoppingCart,
 } from 'lucide-react';
 
 export const SubscriptionsPage = () => {
@@ -47,6 +48,18 @@ export const SubscriptionsPage = () => {
   } = useApp();
   const { toast } = useToast();
 
+  // Filters
+  const [searchQuery, setSearchQuery] = useState('');
+  const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [billingFilter, setBillingFilter] = useState<string>('all');
+  const [renewalFrom, setRenewalFrom] = useState<Date>();
+  const [renewalTo, setRenewalTo] = useState<Date>();
+
+  // Pagination
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
+
+  // Modals
   const [selectedSubscription, setSelectedSubscription] = useState<Subscription | null>(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [modifyOpen, setModifyOpen] = useState(false);
@@ -56,6 +69,39 @@ export const SubscriptionsPage = () => {
 
   const subscriptions = getCompanySubscriptions();
   const canModify = hasAccess(['owner', 'billing']);
+
+  // Filter subscriptions
+  const filteredSubscriptions = subscriptions.filter(sub => {
+    const matchesSearch = sub.product.toLowerCase().includes(searchQuery.toLowerCase());
+    const matchesStatus = statusFilter === 'all' || sub.status === statusFilter;
+    const matchesBilling = billingFilter === 'all' || sub.term === billingFilter;
+
+    let matchesRenewal = true;
+    if (renewalFrom) {
+      matchesRenewal = new Date(sub.renewalDate) >= renewalFrom;
+    }
+    if (renewalTo && matchesRenewal) {
+      matchesRenewal = new Date(sub.renewalDate) <= renewalTo;
+    }
+
+    return matchesSearch && matchesStatus && matchesBilling && matchesRenewal;
+  });
+
+  // Pagination
+  const totalPages = Math.ceil(filteredSubscriptions.length / pageSize);
+  const paginatedSubscriptions = filteredSubscriptions.slice(
+    (currentPage - 1) * pageSize,
+    currentPage * pageSize
+  );
+
+  const resetFilters = () => {
+    setSearchQuery('');
+    setStatusFilter('all');
+    setBillingFilter('all');
+    setRenewalFrom(undefined);
+    setRenewalTo(undefined);
+    setCurrentPage(1);
+  };
 
   const openDetails = (sub: Subscription) => {
     setSelectedSubscription(sub);
@@ -74,7 +120,6 @@ export const SubscriptionsPage = () => {
     const assignedCount = getAssignedLicenseCount(selectedSubscription.product);
     
     if (newSeatCount < assignedCount) {
-      // Need to reduce licenses first
       navigate('/licenses/reduce', { 
         state: { 
           subscriptionId: selectedSubscription.id,
@@ -88,7 +133,6 @@ export const SubscriptionsPage = () => {
       return;
     }
 
-    // Increasing seats or reducing to exactly assigned - go to payment
     setModifyOpen(false);
     setPaymentOpen(true);
   };
@@ -130,18 +174,131 @@ export const SubscriptionsPage = () => {
     return diff * 299;
   };
 
+  const columns: DataTableColumn<Subscription>[] = [
+    {
+      key: 'product',
+      header: 'Product',
+      render: (sub) => <span className="font-medium">{sub.product}</span>,
+    },
+    {
+      key: 'term',
+      header: 'Term',
+      render: (sub) => <span className="capitalize">{sub.term}</span>,
+    },
+    {
+      key: 'status',
+      header: 'Status',
+      render: (sub) => (
+        <Badge variant="outline" className="status-active">
+          {sub.status}
+        </Badge>
+      ),
+    },
+    {
+      key: 'renewalDate',
+      header: 'Renewal Date',
+      render: (sub) => new Date(sub.renewalDate).toLocaleDateString(),
+    },
+    {
+      key: 'purchasedSeats',
+      header: 'Purchased Seats',
+      render: (sub) => sub.purchasedSeats,
+    },
+    {
+      key: 'assigned',
+      header: 'Assigned',
+      render: (sub) => {
+        const assignedCount = getAssignedLicenseCount(sub.product);
+        return `${assignedCount} / ${sub.purchasedSeats}`;
+      },
+    },
+    {
+      key: 'actions',
+      header: 'Actions',
+      className: 'text-right',
+      render: (sub) => (
+        <div className="flex justify-end gap-2">
+          <Button 
+            variant="ghost" 
+            size="sm"
+            onClick={() => openDetails(sub)}
+          >
+            <Eye className="h-4 w-4" />
+          </Button>
+          {canModify && (
+            <Button 
+              variant="outline" 
+              size="sm"
+              onClick={() => openModify(sub)}
+            >
+              <Edit className="h-4 w-4 mr-1" />
+              Modify
+            </Button>
+          )}
+        </div>
+      ),
+    },
+  ];
+
   return (
     <MainLayout>
       <div className="space-y-6">
         {/* Page Header */}
-        <div>
-          <h1 className="text-2xl font-bold">Subscriptions</h1>
-          <p className="text-muted-foreground">
-            Manage subscriptions for {currentCompany?.name}
-          </p>
-        </div>
+        <ListingPageHeader
+          title="Subscriptions"
+          description={`Manage subscriptions for ${currentCompany?.name}`}
+          primaryAction={
+            canModify && (
+              <Button onClick={() => navigate('/signup')}>
+                <ShoppingCart className="h-4 w-4 mr-2" />
+                Buy Subscription
+              </Button>
+            )
+          }
+        />
 
-        {/* Subscriptions List */}
+        {/* Search & Filters */}
+        <SearchFilterCard
+          searchValue={searchQuery}
+          onSearchChange={(v) => { setSearchQuery(v); setCurrentPage(1); }}
+          searchPlaceholder="Search by product name..."
+          onReset={resetFilters}
+          filters={
+            <>
+              <FilterField
+                label="Status"
+                value={statusFilter}
+                onChange={(v) => { setStatusFilter(v); setCurrentPage(1); }}
+                options={[
+                  { value: 'all', label: 'All Status' },
+                  { value: 'active', label: 'Active' },
+                  { value: 'expiring', label: 'Expiring' },
+                  { value: 'cancelled', label: 'Cancelled' },
+                ]}
+              />
+              <FilterField
+                label="Billing Frequency"
+                value={billingFilter}
+                onChange={(v) => { setBillingFilter(v); setCurrentPage(1); }}
+                options={[
+                  { value: 'all', label: 'All' },
+                  { value: 'annual', label: 'Annual' },
+                  { value: 'monthly', label: 'Monthly' },
+                ]}
+              />
+              <FilterField
+                label="Renewal"
+                type="dateRange"
+                dateFromValue={renewalFrom}
+                dateToValue={renewalTo}
+                onDateFromChange={(d) => { setRenewalFrom(d); setCurrentPage(1); }}
+                onDateToChange={(d) => { setRenewalTo(d); setCurrentPage(1); }}
+              />
+            </>
+          }
+        />
+
+        {/* Data Table */}
         {subscriptions.length === 0 ? (
           <Card>
             <CardContent className="p-8 text-center">
@@ -156,67 +313,27 @@ export const SubscriptionsPage = () => {
             </CardContent>
           </Card>
         ) : (
-          <Card>
-            <CardContent className="p-0">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Product</TableHead>
-                    <TableHead>Term</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead>Renewal Date</TableHead>
-                    <TableHead>Purchased Seats</TableHead>
-                    <TableHead>Assigned</TableHead>
-                    <TableHead className="text-right">Actions</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {subscriptions.map(sub => {
-                    const assignedCount = getAssignedLicenseCount(sub.product);
-                    return (
-                      <TableRow key={sub.id}>
-                        <TableCell className="font-medium">{sub.product}</TableCell>
-                        <TableCell className="capitalize">{sub.term}</TableCell>
-                        <TableCell>
-                          <Badge variant="outline" className="status-active">
-                            {sub.status}
-                          </Badge>
-                        </TableCell>
-                        <TableCell>
-                          {new Date(sub.renewalDate).toLocaleDateString()}
-                        </TableCell>
-                        <TableCell>{sub.purchasedSeats}</TableCell>
-                        <TableCell>
-                          {assignedCount} / {sub.purchasedSeats}
-                        </TableCell>
-                        <TableCell className="text-right">
-                          <div className="flex justify-end gap-2">
-                            <Button 
-                              variant="ghost" 
-                              size="sm"
-                              onClick={() => openDetails(sub)}
-                            >
-                              <Eye className="h-4 w-4" />
-                            </Button>
-                            {canModify && (
-                              <Button 
-                                variant="outline" 
-                                size="sm"
-                                onClick={() => openModify(sub)}
-                              >
-                                <Edit className="h-4 w-4 mr-1" />
-                                Modify
-                              </Button>
-                            )}
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })}
-                </TableBody>
-              </Table>
-            </CardContent>
-          </Card>
+          <div>
+            <DataTable
+              columns={columns}
+              data={paginatedSubscriptions}
+              keyExtractor={(sub) => sub.id}
+              emptyMessage="No subscriptions found matching your criteria."
+            />
+            <Card className="rounded-t-none border-t-0">
+              <PaginationControls
+                currentPage={currentPage}
+                totalPages={totalPages}
+                pageSize={pageSize}
+                totalRecords={filteredSubscriptions.length}
+                onPageChange={setCurrentPage}
+                onPageSizeChange={(size) => {
+                  setPageSize(size);
+                  setCurrentPage(1);
+                }}
+              />
+            </Card>
+          </div>
         )}
       </div>
 
@@ -361,8 +478,7 @@ export const SubscriptionsPage = () => {
                     <p className="font-medium text-sm">Reduction requires license reassignment</p>
                     <p className="text-sm text-muted-foreground">
                       You have {getAssignedLicenseCount(selectedSubscription.product)} licenses assigned 
-                      but are reducing to {newSeatCount} seats. You'll need to select which users will 
-                      lose access.
+                      but are reducing to {newSeatCount} seats.
                     </p>
                   </div>
                 </div>
@@ -466,14 +582,15 @@ export const SubscriptionsPage = () => {
               </div>
             </div>
           )}
-          
+
           {paymentStatus === 'idle' && (
             <DialogFooter>
               <Button variant="outline" onClick={() => setPaymentOpen(false)}>
                 Cancel
               </Button>
               <Button onClick={handlePayment}>
-                {getPriceChange() > 0 ? `Pay $${getPriceChange().toLocaleString()}` : 'Confirm'}
+                <CreditCard className="h-4 w-4 mr-2" />
+                Pay Now
               </Button>
             </DialogFooter>
           )}

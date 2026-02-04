@@ -2,12 +2,20 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useApp, UserRole, User } from '@/contexts/AppContext';
 import { MainLayout } from '@/components/layout/MainLayout';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
+import { Card, CardContent } from '@/components/ui/card';
+import {
+  ListingPageHeader,
+  SearchFilterCard,
+  FilterField,
+  DataTable,
+  DataTableColumn,
+  PaginationControls,
+} from '@/components/listing';
 import {
   Dialog,
   DialogContent,
@@ -23,27 +31,10 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
 import { useToast } from '@/hooks/use-toast';
 import {
   Plus,
-  Search,
   MoreHorizontal,
-  UserPlus,
   Download,
   Eye,
   Edit,
@@ -52,7 +43,6 @@ import {
   UserX,
   UserCheck,
   ExternalLink,
-  AlertTriangle,
 } from 'lucide-react';
 
 const roleLabels: Record<UserRole, string> = {
@@ -81,20 +71,24 @@ export const UsersPage = () => {
     currentCompany,
     getCompanyUsers,
     addUser,
-    updateUser,
     deactivateUser,
     reactivateUser,
     changeUserRoles,
     hasAccess,
     startProxySession,
-    demoRoles,
   } = useApp();
   const { toast } = useToast();
 
+  // Filters
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [roleFilter, setRoleFilter] = useState<string>('all');
   const [lastLoginFilter, setLastLoginFilter] = useState<string>('all');
+  const [createdFrom, setCreatedFrom] = useState<Date>();
+  const [createdTo, setCreatedTo] = useState<Date>();
+
+  // Pagination
+  const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
 
   // Modals
@@ -148,9 +142,34 @@ export const UsersPage = () => {
         matchesLastLogin = false;
       }
     }
+
+    let matchesCreated = true;
+    if (createdFrom) {
+      matchesCreated = new Date(user.createdAt) >= createdFrom;
+    }
+    if (createdTo && matchesCreated) {
+      matchesCreated = new Date(user.createdAt) <= createdTo;
+    }
     
-    return matchesSearch && matchesStatus && matchesRole && matchesLastLogin;
+    return matchesSearch && matchesStatus && matchesRole && matchesLastLogin && matchesCreated;
   });
+
+  // Pagination
+  const totalPages = Math.ceil(filteredUsers.length / pageSize);
+  const paginatedUsers = filteredUsers.slice(
+    (currentPage - 1) * pageSize,
+    currentPage * pageSize
+  );
+
+  const resetFilters = () => {
+    setSearchQuery('');
+    setStatusFilter('all');
+    setRoleFilter('all');
+    setLastLoginFilter('all');
+    setCreatedFrom(undefined);
+    setCreatedTo(undefined);
+    setCurrentPage(1);
+  };
 
   const handleAddUser = () => {
     if (!newUser.firstName || !newUser.lastName || !newUser.email) {
@@ -231,7 +250,7 @@ export const UsersPage = () => {
     
     toast({
       title: 'User Deactivated',
-      description: `${selectedUser.firstName} ${selectedUser.lastName} has been deactivated and their licenses unassigned.`,
+      description: `${selectedUser.firstName} ${selectedUser.lastName} has been deactivated.`,
     });
 
     setDeactivateOpen(false);
@@ -245,7 +264,7 @@ export const UsersPage = () => {
     
     toast({
       title: 'User Reactivated',
-      description: `${selectedUser.firstName} ${selectedUser.lastName} has been reactivated. Licenses are not automatically reassigned.`,
+      description: `${selectedUser.firstName} ${selectedUser.lastName} has been reactivated.`,
     });
 
     setReactivateOpen(false);
@@ -294,266 +313,265 @@ export const UsersPage = () => {
     }
   };
 
-  // Check which roles current user can assign
   const canAssignRole = (role: UserRole): boolean => {
     if (isOwner) return true;
     if (isAdmin) return role === 'standard' || role === 'admin';
     return false;
   };
 
+  const columns: DataTableColumn<User>[] = [
+    {
+      key: 'name',
+      header: 'Name',
+      render: (user) => (
+        <div className="flex items-center gap-3">
+          <div className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center">
+            <span className="text-xs font-medium text-primary">
+              {user.firstName.charAt(0)}{user.lastName.charAt(0)}
+            </span>
+          </div>
+          <div>
+            <p className="font-medium">{user.firstName} {user.lastName}</p>
+            {user.jobTitle && (
+              <p className="text-xs text-muted-foreground">{user.jobTitle}</p>
+            )}
+          </div>
+        </div>
+      ),
+    },
+    {
+      key: 'email',
+      header: 'Email',
+      render: (user) => (
+        <span className="text-muted-foreground">{user.email}</span>
+      ),
+    },
+    {
+      key: 'roles',
+      header: 'Roles',
+      render: (user) => (
+        <div className="flex flex-wrap gap-1">
+          {user.roles.map(role => (
+            <Badge 
+              key={role} 
+              variant="outline" 
+              className={`text-xs ${roleColors[role]}`}
+            >
+              {roleLabels[role]}
+            </Badge>
+          ))}
+        </div>
+      ),
+    },
+    {
+      key: 'status',
+      header: 'Status',
+      render: (user) => (
+        <Badge variant="outline" className={statusColors[user.status]}>
+          {user.status}
+        </Badge>
+      ),
+    },
+    {
+      key: 'lastLogin',
+      header: 'Last Login',
+      render: (user) => (
+        <span className="text-muted-foreground">
+          {user.lastLogin 
+            ? new Date(user.lastLogin).toLocaleDateString()
+            : 'Never'
+          }
+        </span>
+      ),
+    },
+    {
+      key: 'createdAt',
+      header: 'Created',
+      render: (user) => (
+        <span className="text-muted-foreground">
+          {new Date(user.createdAt).toLocaleDateString()}
+        </span>
+      ),
+    },
+    {
+      key: 'actions',
+      header: '',
+      className: 'w-[50px] text-right',
+      render: (user) => (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="ghost" size="icon">
+              <MoreHorizontal className="h-4 w-4" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem onClick={() => {
+              setSelectedUser(user);
+              setViewUserOpen(true);
+            }}>
+              <Eye className="h-4 w-4 mr-2" />
+              View Details
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => {
+              setSelectedUser(user);
+              setEditUserOpen(true);
+            }}>
+              <Edit className="h-4 w-4 mr-2" />
+              Edit User
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => openChangeRoles(user)}>
+              <KeyRound className="h-4 w-4 mr-2" />
+              Change Roles
+            </DropdownMenuItem>
+            <DropdownMenuItem>
+              <Mail className="h-4 w-4 mr-2" />
+              Reset Password
+            </DropdownMenuItem>
+            {user.status === 'invited' && (
+              <DropdownMenuItem>
+                <Mail className="h-4 w-4 mr-2" />
+                Resend Invite
+              </DropdownMenuItem>
+            )}
+            <DropdownMenuSeparator />
+            {canProxy && (
+              <DropdownMenuItem 
+                onClick={() => handleProxyLogin(user)}
+                disabled={user.status === 'inactive'}
+              >
+                <ExternalLink className="h-4 w-4 mr-2" />
+                Proxy Login
+                {user.status === 'inactive' && (
+                  <span className="text-xs text-muted-foreground ml-2">(Inactive)</span>
+                )}
+              </DropdownMenuItem>
+            )}
+            <DropdownMenuSeparator />
+            {user.status === 'active' || user.status === 'invited' ? (
+              <DropdownMenuItem 
+                className="text-destructive"
+                onClick={() => {
+                  setSelectedUser(user);
+                  setDeactivateOpen(true);
+                }}
+              >
+                <UserX className="h-4 w-4 mr-2" />
+                Deactivate
+              </DropdownMenuItem>
+            ) : (
+              <DropdownMenuItem 
+                onClick={() => {
+                  setSelectedUser(user);
+                  setReactivateOpen(true);
+                }}
+              >
+                <UserCheck className="h-4 w-4 mr-2" />
+                Reactivate
+              </DropdownMenuItem>
+            )}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      ),
+    },
+  ];
+
   return (
     <MainLayout>
       <div className="space-y-6">
         {/* Page Header */}
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl font-bold">Users</h1>
-            <p className="text-muted-foreground">
-              Manage users for {currentCompany?.name}
-            </p>
-          </div>
-          <div className="flex gap-2">
-            <Button variant="outline">
-              <Download className="h-4 w-4 mr-2" />
-              Export CSV
-            </Button>
+        <ListingPageHeader
+          title="Users"
+          description={`Manage users for ${currentCompany?.name}`}
+          primaryAction={
             <Button onClick={() => setAddUserOpen(true)}>
               <Plus className="h-4 w-4 mr-2" />
               Add User
             </Button>
-          </div>
-        </div>
+          }
+          secondaryAction={
+            <Button variant="outline">
+              <Download className="h-4 w-4 mr-2" />
+              Export CSV
+            </Button>
+          }
+        />
 
-        {/* Filters */}
-        <Card>
-          <CardContent className="p-4">
-            <div className="flex flex-wrap gap-4">
-              <div className="flex-1 min-w-[200px]">
-                <div className="relative">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-                  <Input
-                    placeholder="Search by name or email..."
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    className="pl-9"
-                  />
-                </div>
-              </div>
-              <Select value={statusFilter} onValueChange={setStatusFilter}>
-                <SelectTrigger className="w-[140px]">
-                  <SelectValue placeholder="Status" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All Status</SelectItem>
-                  <SelectItem value="active">Active</SelectItem>
-                  <SelectItem value="invited">Invited</SelectItem>
-                  <SelectItem value="inactive">Inactive</SelectItem>
-                </SelectContent>
-              </Select>
-              <Select value={roleFilter} onValueChange={setRoleFilter}>
-                <SelectTrigger className="w-[160px]">
-                  <SelectValue placeholder="Role" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All Roles</SelectItem>
-                  <SelectItem value="owner">Account Owner</SelectItem>
-                  <SelectItem value="billing">Billing User</SelectItem>
-                  <SelectItem value="admin">Firm Admin</SelectItem>
-                  <SelectItem value="standard">Standard User</SelectItem>
-                </SelectContent>
-              </Select>
-              <Select value={lastLoginFilter} onValueChange={setLastLoginFilter}>
-                <SelectTrigger className="w-[160px]">
-                  <SelectValue placeholder="Last Login" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All Time</SelectItem>
-                  <SelectItem value="7">Last 7 days</SelectItem>
-                  <SelectItem value="30">Last 30 days</SelectItem>
-                  <SelectItem value="90">Last 90 days</SelectItem>
-                  <SelectItem value="never">Never logged in</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-          </CardContent>
-        </Card>
+        {/* Search & Filters */}
+        <SearchFilterCard
+          searchValue={searchQuery}
+          onSearchChange={(v) => { setSearchQuery(v); setCurrentPage(1); }}
+          searchPlaceholder="Search by name or email..."
+          onReset={resetFilters}
+          filters={
+            <>
+              <FilterField
+                label="Role"
+                value={roleFilter}
+                onChange={(v) => { setRoleFilter(v); setCurrentPage(1); }}
+                options={[
+                  { value: 'all', label: 'All Roles' },
+                  { value: 'owner', label: 'Account Owner' },
+                  { value: 'billing', label: 'Billing User' },
+                  { value: 'admin', label: 'Firm Admin' },
+                  { value: 'standard', label: 'Standard User' },
+                ]}
+              />
+              <FilterField
+                label="Status"
+                value={statusFilter}
+                onChange={(v) => { setStatusFilter(v); setCurrentPage(1); }}
+                options={[
+                  { value: 'all', label: 'All Status' },
+                  { value: 'active', label: 'Active' },
+                  { value: 'invited', label: 'Invited' },
+                  { value: 'inactive', label: 'Inactive' },
+                ]}
+              />
+              <FilterField
+                label="Last Login"
+                value={lastLoginFilter}
+                onChange={(v) => { setLastLoginFilter(v); setCurrentPage(1); }}
+                options={[
+                  { value: 'all', label: 'All Time' },
+                  { value: '7', label: 'Last 7 days' },
+                  { value: '30', label: 'Last 30 days' },
+                  { value: '90', label: 'Last 90 days' },
+                  { value: 'never', label: 'Never' },
+                ]}
+              />
+              <FilterField
+                label="Created"
+                type="dateRange"
+                dateFromValue={createdFrom}
+                dateToValue={createdTo}
+                onDateFromChange={(d) => { setCreatedFrom(d); setCurrentPage(1); }}
+                onDateToChange={(d) => { setCreatedTo(d); setCurrentPage(1); }}
+              />
+            </>
+          }
+        />
 
-        {/* Users Table */}
-        <Card>
-          <CardContent className="p-0">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Name</TableHead>
-                  <TableHead>Email</TableHead>
-                  <TableHead>Roles</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Last Login</TableHead>
-                  <TableHead>Created</TableHead>
-                  <TableHead className="w-[50px]"></TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {filteredUsers.length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
-                      No users found matching your criteria.
-                    </TableCell>
-                  </TableRow>
-                ) : (
-                  filteredUsers.slice(0, pageSize).map(user => (
-                    <TableRow key={user.id}>
-                      <TableCell>
-                        <div className="flex items-center gap-3">
-                          <div className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center">
-                            <span className="text-xs font-medium text-primary">
-                              {user.firstName.charAt(0)}{user.lastName.charAt(0)}
-                            </span>
-                          </div>
-                          <div>
-                            <p className="font-medium">{user.firstName} {user.lastName}</p>
-                            {user.jobTitle && (
-                              <p className="text-xs text-muted-foreground">{user.jobTitle}</p>
-                            )}
-                          </div>
-                        </div>
-                      </TableCell>
-                      <TableCell className="text-muted-foreground">{user.email}</TableCell>
-                      <TableCell>
-                        <div className="flex flex-wrap gap-1">
-                          {user.roles.map(role => (
-                            <Badge 
-                              key={role} 
-                              variant="outline" 
-                              className={`text-xs ${roleColors[role]}`}
-                            >
-                              {roleLabels[role]}
-                            </Badge>
-                          ))}
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant="outline" className={statusColors[user.status]}>
-                          {user.status}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="text-muted-foreground">
-                        {user.lastLogin 
-                          ? new Date(user.lastLogin).toLocaleDateString()
-                          : 'Never'
-                        }
-                      </TableCell>
-                      <TableCell className="text-muted-foreground">
-                        {new Date(user.createdAt).toLocaleDateString()}
-                      </TableCell>
-                      <TableCell>
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <Button variant="ghost" size="icon">
-                              <MoreHorizontal className="h-4 w-4" />
-                            </Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end">
-                            <DropdownMenuItem onClick={() => {
-                              setSelectedUser(user);
-                              setViewUserOpen(true);
-                            }}>
-                              <Eye className="h-4 w-4 mr-2" />
-                              View Details
-                            </DropdownMenuItem>
-                            <DropdownMenuItem onClick={() => {
-                              setSelectedUser(user);
-                              setEditUserOpen(true);
-                            }}>
-                              <Edit className="h-4 w-4 mr-2" />
-                              Edit User
-                            </DropdownMenuItem>
-                            <DropdownMenuItem onClick={() => openChangeRoles(user)}>
-                              <KeyRound className="h-4 w-4 mr-2" />
-                              Change Roles
-                            </DropdownMenuItem>
-                            <DropdownMenuItem>
-                              <Mail className="h-4 w-4 mr-2" />
-                              Reset Password
-                            </DropdownMenuItem>
-                            {user.status === 'invited' && (
-                              <DropdownMenuItem>
-                                <Mail className="h-4 w-4 mr-2" />
-                                Resend Invite
-                              </DropdownMenuItem>
-                            )}
-                            <DropdownMenuSeparator />
-                            {canProxy && (
-                              <DropdownMenuItem 
-                                onClick={() => handleProxyLogin(user)}
-                                disabled={user.status === 'inactive'}
-                              >
-                                <ExternalLink className="h-4 w-4 mr-2" />
-                                Proxy Login
-                                {user.status === 'inactive' && (
-                                  <span className="text-xs text-muted-foreground ml-2">(Inactive)</span>
-                                )}
-                              </DropdownMenuItem>
-                            )}
-                            <DropdownMenuSeparator />
-                            {user.status === 'active' || user.status === 'invited' ? (
-                              <DropdownMenuItem 
-                                className="text-destructive"
-                                onClick={() => {
-                                  setSelectedUser(user);
-                                  setDeactivateOpen(true);
-                                }}
-                              >
-                                <UserX className="h-4 w-4 mr-2" />
-                                Deactivate
-                              </DropdownMenuItem>
-                            ) : (
-                              <DropdownMenuItem 
-                                className="text-success"
-                                onClick={() => {
-                                  setSelectedUser(user);
-                                  setReactivateOpen(true);
-                                }}
-                              >
-                                <UserCheck className="h-4 w-4 mr-2" />
-                                Reactivate
-                              </DropdownMenuItem>
-                            )}
-                            {isOwner && (
-                              <DropdownMenuItem className="text-destructive">
-                                <UserX className="h-4 w-4 mr-2" />
-                                Remove from Company
-                              </DropdownMenuItem>
-                            )}
-                          </DropdownMenuContent>
-                        </DropdownMenu>
-                      </TableCell>
-                    </TableRow>
-                  ))
-                )}
-              </TableBody>
-            </Table>
-          </CardContent>
-        </Card>
-
-        {/* Pagination */}
-        <div className="flex items-center justify-between">
-          <p className="text-sm text-muted-foreground">
-            Showing {Math.min(pageSize, filteredUsers.length)} of {filteredUsers.length} users
-          </p>
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-muted-foreground">Rows per page:</span>
-            <Select value={pageSize.toString()} onValueChange={(v) => setPageSize(parseInt(v))}>
-              <SelectTrigger className="w-[80px]">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="25">25</SelectItem>
-                <SelectItem value="50">50</SelectItem>
-                <SelectItem value="100">100</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
+        {/* Data Table */}
+        <div>
+          <DataTable
+            columns={columns}
+            data={paginatedUsers}
+            keyExtractor={(user) => user.id}
+            emptyMessage="No users found matching your criteria."
+          />
+          <Card className="rounded-t-none border-t-0">
+            <PaginationControls
+              currentPage={currentPage}
+              totalPages={totalPages}
+              pageSize={pageSize}
+              totalRecords={filteredUsers.length}
+              onPageChange={setCurrentPage}
+              onPageSizeChange={(size) => {
+                setPageSize(size);
+                setCurrentPage(1);
+              }}
+            />
+          </Card>
         </div>
       </div>
 
@@ -563,81 +581,64 @@ export const UsersPage = () => {
           <DialogHeader>
             <DialogTitle>Add User</DialogTitle>
             <DialogDescription>
-              Add a new user to {currentCompany?.name}
+              Create a new user and optionally send an invitation.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
-                <Label htmlFor="firstName">First Name *</Label>
+                <Label>First Name *</Label>
                 <Input
-                  id="firstName"
                   value={newUser.firstName}
                   onChange={(e) => setNewUser({ ...newUser, firstName: e.target.value })}
+                  placeholder="John"
                 />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="lastName">Last Name *</Label>
+                <Label>Last Name *</Label>
                 <Input
-                  id="lastName"
                   value={newUser.lastName}
                   onChange={(e) => setNewUser({ ...newUser, lastName: e.target.value })}
+                  placeholder="Doe"
                 />
               </div>
             </div>
             <div className="space-y-2">
-              <Label htmlFor="email">Email *</Label>
+              <Label>Email *</Label>
               <Input
-                id="email"
                 type="email"
                 value={newUser.email}
                 onChange={(e) => setNewUser({ ...newUser, email: e.target.value })}
+                placeholder="john@company.com"
               />
             </div>
             <div className="space-y-2">
               <Label>Roles</Label>
-              <div className="space-y-2">
-                {(['standard', 'admin', 'billing', 'owner'] as UserRole[]).map(role => (
-                  <div key={role} className="flex items-center gap-2">
+              <div className="grid grid-cols-2 gap-2">
+                {(['owner', 'billing', 'admin', 'standard'] as UserRole[]).map((role) => (
+                  <div key={role} className="flex items-center space-x-2">
                     <Checkbox
-                      id={`new-${role}`}
+                      id={`role-${role}`}
                       checked={newUser.roles.includes(role)}
                       onCheckedChange={() => toggleNewUserRole(role)}
                       disabled={!canAssignRole(role)}
                     />
-                    <Label htmlFor={`new-${role}`} className="font-normal">
+                    <Label htmlFor={`role-${role}`} className="text-sm font-normal">
                       {roleLabels[role]}
-                      {!canAssignRole(role) && (
-                        <span className="text-xs text-muted-foreground ml-2">(Owner only)</span>
-                      )}
                     </Label>
                   </div>
                 ))}
               </div>
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="phone">Phone (optional)</Label>
-              <Input
-                id="phone"
-                value={newUser.phone}
-                onChange={(e) => setNewUser({ ...newUser, phone: e.target.value })}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="jobTitle">Job Title (optional)</Label>
-              <Input
-                id="jobTitle"
-                value={newUser.jobTitle}
-                onChange={(e) => setNewUser({ ...newUser, jobTitle: e.target.value })}
-              />
-            </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center space-x-2">
               <Checkbox
                 id="sendInvite"
                 checked={newUser.sendInvite}
-                onCheckedChange={(checked) => setNewUser({ ...newUser, sendInvite: checked as boolean })}
+                onCheckedChange={(checked) => 
+                  setNewUser({ ...newUser, sendInvite: checked as boolean })
+                }
               />
-              <Label htmlFor="sendInvite" className="font-normal">
+              <Label htmlFor="sendInvite" className="text-sm font-normal">
                 Send invitation email now
               </Label>
             </div>
@@ -646,9 +647,7 @@ export const UsersPage = () => {
             <Button variant="outline" onClick={() => setAddUserOpen(false)}>
               Cancel
             </Button>
-            <Button onClick={handleAddUser}>
-              Create User
-            </Button>
+            <Button onClick={handleAddUser}>Create User</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -663,18 +662,18 @@ export const UsersPage = () => {
             <div className="space-y-4">
               <div className="flex items-center gap-4">
                 <div className="h-16 w-16 rounded-full bg-primary/10 flex items-center justify-center">
-                  <span className="text-xl font-semibold text-primary">
+                  <span className="text-xl font-medium text-primary">
                     {selectedUser.firstName.charAt(0)}{selectedUser.lastName.charAt(0)}
                   </span>
                 </div>
                 <div>
-                  <h3 className="text-lg font-semibold">
+                  <h3 className="font-semibold text-lg">
                     {selectedUser.firstName} {selectedUser.lastName}
                   </h3>
                   <p className="text-muted-foreground">{selectedUser.email}</p>
                 </div>
               </div>
-              <div className="grid grid-cols-2 gap-4 pt-4 border-t">
+              <div className="grid grid-cols-2 gap-4">
                 <div>
                   <p className="text-sm text-muted-foreground">Status</p>
                   <Badge variant="outline" className={statusColors[selectedUser.status]}>
@@ -695,7 +694,7 @@ export const UsersPage = () => {
                   <p className="text-sm text-muted-foreground">Last Login</p>
                   <p className="font-medium">
                     {selectedUser.lastLogin 
-                      ? new Date(selectedUser.lastLogin).toLocaleDateString()
+                      ? new Date(selectedUser.lastLogin).toLocaleString()
                       : 'Never'
                     }
                   </p>
@@ -703,27 +702,40 @@ export const UsersPage = () => {
                 <div>
                   <p className="text-sm text-muted-foreground">Created</p>
                   <p className="font-medium">
-                    {new Date(selectedUser.createdAt).toLocaleDateString()}
+                    {new Date(selectedUser.createdAt).toLocaleString()}
                   </p>
                 </div>
-                {selectedUser.jobTitle && (
-                  <div>
-                    <p className="text-sm text-muted-foreground">Job Title</p>
-                    <p className="font-medium">{selectedUser.jobTitle}</p>
-                  </div>
-                )}
-                {selectedUser.phone && (
-                  <div>
-                    <p className="text-sm text-muted-foreground">Phone</p>
-                    <p className="font-medium">{selectedUser.phone}</p>
-                  </div>
-                )}
               </div>
             </div>
           )}
           <DialogFooter>
-            <Button variant="outline" onClick={() => setViewUserOpen(false)}>
-              Close
+            <Button onClick={() => setViewUserOpen(false)}>Close</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit User Modal */}
+      <Dialog open={editUserOpen} onOpenChange={setEditUserOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Edit User</DialogTitle>
+          </DialogHeader>
+          {selectedUser && (
+            <div className="space-y-4">
+              <p className="text-muted-foreground">
+                Editing {selectedUser.firstName} {selectedUser.lastName}
+              </p>
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditUserOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={() => {
+              toast({ title: 'User Updated', description: 'User details have been saved.' });
+              setEditUserOpen(false);
+            }}>
+              Save Changes
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -739,47 +751,23 @@ export const UsersPage = () => {
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
-            {(['standard', 'admin', 'billing', 'owner'] as UserRole[]).map(role => {
-              const isCurrentRole = selectedUser?.roles.includes(role);
-              const isCritical = role === 'owner' || role === 'billing' || role === 'admin';
-              const isOnlyOwner = role === 'owner' && 
-                selectedUser?.roles.includes('owner') && 
-                selectedRoles.includes('owner') === false;
-              
-              return (
-                <div key={role} className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <Checkbox
-                      id={`role-${role}`}
-                      checked={selectedRoles.includes(role)}
-                      onCheckedChange={() => toggleRole(role)}
-                      disabled={!canAssignRole(role)}
-                    />
-                    <Label htmlFor={`role-${role}`} className="font-normal">
-                      {roleLabels[role]}
-                    </Label>
-                  </div>
-                  {isCritical && isCurrentRole && !selectedRoles.includes(role) && (
-                    <Badge variant="outline" className="text-warning border-warning">
-                      <AlertTriangle className="h-3 w-3 mr-1" />
-                      Critical
-                    </Badge>
-                  )}
-                </div>
-              );
-            })}
-            
-            {selectedRoles.length === 0 && (
-              <p className="text-sm text-destructive">At least one role must be selected.</p>
-            )}
+            {(['owner', 'billing', 'admin', 'standard'] as UserRole[]).map((role) => (
+              <div key={role} className="flex items-center space-x-2">
+                <Checkbox
+                  id={`change-role-${role}`}
+                  checked={selectedRoles.includes(role)}
+                  onCheckedChange={() => toggleRole(role)}
+                  disabled={!canAssignRole(role)}
+                />
+                <Label htmlFor={`change-role-${role}`}>{roleLabels[role]}</Label>
+              </div>
+            ))}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setChangeRolesOpen(false)}>
               Cancel
             </Button>
-            <Button onClick={handleChangeRoles} disabled={selectedRoles.length === 0}>
-              Save Changes
-            </Button>
+            <Button onClick={handleChangeRoles}>Save Roles</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -793,20 +781,19 @@ export const UsersPage = () => {
               Are you sure you want to deactivate {selectedUser?.firstName} {selectedUser?.lastName}?
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-4">
-            <div className="bg-destructive/10 border border-destructive/20 rounded-lg p-4">
-              <p className="text-sm">
-                <strong>Warning:</strong> This user will lose portal access immediately.
-                Assigned licenses will be automatically unassigned.
-              </p>
-            </div>
+          <div className="text-sm text-muted-foreground">
+            <p>This will:</p>
+            <ul className="list-disc list-inside mt-2 space-y-1">
+              <li>Remove portal access immediately</li>
+              <li>Unassign all licenses</li>
+            </ul>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setDeactivateOpen(false)}>
               Cancel
             </Button>
             <Button variant="destructive" onClick={handleDeactivate}>
-              Deactivate User
+              Deactivate
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -821,21 +808,14 @@ export const UsersPage = () => {
               Reactivate {selectedUser?.firstName} {selectedUser?.lastName}?
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-4">
-            <div className="bg-muted rounded-lg p-4">
-              <p className="text-sm">
-                This user will regain portal access. 
-                <strong> Licenses are not automatically reassigned</strong> and must be assigned manually.
-              </p>
-            </div>
-          </div>
+          <p className="text-sm text-muted-foreground">
+            The user will regain portal access. Licenses are not automatically reassigned.
+          </p>
           <DialogFooter>
             <Button variant="outline" onClick={() => setReactivateOpen(false)}>
               Cancel
             </Button>
-            <Button onClick={handleReactivate}>
-              Reactivate User
-            </Button>
+            <Button onClick={handleReactivate}>Reactivate</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
