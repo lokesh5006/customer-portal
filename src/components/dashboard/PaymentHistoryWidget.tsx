@@ -8,15 +8,15 @@ import { Button } from '@/components/ui/button';
 export const PaymentHistoryWidget = () => {
   const navigate = useNavigate();
   const { getCompanyInvoices } = useApp();
-  
+
   const invoices = getCompanyInvoices();
-  const sortedInvoices = [...invoices].sort((a, b) => 
+  const sortedInvoices = [...invoices].sort((a, b) =>
     new Date(b.date).getTime() - new Date(a.date).getTime()
   );
 
   return (
-    <DashboardWidgetCard 
-      title="Recent Payments" 
+    <DashboardWidgetCard
+      title="Recent Payments"
       icon={Receipt}
       onClick={() => navigate('/billing')}
     >
@@ -30,13 +30,13 @@ export const PaymentHistoryWidget = () => {
                 <div>
                   <div className="font-medium text-sm">{invoice.invoiceNumber}</div>
                   <div className="text-xs text-muted-foreground">
-                    {new Date(invoice.date).toLocaleDateString()}
+                    {invoice.subscriptionName} · {new Date(invoice.date).toLocaleDateString()}
                   </div>
                 </div>
                 <div className="text-right">
                   <div className="font-medium">${invoice.amount.toLocaleString()}</div>
-                  <Badge 
-                    variant="outline" 
+                  <Badge
+                    variant="outline"
                     className={`text-xs status-${invoice.status}`}
                   >
                     {invoice.status}
@@ -46,10 +46,10 @@ export const PaymentHistoryWidget = () => {
             ))}
           </div>
         )}
-        
-        <Button 
-          variant="ghost" 
-          size="sm" 
+
+        <Button
+          variant="ghost"
+          size="sm"
           className="w-full justify-between"
           onClick={(e) => { e.stopPropagation(); navigate('/billing'); }}
         >

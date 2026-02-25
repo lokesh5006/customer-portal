@@ -1,108 +1,88 @@
 import { useApp } from '@/contexts/AppContext';
 import { MainLayout } from '@/components/layout/MainLayout';
 
-// Dashboard widgets
 import { OverdueAlertBanner } from '@/components/dashboard/OverdueAlertBanner';
 import { AccountOverviewWidget } from '@/components/dashboard/AccountOverviewWidget';
-import { SubscriptionSummaryWidget } from '@/components/dashboard/SubscriptionSummaryWidget';
+import { SubscriptionOverviewWidget } from '@/components/dashboard/SubscriptionOverviewWidget';
 import { BillingStatusWidget } from '@/components/dashboard/BillingStatusWidget';
-import { LicenseUtilizationWidget } from '@/components/dashboard/LicenseUtilizationWidget';
+import { LicenseUtilizationSummaryWidget } from '@/components/dashboard/LicenseUtilizationSummaryWidget';
 import { UserOverviewWidget } from '@/components/dashboard/UserOverviewWidget';
 import { DownloadsWidget } from '@/components/dashboard/DownloadsWidget';
 import { SupportSnapshotWidget } from '@/components/dashboard/SupportSnapshotWidget';
 import { AssignedProductsWidget } from '@/components/dashboard/AssignedProductsWidget';
 import { MyTicketsWidget } from '@/components/dashboard/MyTicketsWidget';
-import { PaymentHistoryWidget } from '@/components/dashboard/PaymentHistoryWidget';
+import { OutstandingInvoicesWidget } from '@/components/dashboard/OutstandingInvoicesWidget';
 import { QuickActionsWidget } from '@/components/dashboard/QuickActionsWidget';
 
 export const Dashboard = () => {
   const { currentCompany, hasAccess, demoRoles } = useApp();
 
-  // Role checks
   const isOwner = hasAccess(['owner']);
   const isBilling = hasAccess(['billing']);
   const isAdmin = hasAccess(['admin']);
   const isStandard = demoRoles.length === 1 && demoRoles[0] === 'standard';
 
-  // Combined permissions
   const canViewBilling = isOwner || isBilling;
   const canViewUsers = isOwner || isAdmin;
-  const canViewLicenses = isOwner || isAdmin;
-  const canViewSubscriptions = isOwner || isBilling || isAdmin;
 
   return (
     <MainLayout>
       <div className="space-y-6">
-        {/* Page Header */}
         <div>
           <h1 className="text-2xl font-bold">Dashboard</h1>
           <p className="text-muted-foreground">Welcome to {currentCompany?.name}</p>
         </div>
 
-        {/* Overdue Alert Banner - Owner & Billing only */}
         <OverdueAlertBanner />
 
-        {/* Account Owner Dashboard */}
+        {/* Owner-only Dashboard */}
         {isOwner && !isBilling && !isAdmin && (
           <>
-            {/* Top Row - Critical Status */}
             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
               <AccountOverviewWidget />
               <BillingStatusWidget />
-              <LicenseUtilizationWidget />
+              <LicenseUtilizationSummaryWidget />
             </div>
-            
-            {/* Middle Row - Operational KPIs */}
-            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-              <SubscriptionSummaryWidget />
+            <SubscriptionOverviewWidget />
+            <div className="grid gap-4 md:grid-cols-2">
               <UserOverviewWidget />
               <SupportSnapshotWidget />
             </div>
-            
-            {/* Bottom Row - Actions & Resources */}
             <QuickActionsWidget />
             <DownloadsWidget />
           </>
         )}
 
-        {/* Billing User Dashboard */}
+        {/* Billing-only Dashboard */}
         {isBilling && !isOwner && !isAdmin && (
           <>
-            {/* Top Row - Billing Focus */}
             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
               <BillingStatusWidget />
-              <SubscriptionSummaryWidget />
-              <PaymentHistoryWidget />
+              <OutstandingInvoicesWidget />
+              <LicenseUtilizationSummaryWidget />
             </div>
-            
-            {/* Middle Row */}
+            <SubscriptionOverviewWidget />
             <div className="grid gap-4 md:grid-cols-2">
               <SupportSnapshotWidget />
               <DownloadsWidget />
             </div>
-            
-            {/* Bottom Row */}
             <QuickActionsWidget />
           </>
         )}
 
-        {/* Firm Admin Dashboard */}
+        {/* Admin-only Dashboard */}
         {isAdmin && !isOwner && !isBilling && (
           <>
-            {/* Top Row - User & License Focus */}
             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
               <UserOverviewWidget />
-              <LicenseUtilizationWidget />
+              <LicenseUtilizationSummaryWidget />
               <SupportSnapshotWidget />
             </div>
-            
-            {/* Middle Row */}
+            <SubscriptionOverviewWidget />
             <div className="grid gap-4 md:grid-cols-2">
-              <SubscriptionSummaryWidget />
               <DownloadsWidget />
+              <AccountOverviewWidget />
             </div>
-            
-            {/* Bottom Row */}
             <QuickActionsWidget />
           </>
         )}
@@ -110,39 +90,31 @@ export const Dashboard = () => {
         {/* Standard User Dashboard */}
         {isStandard && (
           <>
-            {/* Top Row - Personal Focus */}
             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
               <AssignedProductsWidget />
               <MyTicketsWidget />
               <DownloadsWidget />
             </div>
-            
-            {/* Bottom Row */}
             <QuickActionsWidget />
           </>
         )}
 
-        {/* Multi-Role Dashboard (Owner + others or combined roles) */}
+        {/* Multi-Role Dashboard */}
         {((isOwner && (isBilling || isAdmin)) || (isBilling && isAdmin)) && (
           <>
-            {/* Top Row - Critical Status */}
             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
               <AccountOverviewWidget />
               {canViewBilling && <BillingStatusWidget />}
-              {canViewLicenses && <LicenseUtilizationWidget />}
+              <LicenseUtilizationSummaryWidget />
               {canViewUsers && <UserOverviewWidget />}
             </div>
-            
-            {/* Middle Row - Details */}
+            <SubscriptionOverviewWidget />
             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-              {canViewSubscriptions && <SubscriptionSummaryWidget />}
-              {canViewBilling && <PaymentHistoryWidget />}
+              {canViewBilling && <OutstandingInvoicesWidget />}
               <SupportSnapshotWidget />
+              <DownloadsWidget />
             </div>
-            
-            {/* Bottom Row - Actions & Resources */}
             <QuickActionsWidget />
-            <DownloadsWidget />
           </>
         )}
       </div>

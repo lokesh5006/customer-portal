@@ -2,12 +2,11 @@ import { useNavigate } from 'react-router-dom';
 import { useApp } from '@/contexts/AppContext';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { 
-  CreditCard, 
-  Key, 
-  FileText, 
-  UserPlus, 
-  AlertCircle,
+import {
+  ShoppingCart,
+  PackagePlus,
+  ArrowUpRight,
+  CreditCard,
   Download,
   LifeBuoy,
   Settings
@@ -16,7 +15,7 @@ import {
 export const QuickActionsWidget = () => {
   const navigate = useNavigate();
   const { hasAccess, getCompanyInvoices } = useApp();
-  
+
   const invoices = getCompanyInvoices();
   const overdueInvoices = invoices.filter(i => i.status === 'overdue');
   const hasOverdue = overdueInvoices.length > 0;
@@ -24,11 +23,7 @@ export const QuickActionsWidget = () => {
 
   const isOwner = hasAccess(['owner']);
   const isBilling = hasAccess(['billing']);
-  const isAdmin = hasAccess(['admin']);
   const canManageSubscriptions = isOwner || isBilling;
-  const canManageUsers = isOwner || isAdmin;
-  const canManageLicenses = isOwner || isAdmin;
-  const canViewBilling = isOwner || isBilling;
 
   return (
     <Card>
@@ -37,60 +32,51 @@ export const QuickActionsWidget = () => {
       </CardHeader>
       <CardContent>
         <div className="flex flex-wrap gap-2">
-          {/* Pay Now - Priority action when overdue */}
-          {canViewBilling && hasOverdue && (
-            <Button 
-              variant="destructive" 
-              onClick={() => navigate('/billing')}
-            >
-              <AlertCircle className="h-4 w-4 mr-2" />
-              Pay Now – ${totalOverdue.toLocaleString()}
+          {canManageSubscriptions && (
+            <Button variant="outline" onClick={() => navigate('/signup')}>
+              <ShoppingCart className="h-4 w-4 mr-2" />
+              Buy New Subscription
             </Button>
           )}
-          
-          {/* Manage Subscription - Owner & Billing only */}
+
           {canManageSubscriptions && (
             <Button variant="outline" onClick={() => navigate('/subscriptions')}>
+              <PackagePlus className="h-4 w-4 mr-2" />
+              Add Product to Subscription
+            </Button>
+          )}
+
+          {canManageSubscriptions && (
+            <Button variant="outline" onClick={() => navigate('/subscriptions')}>
+              <ArrowUpRight className="h-4 w-4 mr-2" />
+              Increase Licenses
+            </Button>
+          )}
+
+          {hasOverdue && canManageSubscriptions && (
+            <Button variant="destructive" onClick={() => navigate('/billing')}>
               <CreditCard className="h-4 w-4 mr-2" />
-              Manage Subscriptions
+              Pay Invoice – ${totalOverdue.toLocaleString()}
             </Button>
           )}
-          
-          {/* Invite User - Owner & Admin only */}
-          {canManageUsers && (
-            <Button variant="outline" onClick={() => navigate('/users')}>
-              <UserPlus className="h-4 w-4 mr-2" />
-              Invite User
-            </Button>
-          )}
-          
-          {/* Manage Licenses - Owner & Admin only */}
-          {canManageLicenses && (
-            <Button variant="outline" onClick={() => navigate('/licenses')}>
-              <Key className="h-4 w-4 mr-2" />
-              Manage Licenses
-            </Button>
-          )}
-          
-          {/* View Invoices - Owner & Billing only */}
-          {canViewBilling && !hasOverdue && (
+
+          {!hasOverdue && canManageSubscriptions && (
             <Button variant="outline" onClick={() => navigate('/billing')}>
-              <FileText className="h-4 w-4 mr-2" />
-              View Invoices
+              <CreditCard className="h-4 w-4 mr-2" />
+              Pay Invoice
             </Button>
           )}
-          
-          {/* Always available actions */}
+
           <Button variant="outline" onClick={() => navigate('/downloads')}>
             <Download className="h-4 w-4 mr-2" />
             Downloads
           </Button>
-          
+
           <Button variant="outline" onClick={() => navigate('/support')}>
             <LifeBuoy className="h-4 w-4 mr-2" />
             Support
           </Button>
-          
+
           <Button variant="outline" onClick={() => navigate('/profile')}>
             <Settings className="h-4 w-4 mr-2" />
             Profile
