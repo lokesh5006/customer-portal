@@ -23,21 +23,39 @@ export interface Company {
   createdAt: string;
 }
 
+export interface SubscriptionProduct {
+  id: string;
+  name: string;
+  licenseCount: number;
+  pricePerLicense: number;
+  status: 'active' | 'pending' | 'expired';
+}
+
 export interface Subscription {
   id: string;
   companyId: string;
-  product: string;
-  term: 'annual';
-  status: 'active' | 'cancelled' | 'pending';
+  name: string;
+  planType: string;
+  billingFrequency: 'annual' | 'monthly';
+  status: 'active' | 'cancelled' | 'pending' | 'expired';
+  startDate: string;
   renewalDate: string;
-  purchasedSeats: number;
-  pricePerSeat: number;
+  products: SubscriptionProduct[];
 }
 
 export interface License {
   userId: string;
+  subscriptionId: string;
   productId: string;
   assignedAt: string;
+}
+
+export interface InvoiceLineItem {
+  product: string;
+  quantity: number;
+  unitPrice: number;
+  proration?: number;
+  total: number;
 }
 
 export interface Invoice {
@@ -49,7 +67,9 @@ export interface Invoice {
   status: 'paid' | 'pending' | 'overdue';
   amount: number;
   balance: number;
-  lineItems: { description: string; quantity: number; unitPrice: number; total: number }[];
+  subscriptionId: string;
+  subscriptionName: string;
+  lineItems: InvoiceLineItem[];
 }
 
 export interface SupportTicket {
@@ -65,80 +85,56 @@ export interface SupportTicket {
 }
 
 interface AppState {
-  // Auth
   isAuthenticated: boolean;
   currentUser: User | null;
   currentCompany: Company | null;
-  
-  // Role switching for demo
   demoRoles: UserRole[];
   billingHasAdminAccess: boolean;
-  
-  // Proxy session
   isProxySession: boolean;
   proxiedUser: User | null;
   originalUser: User | null;
-  
-  // Data
   companies: Company[];
   users: User[];
   subscriptions: Subscription[];
   licenses: License[];
   invoices: Invoice[];
   supportTickets: SupportTicket[];
-  
-  // Wizard state
   wizardData: {
     companyName: string;
     firstName: string;
     lastName: string;
     email: string;
     password: string;
-    selectedProduct: string;
-    selectedTerm: 'annual';
-    selectedSeats: number;
+    selectedSubscriptionPlan: string;
+    selectedProducts: { productName: string; licenseCount: number; pricePerLicense: number }[];
     termsAccepted: boolean;
   };
 }
 
 interface AppContextType extends AppState {
-  // Auth actions
   login: (email: string, password: string) => boolean;
   logout: () => void;
   selectCompany: (companyId: string) => void;
-  
-  // Demo role switching
   setDemoRoles: (roles: UserRole[]) => void;
   setBillingHasAdminAccess: (value: boolean) => void;
-  
-  // Proxy
   startProxySession: (userId: string) => void;
   endProxySession: () => void;
-  
-  // User management
   addUser: (user: Omit<User, 'id' | 'createdAt' | 'companyId'>) => User;
   updateUser: (userId: string, updates: Partial<User>) => void;
   deactivateUser: (userId: string) => void;
   reactivateUser: (userId: string) => void;
   changeUserRoles: (userId: string, roles: UserRole[]) => boolean;
-  
-  // Subscription management
-  updateSubscriptionSeats: (subscriptionId: string, newSeats: number) => void;
-  
-  // License management
-  assignLicense: (userId: string, productId: string) => boolean;
-  unassignLicense: (userId: string, productId: string) => void;
-  bulkUnassignLicenses: (userIds: string[], productId: string) => void;
-  getAssignedLicenseCount: (productId: string) => number;
-  
-  // Wizard
+  updateProductLicenseCount: (subscriptionId: string, productId: string, newCount: number) => void;
+  assignLicense: (userId: string, subscriptionId: string, productId: string) => boolean;
+  unassignLicense: (userId: string, subscriptionId: string, productId: string) => void;
+  bulkUnassignLicenses: (userIds: string[], subscriptionId: string, productId: string) => void;
+  getAssignedLicenseCount: (subscriptionId: string, productId: string) => number;
+  getUserAssignedProducts: (userId: string) => { subscriptionId: string; subscriptionName: string; productId: string; productName: string }[];
+  addSubscription: (subscription: Subscription) => void;
+  addProductToSubscription: (subscriptionId: string, product: SubscriptionProduct) => void;
   updateWizardData: (data: Partial<AppState['wizardData']>) => void;
   completeSignup: () => void;
-  
-  // Tickets
   createTicket: (ticket: Omit<SupportTicket, 'id' | 'createdAt' | 'status' | 'companyId' | 'userId'>) => SupportTicket;
-  
-  // Helpers
   getEffectiveRoles: () => UserRole[];
   hasAccess: (requiredRoles: UserRole[]) => boolean;
   getUserCompanies: (userId: string) => Company[];
@@ -148,6 +144,14 @@ interface AppContextType extends AppState {
   getCompanyTickets: () => SupportTicket[];
 }
 
+// Product catalog for reference
+export const PRODUCT_CATALOG = [
+  { name: 'NumberCruncher Web', defaultPrice: 249, description: 'Cloud-based accounting solution' },
+  { name: 'Desktop Add-on', defaultPrice: 149, description: 'Desktop application add-on' },
+  { name: 'Rate Module', defaultPrice: 99, description: 'Tax rate lookup module' },
+  { name: 'Audit Module', defaultPrice: 199, description: 'Audit trail and compliance module' },
+];
+
 // Initial mock data
 const initialCompanies: Company[] = [
   { id: 'company-1', name: 'ABC Accounting', createdAt: '2023-01-15' },
@@ -155,7 +159,6 @@ const initialCompanies: Company[] = [
 ];
 
 const initialUsers: User[] = [
-  // ABC Accounting users
   { id: 'user-1', firstName: 'John', lastName: 'Smith', email: 'john.smith@abcaccounting.com', roles: ['owner'], status: 'active', lastLogin: '2024-01-20', createdAt: '2023-01-15', companyId: 'company-1', jobTitle: 'CEO' },
   { id: 'user-2', firstName: 'Sarah', lastName: 'Johnson', email: 'sarah.johnson@abcaccounting.com', roles: ['billing'], status: 'active', lastLogin: '2024-01-19', createdAt: '2023-02-10', companyId: 'company-1', jobTitle: 'CFO' },
   { id: 'user-3', firstName: 'Mike', lastName: 'Williams', email: 'mike.williams@abcaccounting.com', roles: ['admin'], status: 'active', lastLogin: '2024-01-18', createdAt: '2023-03-05', companyId: 'company-1', jobTitle: 'IT Manager' },
@@ -169,8 +172,6 @@ const initialUsers: User[] = [
   { id: 'user-11', firstName: 'Chris', lastName: 'Martinez', email: 'chris.martinez@abcaccounting.com', roles: ['standard'], status: 'active', lastLogin: '2024-01-16', createdAt: '2023-10-05', companyId: 'company-1', jobTitle: 'Financial Analyst' },
   { id: 'user-12', firstName: 'Nicole', lastName: 'Garcia', email: 'nicole.garcia@abcaccounting.com', roles: ['standard'], status: 'active', lastLogin: null, createdAt: '2023-11-20', companyId: 'company-1', jobTitle: 'Intern' },
   { id: 'user-13', firstName: 'Kevin', lastName: 'Lee', email: 'kevin.lee@abcaccounting.com', roles: ['standard'], status: 'active', lastLogin: '2024-01-05', createdAt: '2023-12-01', companyId: 'company-1', jobTitle: 'Auditor' },
-  
-  // XYZ Consulting users
   { id: 'user-20', firstName: 'Michael', lastName: 'Chen', email: 'michael.chen@xyzconsulting.com', roles: ['owner'], status: 'active', lastLogin: '2024-01-20', createdAt: '2023-06-20', companyId: 'company-2', jobTitle: 'Managing Partner' },
   { id: 'user-21', firstName: 'Jessica', lastName: 'Wong', email: 'jessica.wong@xyzconsulting.com', roles: ['billing'], status: 'active', lastLogin: '2024-01-18', createdAt: '2023-07-01', companyId: 'company-2', jobTitle: 'Finance Director' },
   { id: 'user-22', firstName: 'Daniel', lastName: 'Kim', email: 'daniel.kim@xyzconsulting.com', roles: ['admin'], status: 'active', lastLogin: '2024-01-17', createdAt: '2023-07-15', companyId: 'company-2', jobTitle: 'IT Director' },
@@ -180,74 +181,134 @@ const initialUsers: User[] = [
 ];
 
 const initialSubscriptions: Subscription[] = [
-  { id: 'sub-1', companyId: 'company-1', product: 'NumberCruncher Desktop', term: 'annual', status: 'active', renewalDate: '2024-12-31', purchasedSeats: 15, pricePerSeat: 299 },
-  { id: 'sub-2', companyId: 'company-2', product: 'NumberCruncher Desktop', term: 'annual', status: 'active', renewalDate: '2024-12-31', purchasedSeats: 10, pricePerSeat: 299 },
+  {
+    id: 'sub-1',
+    companyId: 'company-1',
+    name: '2026 Annual Plan',
+    planType: 'Annual',
+    billingFrequency: 'annual',
+    status: 'active',
+    startDate: '2024-01-01',
+    renewalDate: '2024-12-31',
+    products: [
+      { id: 'prod-1', name: 'NumberCruncher Web', licenseCount: 10, pricePerLicense: 249, status: 'active' },
+      { id: 'prod-2', name: 'Desktop Add-on', licenseCount: 5, pricePerLicense: 149, status: 'active' },
+    ],
+  },
+  {
+    id: 'sub-2',
+    companyId: 'company-1',
+    name: 'Tax Add-on Plan',
+    planType: 'Add-on',
+    billingFrequency: 'annual',
+    status: 'active',
+    startDate: '2024-03-01',
+    renewalDate: '2024-12-31',
+    products: [
+      { id: 'prod-3', name: 'Rate Module', licenseCount: 3, pricePerLicense: 99, status: 'active' },
+    ],
+  },
+  {
+    id: 'sub-3',
+    companyId: 'company-2',
+    name: '2026 Annual Plan',
+    planType: 'Annual',
+    billingFrequency: 'annual',
+    status: 'active',
+    startDate: '2024-01-01',
+    renewalDate: '2024-12-31',
+    products: [
+      { id: 'prod-4', name: 'NumberCruncher Web', licenseCount: 8, pricePerLicense: 249, status: 'active' },
+    ],
+  },
 ];
 
 const initialLicenses: License[] = [
-  // ABC Accounting - 13 licenses assigned (for demo of reduction flow)
-  { userId: 'user-1', productId: 'NumberCruncher Desktop', assignedAt: '2023-01-15' },
-  { userId: 'user-2', productId: 'NumberCruncher Desktop', assignedAt: '2023-02-10' },
-  { userId: 'user-3', productId: 'NumberCruncher Desktop', assignedAt: '2023-03-05' },
-  { userId: 'user-4', productId: 'NumberCruncher Desktop', assignedAt: '2023-04-12' },
-  { userId: 'user-5', productId: 'NumberCruncher Desktop', assignedAt: '2023-05-20' },
-  { userId: 'user-6', productId: 'NumberCruncher Desktop', assignedAt: '2023-06-01' },
-  { userId: 'user-8', productId: 'NumberCruncher Desktop', assignedAt: '2023-07-15' },
-  { userId: 'user-10', productId: 'NumberCruncher Desktop', assignedAt: '2023-09-10' },
-  { userId: 'user-11', productId: 'NumberCruncher Desktop', assignedAt: '2023-10-05' },
-  { userId: 'user-12', productId: 'NumberCruncher Desktop', assignedAt: '2023-11-20' },
-  { userId: 'user-13', productId: 'NumberCruncher Desktop', assignedAt: '2023-12-01' },
-  // XYZ - 4 licenses assigned
-  { userId: 'user-20', productId: 'NumberCruncher Desktop', assignedAt: '2023-06-20' },
-  { userId: 'user-21', productId: 'NumberCruncher Desktop', assignedAt: '2023-07-01' },
-  { userId: 'user-22', productId: 'NumberCruncher Desktop', assignedAt: '2023-07-15' },
-  { userId: 'user-23', productId: 'NumberCruncher Desktop', assignedAt: '2023-08-01' },
+  // ABC Accounting - sub-1, NumberCruncher Web (prod-1) - 8 assigned of 10
+  { userId: 'user-1', subscriptionId: 'sub-1', productId: 'prod-1', assignedAt: '2023-01-15' },
+  { userId: 'user-2', subscriptionId: 'sub-1', productId: 'prod-1', assignedAt: '2023-02-10' },
+  { userId: 'user-3', subscriptionId: 'sub-1', productId: 'prod-1', assignedAt: '2023-03-05' },
+  { userId: 'user-4', subscriptionId: 'sub-1', productId: 'prod-1', assignedAt: '2023-04-12' },
+  { userId: 'user-5', subscriptionId: 'sub-1', productId: 'prod-1', assignedAt: '2023-05-20' },
+  { userId: 'user-6', subscriptionId: 'sub-1', productId: 'prod-1', assignedAt: '2023-06-01' },
+  { userId: 'user-8', subscriptionId: 'sub-1', productId: 'prod-1', assignedAt: '2023-07-15' },
+  { userId: 'user-10', subscriptionId: 'sub-1', productId: 'prod-1', assignedAt: '2023-09-10' },
+  // ABC Accounting - sub-1, Desktop Add-on (prod-2) - 4 assigned of 5
+  { userId: 'user-1', subscriptionId: 'sub-1', productId: 'prod-2', assignedAt: '2023-01-15' },
+  { userId: 'user-3', subscriptionId: 'sub-1', productId: 'prod-2', assignedAt: '2023-03-05' },
+  { userId: 'user-5', subscriptionId: 'sub-1', productId: 'prod-2', assignedAt: '2023-05-20' },
+  { userId: 'user-6', subscriptionId: 'sub-1', productId: 'prod-2', assignedAt: '2023-06-01' },
+  // ABC Accounting - sub-2, Rate Module (prod-3) - 2 assigned of 3
+  { userId: 'user-8', subscriptionId: 'sub-2', productId: 'prod-3', assignedAt: '2023-07-15' },
+  { userId: 'user-5', subscriptionId: 'sub-2', productId: 'prod-3', assignedAt: '2023-05-20' },
+  // XYZ Consulting - sub-3, NumberCruncher Web (prod-4) - 4 assigned of 8
+  { userId: 'user-20', subscriptionId: 'sub-3', productId: 'prod-4', assignedAt: '2023-06-20' },
+  { userId: 'user-21', subscriptionId: 'sub-3', productId: 'prod-4', assignedAt: '2023-07-01' },
+  { userId: 'user-22', subscriptionId: 'sub-3', productId: 'prod-4', assignedAt: '2023-07-15' },
+  { userId: 'user-23', subscriptionId: 'sub-3', productId: 'prod-4', assignedAt: '2023-08-01' },
 ];
 
 const initialInvoices: Invoice[] = [
-  { 
-    id: 'inv-1', 
-    companyId: 'company-1', 
-    invoiceNumber: 'INV-2024-001', 
-    date: '2024-01-01', 
-    dueDate: '2024-01-31', 
-    status: 'paid', 
-    amount: 4485, 
+  {
+    id: 'inv-1',
+    companyId: 'company-1',
+    invoiceNumber: 'INV-2024-001',
+    date: '2024-01-01',
+    dueDate: '2024-01-31',
+    status: 'paid',
+    amount: 3235,
     balance: 0,
-    lineItems: [{ description: 'NumberCruncher Desktop - 15 seats (Annual)', quantity: 15, unitPrice: 299, total: 4485 }]
+    subscriptionId: 'sub-1',
+    subscriptionName: '2026 Annual Plan',
+    lineItems: [
+      { product: 'NumberCruncher Web', quantity: 10, unitPrice: 249, total: 2490 },
+      { product: 'Desktop Add-on', quantity: 5, unitPrice: 149, total: 745 },
+    ],
   },
-  { 
-    id: 'inv-2', 
-    companyId: 'company-1', 
-    invoiceNumber: 'INV-2023-012', 
-    date: '2023-12-01', 
-    dueDate: '2023-12-31', 
-    status: 'paid', 
-    amount: 2990, 
+  {
+    id: 'inv-2',
+    companyId: 'company-1',
+    invoiceNumber: 'INV-2024-003',
+    date: '2024-03-01',
+    dueDate: '2024-03-31',
+    status: 'paid',
+    amount: 297,
     balance: 0,
-    lineItems: [{ description: 'NumberCruncher Desktop - 10 seats (Annual)', quantity: 10, unitPrice: 299, total: 2990 }]
+    subscriptionId: 'sub-2',
+    subscriptionName: 'Tax Add-on Plan',
+    lineItems: [
+      { product: 'Rate Module', quantity: 3, unitPrice: 99, total: 297 },
+    ],
   },
-  { 
-    id: 'inv-3', 
-    companyId: 'company-1', 
-    invoiceNumber: 'INV-2023-006', 
-    date: '2023-06-01', 
-    dueDate: '2023-06-30', 
-    status: 'overdue', 
-    amount: 500, 
+  {
+    id: 'inv-3',
+    companyId: 'company-1',
+    invoiceNumber: 'INV-2023-006',
+    date: '2023-06-01',
+    dueDate: '2023-06-30',
+    status: 'overdue',
+    amount: 500,
     balance: 500,
-    lineItems: [{ description: 'Additional Support Services', quantity: 1, unitPrice: 500, total: 500 }]
+    subscriptionId: 'sub-1',
+    subscriptionName: '2026 Annual Plan',
+    lineItems: [
+      { product: 'Additional Support Services', quantity: 1, unitPrice: 500, total: 500 },
+    ],
   },
-  { 
-    id: 'inv-4', 
-    companyId: 'company-2', 
-    invoiceNumber: 'INV-2024-002', 
-    date: '2024-01-01', 
-    dueDate: '2024-01-31', 
-    status: 'pending', 
-    amount: 2990, 
-    balance: 2990,
-    lineItems: [{ description: 'NumberCruncher Desktop - 10 seats (Annual)', quantity: 10, unitPrice: 299, total: 2990 }]
+  {
+    id: 'inv-4',
+    companyId: 'company-2',
+    invoiceNumber: 'INV-2024-002',
+    date: '2024-01-01',
+    dueDate: '2024-01-31',
+    status: 'pending',
+    amount: 1992,
+    balance: 1992,
+    subscriptionId: 'sub-3',
+    subscriptionName: '2026 Annual Plan',
+    lineItems: [
+      { product: 'NumberCruncher Web', quantity: 8, unitPrice: 249, total: 1992 },
+    ],
   },
 ];
 
@@ -292,9 +353,8 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       lastName: '',
       email: '',
       password: '',
-      selectedProduct: '',
-      selectedTerm: 'annual',
-      selectedSeats: 1,
+      selectedSubscriptionPlan: '',
+      selectedProducts: [],
       termsAccepted: false,
     },
   });
@@ -402,20 +462,15 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   const changeUserRoles = useCallback((userId: string, roles: UserRole[]): boolean => {
     const user = state.users.find(u => u.id === userId);
     if (!user) return false;
-    
-    // Check if removing last owner
     if (user.roles.includes('owner') && !roles.includes('owner')) {
-      const otherOwners = state.users.filter(u => 
-        u.id !== userId && 
-        u.companyId === user.companyId && 
+      const otherOwners = state.users.filter(u =>
+        u.id !== userId &&
+        u.companyId === user.companyId &&
         u.roles.includes('owner') &&
         u.status !== 'inactive'
       );
-      if (otherOwners.length === 0) {
-        return false;
-      }
+      if (otherOwners.length === 0) return false;
     }
-    
     setState(prev => ({
       ...prev,
       users: prev.users.map(u => u.id === userId ? { ...u, roles } : u),
@@ -423,55 +478,92 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     return true;
   }, [state.users]);
 
-  const updateSubscriptionSeats = useCallback((subscriptionId: string, newSeats: number) => {
+  const updateProductLicenseCount = useCallback((subscriptionId: string, productId: string, newCount: number) => {
     setState(prev => ({
       ...prev,
-      subscriptions: prev.subscriptions.map(s => 
-        s.id === subscriptionId ? { ...s, purchasedSeats: newSeats } : s
+      subscriptions: prev.subscriptions.map(s =>
+        s.id === subscriptionId
+          ? {
+            ...s,
+            products: s.products.map(p =>
+              p.id === productId ? { ...p, licenseCount: newCount } : p
+            ),
+          }
+          : s
       ),
     }));
   }, []);
 
-  const assignLicense = useCallback((userId: string, productId: string): boolean => {
-    const subscription = state.subscriptions.find(s => 
-      s.companyId === state.currentCompany?.id && s.product === productId
-    );
+  const assignLicense = useCallback((userId: string, subscriptionId: string, productId: string): boolean => {
+    const subscription = state.subscriptions.find(s => s.id === subscriptionId);
     if (!subscription) return false;
-    
-    const assignedCount = state.licenses.filter(l => {
-      const user = state.users.find(u => u.id === l.userId);
-      return user?.companyId === state.currentCompany?.id && l.productId === productId;
-    }).length;
-    
-    if (assignedCount >= subscription.purchasedSeats) return false;
-    
+    const product = subscription.products.find(p => p.id === productId);
+    if (!product) return false;
+
+    const assignedCount = state.licenses.filter(l =>
+      l.subscriptionId === subscriptionId && l.productId === productId
+    ).length;
+
+    if (assignedCount >= product.licenseCount) return false;
+
     setState(prev => ({
       ...prev,
-      licenses: [...prev.licenses, { userId, productId, assignedAt: new Date().toISOString().split('T')[0] }],
+      licenses: [...prev.licenses, { userId, subscriptionId, productId, assignedAt: new Date().toISOString().split('T')[0] }],
     }));
     return true;
-  }, [state.subscriptions, state.licenses, state.users, state.currentCompany]);
+  }, [state.subscriptions, state.licenses]);
 
-  const unassignLicense = useCallback((userId: string, productId: string) => {
+  const unassignLicense = useCallback((userId: string, subscriptionId: string, productId: string) => {
     setState(prev => ({
       ...prev,
-      licenses: prev.licenses.filter(l => !(l.userId === userId && l.productId === productId)),
+      licenses: prev.licenses.filter(l => !(l.userId === userId && l.subscriptionId === subscriptionId && l.productId === productId)),
     }));
   }, []);
 
-  const bulkUnassignLicenses = useCallback((userIds: string[], productId: string) => {
+  const bulkUnassignLicenses = useCallback((userIds: string[], subscriptionId: string, productId: string) => {
     setState(prev => ({
       ...prev,
-      licenses: prev.licenses.filter(l => !(userIds.includes(l.userId) && l.productId === productId)),
+      licenses: prev.licenses.filter(l => !(userIds.includes(l.userId) && l.subscriptionId === subscriptionId && l.productId === productId)),
     }));
   }, []);
 
-  const getAssignedLicenseCount = useCallback((productId: string): number => {
-    return state.licenses.filter(l => {
-      const user = state.users.find(u => u.id === l.userId);
-      return user?.companyId === state.currentCompany?.id && l.productId === productId;
-    }).length;
-  }, [state.licenses, state.users, state.currentCompany]);
+  const getAssignedLicenseCount = useCallback((subscriptionId: string, productId: string): number => {
+    return state.licenses.filter(l =>
+      l.subscriptionId === subscriptionId && l.productId === productId
+    ).length;
+  }, [state.licenses]);
+
+  const getUserAssignedProducts = useCallback((userId: string): { subscriptionId: string; subscriptionName: string; productId: string; productName: string }[] => {
+    const userLicenses = state.licenses.filter(l => l.userId === userId);
+    return userLicenses.map(l => {
+      const sub = state.subscriptions.find(s => s.id === l.subscriptionId);
+      const prod = sub?.products.find(p => p.id === l.productId);
+      return {
+        subscriptionId: l.subscriptionId,
+        subscriptionName: sub?.name || '',
+        productId: l.productId,
+        productName: prod?.name || '',
+      };
+    });
+  }, [state.licenses, state.subscriptions]);
+
+  const addSubscription = useCallback((subscription: Subscription) => {
+    setState(prev => ({
+      ...prev,
+      subscriptions: [...prev.subscriptions, subscription],
+    }));
+  }, []);
+
+  const addProductToSubscription = useCallback((subscriptionId: string, product: SubscriptionProduct) => {
+    setState(prev => ({
+      ...prev,
+      subscriptions: prev.subscriptions.map(s =>
+        s.id === subscriptionId
+          ? { ...s, products: [...s.products, product] }
+          : s
+      ),
+    }));
+  }, []);
 
   const updateWizardData = useCallback((data: Partial<AppState['wizardData']>) => {
     setState(prev => ({
@@ -481,15 +573,15 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   }, []);
 
   const completeSignup = useCallback(() => {
-    const { companyName, firstName, lastName, email, selectedProduct, selectedSeats } = state.wizardData;
-    
+    const { companyName, firstName, lastName, email, selectedSubscriptionPlan, selectedProducts } = state.wizardData;
+
     const newCompanyId = `company-${Date.now()}`;
     const newCompany: Company = {
       id: newCompanyId,
       name: companyName,
       createdAt: new Date().toISOString().split('T')[0],
     };
-    
+
     const newUserId = `user-${Date.now()}`;
     const newUser: User = {
       id: newUserId,
@@ -502,30 +594,63 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       createdAt: new Date().toISOString().split('T')[0],
       companyId: newCompanyId,
     };
-    
+
+    const subId = `sub-${Date.now()}`;
+    const products: SubscriptionProduct[] = selectedProducts.map((p, i) => ({
+      id: `prod-${Date.now()}-${i}`,
+      name: p.productName,
+      licenseCount: p.licenseCount,
+      pricePerLicense: p.pricePerLicense,
+      status: 'active' as const,
+    }));
+
     const newSubscription: Subscription = {
-      id: `sub-${Date.now()}`,
+      id: subId,
       companyId: newCompanyId,
-      product: selectedProduct,
-      term: 'annual',
+      name: selectedSubscriptionPlan || 'New Plan',
+      planType: 'Annual',
+      billingFrequency: 'annual',
       status: 'active',
-      renewalDate: '2024-12-31',
-      purchasedSeats: selectedSeats,
-      pricePerSeat: 299,
+      startDate: new Date().toISOString().split('T')[0],
+      renewalDate: '2026-12-31',
+      products,
     };
-    
-    const newLicense: License = {
-      userId: newUserId,
-      productId: selectedProduct,
-      assignedAt: new Date().toISOString().split('T')[0],
+
+    // Assign license for first product to owner
+    const newLicenses: License[] = products.length > 0
+      ? [{ userId: newUserId, subscriptionId: subId, productId: products[0].id, assignedAt: new Date().toISOString().split('T')[0] }]
+      : [];
+
+    const lineItems: InvoiceLineItem[] = products.map(p => ({
+      product: p.name,
+      quantity: p.licenseCount,
+      unitPrice: p.pricePerLicense,
+      total: p.licenseCount * p.pricePerLicense,
+    }));
+
+    const totalAmount = lineItems.reduce((a, li) => a + li.total, 0);
+
+    const newInvoice: Invoice = {
+      id: `inv-${Date.now()}`,
+      companyId: newCompanyId,
+      invoiceNumber: `INV-${new Date().getFullYear()}-${String(Date.now()).slice(-3)}`,
+      date: new Date().toISOString().split('T')[0],
+      dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+      status: 'paid',
+      amount: totalAmount,
+      balance: 0,
+      subscriptionId: subId,
+      subscriptionName: newSubscription.name,
+      lineItems,
     };
-    
+
     setState(prev => ({
       ...prev,
       companies: [...prev.companies, newCompany],
       users: [...prev.users, newUser],
       subscriptions: [...prev.subscriptions, newSubscription],
-      licenses: [...prev.licenses, newLicense],
+      licenses: [...prev.licenses, ...newLicenses],
+      invoices: [...prev.invoices, newInvoice],
       isAuthenticated: true,
       currentUser: newUser,
       currentCompany: newCompany,
@@ -596,11 +721,14 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       deactivateUser,
       reactivateUser,
       changeUserRoles,
-      updateSubscriptionSeats,
+      updateProductLicenseCount,
       assignLicense,
       unassignLicense,
       bulkUnassignLicenses,
       getAssignedLicenseCount,
+      getUserAssignedProducts,
+      addSubscription,
+      addProductToSubscription,
       updateWizardData,
       completeSignup,
       createTicket,
