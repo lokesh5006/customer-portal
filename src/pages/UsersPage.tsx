@@ -69,6 +69,7 @@ export const UsersPage = () => {
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
   const [newUser, setNewUser] = useState({ firstName: '', lastName: '', email: '', roles: ['standard'] as UserRole[], phone: '', jobTitle: '', sendInvite: true });
   const [selectedRoles, setSelectedRoles] = useState<UserRole[]>([]);
+  const [dataNetPrefs, setDataNetPrefs] = useState<Record<string, boolean>>({});
 
   const users = getCompanyUsers();
   const isOwner = hasAccess(['owner']);
