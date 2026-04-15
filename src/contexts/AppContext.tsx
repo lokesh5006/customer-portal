@@ -146,10 +146,12 @@ interface AppContextType extends AppState {
 
 // Product catalog for reference
 export const PRODUCT_CATALOG = [
-  { name: 'NumberCruncher Web', defaultPrice: 249, description: 'Cloud-based accounting solution' },
-  { name: 'Desktop Add-on', defaultPrice: 149, description: 'Desktop application add-on' },
-  { name: 'Rate Module', defaultPrice: 99, description: 'Tax rate lookup module' },
-  { name: 'Audit Module', defaultPrice: 199, description: 'Audit trail and compliance module' },
+  { name: 'NumberCruncher Desktop', defaultPrice: 349, description: 'Desktop accounting application', type: 'desktop' as const, latestVersion: '4.2', hasInstaller: true },
+  { name: 'NumberCruncher Web', defaultPrice: 249, description: 'Cloud-based accounting solution', type: 'web' as const, latestVersion: '3.0', hasInstaller: false },
+  { name: 'QuickView Desktop', defaultPrice: 199, description: 'Fast reporting and analytics desktop app', type: 'desktop' as const, latestVersion: '2.1', hasInstaller: true },
+  { name: 'DataNet', defaultPrice: 0, description: 'Industry data network and alerts', type: 'service' as const, latestVersion: '', hasInstaller: false },
+  { name: 'Rate Module', defaultPrice: 99, description: 'Tax rate lookup module', type: 'addon' as const, latestVersion: '1.5', hasInstaller: false },
+  { name: 'Audit Module', defaultPrice: 199, description: 'Audit trail and compliance module', type: 'addon' as const, latestVersion: '1.2', hasInstaller: false },
 ];
 
 // Initial mock data
@@ -189,23 +191,24 @@ const initialSubscriptions: Subscription[] = [
     billingFrequency: 'annual',
     status: 'active',
     startDate: '2024-01-01',
-    renewalDate: '2024-12-31',
+    renewalDate: '2026-12-01',
     products: [
-      { id: 'prod-1', name: 'NumberCruncher Web', licenseCount: 10, pricePerLicense: 249, status: 'active' },
-      { id: 'prod-2', name: 'Desktop Add-on', licenseCount: 5, pricePerLicense: 149, status: 'active' },
+      { id: 'prod-1', name: 'NumberCruncher Desktop', licenseCount: 22, pricePerLicense: 349, status: 'active' },
+      { id: 'prod-1b', name: 'NumberCruncher Web', licenseCount: 10, pricePerLicense: 249, status: 'active' },
+      { id: 'prod-2', name: 'DataNet', licenseCount: 30, pricePerLicense: 0, status: 'active' },
     ],
   },
   {
     id: 'sub-2',
     companyId: 'company-1',
-    name: 'Tax Add-on Plan',
-    planType: 'Add-on',
-    billingFrequency: 'annual',
+    name: 'QuickView Quarterly',
+    planType: 'Quarterly',
+    billingFrequency: 'monthly',
     status: 'active',
-    startDate: '2024-03-01',
-    renewalDate: '2024-12-31',
+    startDate: '2024-06-01',
+    renewalDate: '2026-12-01',
     products: [
-      { id: 'prod-3', name: 'Rate Module', licenseCount: 3, pricePerLicense: 99, status: 'active' },
+      { id: 'prod-3', name: 'QuickView Desktop', licenseCount: 8, pricePerLicense: 199, status: 'active' },
     ],
   },
   {
@@ -216,7 +219,7 @@ const initialSubscriptions: Subscription[] = [
     billingFrequency: 'annual',
     status: 'active',
     startDate: '2024-01-01',
-    renewalDate: '2024-12-31',
+    renewalDate: '2026-12-01',
     products: [
       { id: 'prod-4', name: 'NumberCruncher Web', licenseCount: 8, pricePerLicense: 249, status: 'active' },
     ],
@@ -224,7 +227,7 @@ const initialSubscriptions: Subscription[] = [
 ];
 
 const initialLicenses: License[] = [
-  // ABC Accounting - sub-1, NumberCruncher Web (prod-1) - 8 assigned of 10
+  // ABC Accounting - sub-1, NumberCruncher Desktop (prod-1) - 20 assigned of 22
   { userId: 'user-1', subscriptionId: 'sub-1', productId: 'prod-1', assignedAt: '2023-01-15' },
   { userId: 'user-2', subscriptionId: 'sub-1', productId: 'prod-1', assignedAt: '2023-02-10' },
   { userId: 'user-3', subscriptionId: 'sub-1', productId: 'prod-1', assignedAt: '2023-03-05' },
@@ -233,14 +236,30 @@ const initialLicenses: License[] = [
   { userId: 'user-6', subscriptionId: 'sub-1', productId: 'prod-1', assignedAt: '2023-06-01' },
   { userId: 'user-8', subscriptionId: 'sub-1', productId: 'prod-1', assignedAt: '2023-07-15' },
   { userId: 'user-10', subscriptionId: 'sub-1', productId: 'prod-1', assignedAt: '2023-09-10' },
-  // ABC Accounting - sub-1, Desktop Add-on (prod-2) - 4 assigned of 5
+  { userId: 'user-11', subscriptionId: 'sub-1', productId: 'prod-1', assignedAt: '2023-10-05' },
+  { userId: 'user-12', subscriptionId: 'sub-1', productId: 'prod-1', assignedAt: '2023-11-20' },
+  { userId: 'user-13', subscriptionId: 'sub-1', productId: 'prod-1', assignedAt: '2023-12-01' },
+  // ABC Accounting - sub-1, NumberCruncher Web (prod-1b) - 8 assigned of 10
+  { userId: 'user-1', subscriptionId: 'sub-1', productId: 'prod-1b', assignedAt: '2023-01-15' },
+  { userId: 'user-2', subscriptionId: 'sub-1', productId: 'prod-1b', assignedAt: '2023-02-10' },
+  { userId: 'user-3', subscriptionId: 'sub-1', productId: 'prod-1b', assignedAt: '2023-03-05' },
+  { userId: 'user-4', subscriptionId: 'sub-1', productId: 'prod-1b', assignedAt: '2023-04-12' },
+  { userId: 'user-5', subscriptionId: 'sub-1', productId: 'prod-1b', assignedAt: '2023-05-20' },
+  { userId: 'user-6', subscriptionId: 'sub-1', productId: 'prod-1b', assignedAt: '2023-06-01' },
+  { userId: 'user-8', subscriptionId: 'sub-1', productId: 'prod-1b', assignedAt: '2023-07-15' },
+  { userId: 'user-10', subscriptionId: 'sub-1', productId: 'prod-1b', assignedAt: '2023-09-10' },
+  // ABC Accounting - sub-1, DataNet (prod-2) - assigned to most users
   { userId: 'user-1', subscriptionId: 'sub-1', productId: 'prod-2', assignedAt: '2023-01-15' },
+  { userId: 'user-2', subscriptionId: 'sub-1', productId: 'prod-2', assignedAt: '2023-02-10' },
   { userId: 'user-3', subscriptionId: 'sub-1', productId: 'prod-2', assignedAt: '2023-03-05' },
   { userId: 'user-5', subscriptionId: 'sub-1', productId: 'prod-2', assignedAt: '2023-05-20' },
   { userId: 'user-6', subscriptionId: 'sub-1', productId: 'prod-2', assignedAt: '2023-06-01' },
-  // ABC Accounting - sub-2, Rate Module (prod-3) - 2 assigned of 3
-  { userId: 'user-8', subscriptionId: 'sub-2', productId: 'prod-3', assignedAt: '2023-07-15' },
+  // ABC Accounting - sub-2, QuickView Desktop (prod-3) - 5 assigned of 8
+  { userId: 'user-1', subscriptionId: 'sub-2', productId: 'prod-3', assignedAt: '2023-01-15' },
+  { userId: 'user-3', subscriptionId: 'sub-2', productId: 'prod-3', assignedAt: '2023-03-05' },
   { userId: 'user-5', subscriptionId: 'sub-2', productId: 'prod-3', assignedAt: '2023-05-20' },
+  { userId: 'user-6', subscriptionId: 'sub-2', productId: 'prod-3', assignedAt: '2023-06-01' },
+  { userId: 'user-8', subscriptionId: 'sub-2', productId: 'prod-3', assignedAt: '2023-07-15' },
   // XYZ Consulting - sub-3, NumberCruncher Web (prod-4) - 4 assigned of 8
   { userId: 'user-20', subscriptionId: 'sub-3', productId: 'prod-4', assignedAt: '2023-06-20' },
   { userId: 'user-21', subscriptionId: 'sub-3', productId: 'prod-4', assignedAt: '2023-07-01' },
@@ -252,40 +271,40 @@ const initialInvoices: Invoice[] = [
   {
     id: 'inv-1',
     companyId: 'company-1',
-    invoiceNumber: 'INV-2024-001',
-    date: '2024-01-01',
-    dueDate: '2024-01-31',
+    invoiceNumber: 'INV-2026-001',
+    date: '2026-01-01',
+    dueDate: '2026-01-31',
     status: 'paid',
-    amount: 3235,
+    amount: 10168,
     balance: 0,
     subscriptionId: 'sub-1',
     subscriptionName: '2026 Annual Plan',
     lineItems: [
+      { product: 'NumberCruncher Desktop', quantity: 22, unitPrice: 349, total: 7678 },
       { product: 'NumberCruncher Web', quantity: 10, unitPrice: 249, total: 2490 },
-      { product: 'Desktop Add-on', quantity: 5, unitPrice: 149, total: 745 },
     ],
   },
   {
     id: 'inv-2',
     companyId: 'company-1',
-    invoiceNumber: 'INV-2024-003',
-    date: '2024-03-01',
-    dueDate: '2024-03-31',
+    invoiceNumber: 'INV-2026-002',
+    date: '2026-06-01',
+    dueDate: '2026-06-30',
     status: 'paid',
-    amount: 297,
+    amount: 1592,
     balance: 0,
     subscriptionId: 'sub-2',
-    subscriptionName: 'Tax Add-on Plan',
+    subscriptionName: 'QuickView Quarterly',
     lineItems: [
-      { product: 'Rate Module', quantity: 3, unitPrice: 99, total: 297 },
+      { product: 'QuickView Desktop', quantity: 8, unitPrice: 199, total: 1592 },
     ],
   },
   {
     id: 'inv-3',
     companyId: 'company-1',
-    invoiceNumber: 'INV-2023-006',
-    date: '2023-06-01',
-    dueDate: '2023-06-30',
+    invoiceNumber: 'INV-2026-003',
+    date: '2026-03-15',
+    dueDate: '2026-04-15',
     status: 'overdue',
     amount: 500,
     balance: 500,
@@ -298,9 +317,9 @@ const initialInvoices: Invoice[] = [
   {
     id: 'inv-4',
     companyId: 'company-2',
-    invoiceNumber: 'INV-2024-002',
-    date: '2024-01-01',
-    dueDate: '2024-01-31',
+    invoiceNumber: 'INV-2026-004',
+    date: '2026-01-01',
+    dueDate: '2026-01-31',
     status: 'pending',
     amount: 1992,
     balance: 1992,

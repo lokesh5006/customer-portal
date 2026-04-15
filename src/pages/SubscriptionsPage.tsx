@@ -1,265 +1,79 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useApp, Subscription, SubscriptionProduct, PRODUCT_CATALOG } from '@/contexts/AppContext';
+import { useApp, Subscription, SubscriptionProduct, Invoice } from '@/contexts/AppContext';
 import { MainLayout } from '@/components/layout/MainLayout';
-import { Card, CardContent } from '@/components/ui/card';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import {
+  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
+} from '@/components/ui/table';
+import {
+  Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogDescription,
+} from '@/components/ui/dialog';
 import {
   ListingPageHeader,
-  SearchFilterCard,
-  FilterField,
   DataTable,
   DataTableColumn,
   PaginationControls,
 } from '@/components/listing';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
-import { Checkbox } from '@/components/ui/checkbox';
 import { useToast } from '@/hooks/use-toast';
 import {
   CreditCard,
   Eye,
-  MoreHorizontal,
-  Plus,
-  Minus,
-  ArrowUpRight,
-  ArrowDownRight,
-  AlertTriangle,
   Check,
-  ShoppingCart,
-  PackagePlus,
-  XCircle,
+  Calendar,
+  Building2,
+  Edit,
+  Info,
 } from 'lucide-react';
+import { cn } from '@/lib/utils';
 
 export const SubscriptionsPage = () => {
   const navigate = useNavigate();
   const {
     currentCompany,
     getCompanySubscriptions,
+    getCompanyInvoices,
     getAssignedLicenseCount,
-    updateProductLicenseCount,
-    addProductToSubscription,
     hasAccess,
   } = useApp();
   const { toast } = useToast();
 
-  const [searchQuery, setSearchQuery] = useState('');
-  const [statusFilter, setStatusFilter] = useState<string>('all');
-  const [currentPage, setCurrentPage] = useState(1);
-  const [pageSize, setPageSize] = useState(25);
-
-  // Modals
-  const [selectedSub, setSelectedSub] = useState<Subscription | null>(null);
-  const [detailsOpen, setDetailsOpen] = useState(false);
-  const [modifyOpen, setModifyOpen] = useState(false);
-  const [selectedProduct, setSelectedProduct] = useState<SubscriptionProduct | null>(null);
-  const [newLicenseCount, setNewLicenseCount] = useState(0);
-  const [addProductOpen, setAddProductOpen] = useState(false);
-  const [newProducts, setNewProducts] = useState<{ name: string; count: number; price: number }[]>([]);
-  const [paymentOpen, setPaymentOpen] = useState(false);
-  const [paymentStatus, setPaymentStatus] = useState<'idle' | 'processing' | 'success' | 'error'>('idle');
-
   const subscriptions = getCompanySubscriptions();
+  const invoices = getCompanyInvoices();
   const canModify = hasAccess(['owner', 'billing']);
-  const isOwner = hasAccess(['owner']);
 
-  const filteredSubscriptions = subscriptions.filter(sub => {
-    const matchesSearch = sub.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      sub.products.some(p => p.name.toLowerCase().includes(searchQuery.toLowerCase()));
-    const matchesStatus = statusFilter === 'all' || sub.status === statusFilter;
-    return matchesSearch && matchesStatus;
-  });
+  const [selectedSubIndex, setSelectedSubIndex] = useState(0);
+  const [activeTab, setActiveTab] = useState('overview');
+  const [editBillingOpen, setEditBillingOpen] = useState(false);
 
-  const totalPages = Math.ceil(filteredSubscriptions.length / pageSize);
-  const paginated = filteredSubscriptions.slice((currentPage - 1) * pageSize, currentPage * pageSize);
+  const currentSub = subscriptions[selectedSubIndex] || null;
+  const subInvoices = invoices.filter(i => currentSub && i.subscriptionId === currentSub.id);
 
-  const resetFilters = () => {
-    setSearchQuery('');
-    setStatusFilter('all');
-    setCurrentPage(1);
-  };
+  // Quotes sample data
+  const quotes = currentSub ? [
+    {
+      id: 'Q-2026-001',
+      date: '2026-03-20',
+      description: `Renewal Quote – ${currentSub.name}`,
+      amount: currentSub.products.reduce((a, p) => a + p.licenseCount * p.pricePerLicense, 0),
+      status: 'pending',
+    },
+  ] : [];
 
-  const openDetails = (sub: Subscription) => {
-    setSelectedSub(sub);
-    setDetailsOpen(true);
-  };
-
-  const openModifyProduct = (sub: Subscription, prod: SubscriptionProduct) => {
-    setSelectedSub(sub);
-    setSelectedProduct(prod);
-    setNewLicenseCount(prod.licenseCount);
-    setModifyOpen(true);
-  };
-
-  const handleModifyLicenses = () => {
-    if (!selectedSub || !selectedProduct) return;
-    const assigned = getAssignedLicenseCount(selectedSub.id, selectedProduct.id);
-
-    if (newLicenseCount < assigned) {
-      navigate('/licenses/reduce', {
-        state: {
-          subscriptionId: selectedSub.id,
-          productId: selectedProduct.id,
-          productName: selectedProduct.name,
-          newLicenseCount,
-          currentLicenses: selectedProduct.licenseCount,
-          assignedCount: assigned,
-          subscriptionName: selectedSub.name,
-        }
-      });
-      setModifyOpen(false);
-      return;
-    }
-
-    setModifyOpen(false);
-    setPaymentOpen(true);
-  };
-
-  const handlePayment = async () => {
-    setPaymentStatus('processing');
-    await new Promise(resolve => setTimeout(resolve, 2000));
-
-    if (Math.random() > 0.1) {
-      setPaymentStatus('success');
-      if (selectedSub && selectedProduct) {
-        updateProductLicenseCount(selectedSub.id, selectedProduct.id, newLicenseCount);
-      }
-      toast({ title: 'Subscription Updated', description: `License count changed to ${newLicenseCount}.` });
-      setTimeout(() => {
-        setPaymentOpen(false);
-        setPaymentStatus('idle');
-      }, 1500);
-    } else {
-      setPaymentStatus('error');
+  const getStatusColor = (status: string) => {
+    switch (status) {
+      case 'paid': return 'status-active';
+      case 'pending': return 'status-pending';
+      case 'overdue': return 'status-overdue';
+      case 'active': return 'status-active';
+      default: return '';
     }
   };
-
-  const handleAddProduct = () => {
-    if (!selectedSub || newProducts.length === 0) return;
-    newProducts.forEach(np => {
-      const prod: SubscriptionProduct = {
-        id: `prod-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        name: np.name,
-        licenseCount: np.count,
-        pricePerLicense: np.price,
-        status: 'active',
-      };
-      addProductToSubscription(selectedSub.id, prod);
-    });
-    toast({ title: 'Products Added', description: `${newProducts.length} product(s) added to ${selectedSub.name}.` });
-    setAddProductOpen(false);
-    setNewProducts([]);
-  };
-
-  const getLicenseDiff = () => {
-    if (!selectedProduct) return 0;
-    return newLicenseCount - selectedProduct.licenseCount;
-  };
-
-  const getPriceChange = () => {
-    if (!selectedProduct) return 0;
-    return getLicenseDiff() * selectedProduct.pricePerLicense;
-  };
-
-  const columns: DataTableColumn<Subscription>[] = [
-    {
-      key: 'name',
-      header: 'Subscription',
-      render: (sub) => (
-        <div>
-          <span className="font-medium">{sub.name}</span>
-          <div className="text-xs text-muted-foreground">{sub.planType} · {sub.billingFrequency}</div>
-        </div>
-      ),
-    },
-    {
-      key: 'startDate',
-      header: 'Start Date',
-      render: (sub) => new Date(sub.startDate).toLocaleDateString(),
-    },
-    {
-      key: 'renewalDate',
-      header: 'Renewal Date',
-      render: (sub) => new Date(sub.renewalDate).toLocaleDateString(),
-    },
-    {
-      key: 'status',
-      header: 'Status',
-      render: (sub) => (
-        <Badge variant="outline" className={`status-${sub.status === 'active' ? 'active' : sub.status === 'pending' ? 'invited' : 'inactive'}`}>
-          {sub.status}
-        </Badge>
-      ),
-    },
-    {
-      key: 'products',
-      header: 'Products',
-      render: (sub) => sub.products.length,
-    },
-    {
-      key: 'licenses',
-      header: 'Total Licenses',
-      render: (sub) => {
-        const total = sub.products.reduce((a, p) => a + p.licenseCount, 0);
-        const assigned = sub.products.reduce((a, p) => a + getAssignedLicenseCount(sub.id, p.id), 0);
-        return `${assigned} / ${total}`;
-      },
-    },
-    {
-      key: 'actions',
-      header: '',
-      className: 'w-[50px] text-right',
-      render: (sub) => (
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon"><MoreHorizontal className="h-4 w-4" /></Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <DropdownMenuItem onClick={() => openDetails(sub)}>
-              <Eye className="h-4 w-4 mr-2" />View Details
-            </DropdownMenuItem>
-            {canModify && (
-              <>
-                <DropdownMenuItem onClick={() => { setSelectedSub(sub); setNewProducts([]); setAddProductOpen(true); }}>
-                  <PackagePlus className="h-4 w-4 mr-2" />Add Product
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                {isOwner && (
-                  <DropdownMenuItem className="text-destructive" onClick={() => toast({ title: 'Cancel Subscription', description: 'This feature is coming soon.' })}>
-                    <XCircle className="h-4 w-4 mr-2" />Cancel Subscription
-                  </DropdownMenuItem>
-                )}
-              </>
-            )}
-          </DropdownMenuContent>
-        </DropdownMenu>
-      ),
-    },
-  ];
 
   return (
     <MainLayout>
@@ -267,34 +81,6 @@ export const SubscriptionsPage = () => {
         <ListingPageHeader
           title="Subscriptions"
           description={`Manage subscriptions for ${currentCompany?.name}`}
-          primaryAction={
-            canModify && (
-              <Button onClick={() => navigate('/signup')}>
-                <ShoppingCart className="h-4 w-4 mr-2" />Buy Subscription
-              </Button>
-            )
-          }
-        />
-
-        <SearchFilterCard
-          searchValue={searchQuery}
-          onSearchChange={(v) => { setSearchQuery(v); setCurrentPage(1); }}
-          searchPlaceholder="Search subscriptions or products..."
-          onReset={resetFilters}
-          filters={
-            <FilterField
-              label="Status"
-              value={statusFilter}
-              onChange={(v) => { setStatusFilter(v); setCurrentPage(1); }}
-              options={[
-                { value: 'all', label: 'All Status' },
-                { value: 'active', label: 'Active' },
-                { value: 'pending', label: 'Pending' },
-                { value: 'cancelled', label: 'Cancelled' },
-                { value: 'expired', label: 'Expired' },
-              ]}
-            />
-          }
         />
 
         {subscriptions.length === 0 ? (
@@ -307,246 +93,284 @@ export const SubscriptionsPage = () => {
             </CardContent>
           </Card>
         ) : (
-          <div>
-            <DataTable columns={columns} data={paginated} keyExtractor={(sub) => sub.id} emptyMessage="No subscriptions found." />
-            <Card className="rounded-t-none border-t-0">
-              <PaginationControls
-                currentPage={currentPage}
-                totalPages={totalPages}
-                pageSize={pageSize}
-                totalRecords={filteredSubscriptions.length}
-                onPageChange={setCurrentPage}
-                onPageSizeChange={(size) => { setPageSize(size); setCurrentPage(1); }}
-              />
-            </Card>
+          <div className="flex gap-4">
+            {/* Subscription Selector - left side */}
+            {subscriptions.length > 1 && (
+              <div className="flex flex-col gap-2 shrink-0">
+                {subscriptions.map((sub, idx) => (
+                  <Button
+                    key={sub.id}
+                    variant={selectedSubIndex === idx ? 'default' : 'outline'}
+                    className="justify-start text-left h-auto py-3 px-4"
+                    onClick={() => { setSelectedSubIndex(idx); setActiveTab('overview'); }}
+                  >
+                    <div>
+                      <div className="font-medium text-sm">{sub.name}</div>
+                      <div className="text-xs opacity-80">{sub.planType}</div>
+                    </div>
+                  </Button>
+                ))}
+              </div>
+            )}
+
+            {/* Main Content */}
+            <div className="flex-1 min-w-0">
+              {currentSub && (
+                <Card>
+                  <CardContent className="p-0">
+                    <Tabs value={activeTab} onValueChange={setActiveTab}>
+                      <div className="border-b px-4 pt-4">
+                        <TabsList>
+                          <TabsTrigger value="overview">Overview</TabsTrigger>
+                          <TabsTrigger value="invoices">Invoices</TabsTrigger>
+                          <TabsTrigger value="quotes">Quotes</TabsTrigger>
+                        </TabsList>
+                      </div>
+
+                      {/* OVERVIEW TAB */}
+                      <TabsContent value="overview" className="p-6 space-y-6">
+                        {/* Sub Info */}
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                          <div>
+                            <p className="text-xs text-muted-foreground">Subscription</p>
+                            <p className="font-semibold">{currentSub.name}</p>
+                          </div>
+                          <div>
+                            <p className="text-xs text-muted-foreground">Plan Type</p>
+                            <p className="font-medium">{currentSub.planType}</p>
+                          </div>
+                          <div>
+                            <p className="text-xs text-muted-foreground">Billing</p>
+                            <p className="font-medium capitalize">{currentSub.billingFrequency}</p>
+                          </div>
+                          <div>
+                            <p className="text-xs text-muted-foreground">Renewal Date</p>
+                            <p className="font-medium">{new Date(currentSub.renewalDate).toLocaleDateString()}</p>
+                          </div>
+                        </div>
+
+                        <div>
+                          <Badge variant="outline" className={getStatusColor(currentSub.status)}>
+                            {currentSub.status}
+                          </Badge>
+                        </div>
+
+                        {/* Products table */}
+                        <div>
+                          <h4 className="font-semibold mb-3">Products</h4>
+                          <Table>
+                            <TableHeader>
+                              <TableRow>
+                                <TableHead>Product</TableHead>
+                                <TableHead className="text-center">Seats</TableHead>
+                                <TableHead className="text-center">Assigned</TableHead>
+                                <TableHead className="text-center">Available</TableHead>
+                                <TableHead className="text-right">Price/Seat</TableHead>
+                                <TableHead className="text-right">Total</TableHead>
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              {currentSub.products.map(prod => {
+                                const assigned = getAssignedLicenseCount(currentSub.id, prod.id);
+                                return (
+                                  <TableRow key={prod.id}>
+                                    <TableCell className="font-medium">{prod.name}</TableCell>
+                                    <TableCell className="text-center">{prod.licenseCount}</TableCell>
+                                    <TableCell className="text-center">{assigned}</TableCell>
+                                    <TableCell className="text-center">{prod.licenseCount - assigned}</TableCell>
+                                    <TableCell className="text-right">${prod.pricePerLicense.toLocaleString()}</TableCell>
+                                    <TableCell className="text-right">${(prod.licenseCount * prod.pricePerLicense).toLocaleString()}</TableCell>
+                                  </TableRow>
+                                );
+                              })}
+                            </TableBody>
+                          </Table>
+                        </div>
+
+                        {/* Payment Method */}
+                        <div className="bg-muted/30 rounded-lg p-4 space-y-3">
+                          <div className="flex items-center gap-2">
+                            <CreditCard className="h-4 w-4 text-muted-foreground" />
+                            <span className="text-sm">You last paid by <strong>Credit Card</strong>.</span>
+                          </div>
+                        </div>
+
+                        {/* Renewal Options */}
+                        <div>
+                          <h4 className="font-semibold mb-2">Renewal Options</h4>
+                          <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
+                            {['Direct ACH', 'Credit Card', 'ACH e-Check', 'Paper Check', 'Invoice Only (Net 30)'].map(opt => (
+                              <div
+                                key={opt}
+                                className={cn(
+                                  'p-3 rounded-md border text-center text-sm cursor-pointer hover:border-primary/50 transition-colors',
+                                  opt === 'Credit Card' ? 'border-primary bg-primary/5 font-medium' : ''
+                                )}
+                              >
+                                {opt}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* Billing Details */}
+                        <div>
+                          <div className="flex items-center justify-between mb-2">
+                            <h4 className="font-semibold">Billing Details</h4>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => setEditBillingOpen(true)}
+                              className="h-8 w-8 p-0"
+                            >
+                              <Edit className="h-4 w-4" />
+                            </Button>
+                          </div>
+                          <div className="bg-muted/30 rounded-lg p-4 grid grid-cols-2 gap-3 text-sm">
+                            <div>
+                              <p className="text-xs text-muted-foreground">Company</p>
+                              <p className="font-medium">{currentCompany?.name}</p>
+                            </div>
+                            <div>
+                              <p className="text-xs text-muted-foreground">Address</p>
+                              <p className="font-medium">123 Main St, Suite 400<br />New York, NY 10001</p>
+                            </div>
+                            <div>
+                              <p className="text-xs text-muted-foreground">Company Contact</p>
+                              <p className="font-medium">John Smith</p>
+                            </div>
+                            <div>
+                              <p className="text-xs text-muted-foreground">Email</p>
+                              <p className="font-medium">billing@abcaccounting.com</p>
+                            </div>
+                          </div>
+                        </div>
+                      </TabsContent>
+
+                      {/* INVOICES TAB */}
+                      <TabsContent value="invoices" className="p-6">
+                        {subInvoices.length === 0 ? (
+                          <div className="text-center py-8 text-muted-foreground">No invoices for this subscription.</div>
+                        ) : (
+                          <Table>
+                            <TableHeader>
+                              <TableRow>
+                                <TableHead>Invoice #</TableHead>
+                                <TableHead>Date</TableHead>
+                                <TableHead>Due Date</TableHead>
+                                <TableHead>Status</TableHead>
+                                <TableHead className="text-right">Amount</TableHead>
+                                <TableHead className="text-right">Balance</TableHead>
+                                <TableHead className="text-right">Actions</TableHead>
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              {subInvoices.map(inv => (
+                                <TableRow key={inv.id}>
+                                  <TableCell className="font-medium">{inv.invoiceNumber}</TableCell>
+                                  <TableCell>{new Date(inv.date).toLocaleDateString()}</TableCell>
+                                  <TableCell>{new Date(inv.dueDate).toLocaleDateString()}</TableCell>
+                                  <TableCell>
+                                    <Badge variant="outline" className={getStatusColor(inv.status)}>{inv.status}</Badge>
+                                  </TableCell>
+                                  <TableCell className="text-right">${inv.amount.toLocaleString()}</TableCell>
+                                  <TableCell className="text-right">${inv.balance.toLocaleString()}</TableCell>
+                                  <TableCell className="text-right">
+                                    <Button variant="ghost" size="sm">
+                                      <Eye className="h-4 w-4" />
+                                    </Button>
+                                    {inv.balance > 0 && (
+                                      <Button variant="outline" size="sm" className="ml-1" onClick={() => navigate('/billing')}>
+                                        Pay
+                                      </Button>
+                                    )}
+                                  </TableCell>
+                                </TableRow>
+                              ))}
+                            </TableBody>
+                          </Table>
+                        )}
+                      </TabsContent>
+
+                      {/* QUOTES TAB */}
+                      <TabsContent value="quotes" className="p-6">
+                        {quotes.length === 0 ? (
+                          <div className="text-center py-8 text-muted-foreground">No quotes available.</div>
+                        ) : (
+                          <Table>
+                            <TableHeader>
+                              <TableRow>
+                                <TableHead>Quote #</TableHead>
+                                <TableHead>Date</TableHead>
+                                <TableHead>Description</TableHead>
+                                <TableHead>Status</TableHead>
+                                <TableHead className="text-right">Amount</TableHead>
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              {quotes.map(q => (
+                                <TableRow key={q.id}>
+                                  <TableCell className="font-medium">{q.id}</TableCell>
+                                  <TableCell>{new Date(q.date).toLocaleDateString()}</TableCell>
+                                  <TableCell>{q.description}</TableCell>
+                                  <TableCell>
+                                    <Badge variant="outline" className={getStatusColor(q.status)}>{q.status}</Badge>
+                                  </TableCell>
+                                  <TableCell className="text-right">${q.amount.toLocaleString()}</TableCell>
+                                </TableRow>
+                              ))}
+                            </TableBody>
+                          </Table>
+                        )}
+                      </TabsContent>
+                    </Tabs>
+                  </CardContent>
+                </Card>
+              )}
+            </div>
           </div>
         )}
       </div>
 
-      {/* Subscription Details Modal */}
-      <Dialog open={detailsOpen} onOpenChange={setDetailsOpen}>
-        <DialogContent className="max-w-2xl">
-          <DialogHeader><DialogTitle>Subscription Details</DialogTitle></DialogHeader>
-          {selectedSub && (
-            <div className="space-y-4">
-              <div className="grid grid-cols-2 gap-4">
-                <div><p className="text-sm text-muted-foreground">Name</p><p className="font-medium">{selectedSub.name}</p></div>
-                <div><p className="text-sm text-muted-foreground">Plan Type</p><p className="font-medium">{selectedSub.planType}</p></div>
-                <div><p className="text-sm text-muted-foreground">Billing</p><p className="font-medium capitalize">{selectedSub.billingFrequency}</p></div>
-                <div><p className="text-sm text-muted-foreground">Renewal</p><p className="font-medium">{new Date(selectedSub.renewalDate).toLocaleDateString()}</p></div>
-                <div><p className="text-sm text-muted-foreground">Status</p><Badge variant="outline" className="status-active">{selectedSub.status}</Badge></div>
-              </div>
-
-              <div className="border-t pt-4">
-                <h4 className="font-semibold mb-3">Products</h4>
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Product</TableHead>
-                      <TableHead className="text-center">Licenses</TableHead>
-                      <TableHead className="text-center">Assigned</TableHead>
-                      <TableHead className="text-center">Available</TableHead>
-                      <TableHead className="text-right">Price/License</TableHead>
-                      <TableHead className="text-right">Total</TableHead>
-                      {canModify && <TableHead className="text-right">Actions</TableHead>}
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {selectedSub.products.map(prod => {
-                      const assigned = getAssignedLicenseCount(selectedSub.id, prod.id);
-                      return (
-                        <TableRow key={prod.id}>
-                          <TableCell className="font-medium">{prod.name}</TableCell>
-                          <TableCell className="text-center">{prod.licenseCount}</TableCell>
-                          <TableCell className="text-center">{assigned}</TableCell>
-                          <TableCell className="text-center">{prod.licenseCount - assigned}</TableCell>
-                          <TableCell className="text-right">${prod.pricePerLicense}</TableCell>
-                          <TableCell className="text-right">${(prod.licenseCount * prod.pricePerLicense).toLocaleString()}</TableCell>
-                          {canModify && (
-                            <TableCell className="text-right">
-                              <Button variant="outline" size="sm" onClick={() => { setDetailsOpen(false); openModifyProduct(selectedSub, prod); }}>
-                                Modify
-                              </Button>
-                            </TableCell>
-                          )}
-                        </TableRow>
-                      );
-                    })}
-                  </TableBody>
-                </Table>
-              </div>
-            </div>
-          )}
-          <DialogFooter>
-            <Button onClick={() => setDetailsOpen(false)}>Close</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Modify License Count Modal */}
-      <Dialog open={modifyOpen} onOpenChange={setModifyOpen}>
-        <DialogContent>
+      {/* Edit Billing Details Modal */}
+      <Dialog open={editBillingOpen} onOpenChange={setEditBillingOpen}>
+        <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>Change License Quantity</DialogTitle>
-            <DialogDescription>
-              {selectedProduct?.name} under {selectedSub?.name}
-            </DialogDescription>
-          </DialogHeader>
-          {selectedProduct && selectedSub && (
-            <div className="space-y-6">
-              <div className="flex items-center justify-center gap-4">
-                <Button variant="outline" size="icon" onClick={() => setNewLicenseCount(Math.max(1, newLicenseCount - 1))} disabled={newLicenseCount <= 1}>
-                  <Minus className="h-4 w-4" />
-                </Button>
-                <Input type="number" min={1} max={500} value={newLicenseCount}
-                  onChange={(e) => setNewLicenseCount(Math.max(1, Math.min(500, parseInt(e.target.value) || 1)))}
-                  className="w-24 text-center text-lg font-semibold" />
-                <Button variant="outline" size="icon" onClick={() => setNewLicenseCount(Math.min(500, newLicenseCount + 1))} disabled={newLicenseCount >= 500}>
-                  <Plus className="h-4 w-4" />
-                </Button>
-              </div>
-              <div className="bg-muted/50 rounded-lg p-4 space-y-2">
-                <div className="flex justify-between text-sm"><span className="text-muted-foreground">Current</span><span>{selectedProduct.licenseCount}</span></div>
-                <div className="flex justify-between text-sm"><span className="text-muted-foreground">New</span><span>{newLicenseCount}</span></div>
-                <div className="flex justify-between text-sm"><span className="text-muted-foreground">Assigned</span><span>{getAssignedLicenseCount(selectedSub.id, selectedProduct.id)}</span></div>
-                {getLicenseDiff() !== 0 && (
-                  <>
-                    <div className="border-t pt-2 flex justify-between font-medium">
-                      <span>Change</span>
-                      <span className={getLicenseDiff() > 0 ? 'text-success' : 'text-destructive'}>
-                        {getLicenseDiff() > 0 ? '+' : ''}{getLicenseDiff()} licenses
-                      </span>
-                    </div>
-                    <div className="flex justify-between font-medium">
-                      <span>Price change</span>
-                      <span className={getPriceChange() > 0 ? 'text-destructive' : 'text-success'}>
-                        {getPriceChange() > 0 ? '+' : ''}${getPriceChange().toLocaleString()}/year
-                      </span>
-                    </div>
-                  </>
-                )}
-              </div>
-              {newLicenseCount < getAssignedLicenseCount(selectedSub.id, selectedProduct.id) && (
-                <div className="bg-warning/10 border border-warning/20 rounded-lg p-4 flex items-start gap-3">
-                  <AlertTriangle className="h-5 w-5 text-warning flex-shrink-0 mt-0.5" />
-                  <div>
-                    <p className="font-medium text-sm">Reduction requires license reassignment</p>
-                    <p className="text-sm text-muted-foreground">
-                      You have {getAssignedLicenseCount(selectedSub.id, selectedProduct.id)} licenses assigned but are reducing to {newLicenseCount}.
-                    </p>
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setModifyOpen(false)}>Cancel</Button>
-            <Button onClick={handleModifyLicenses} disabled={newLicenseCount === selectedProduct?.licenseCount}>
-              {selectedProduct && newLicenseCount < getAssignedLicenseCount(selectedSub?.id || '', selectedProduct.id)
-                ? 'Manage Assignments'
-                : 'Confirm Changes'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Add Product Modal */}
-      <Dialog open={addProductOpen} onOpenChange={setAddProductOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Add Product to {selectedSub?.name}</DialogTitle>
-            <DialogDescription>Select products and set license quantities.</DialogDescription>
+            <DialogTitle>Edit Billing Details</DialogTitle>
+            <DialogDescription>Update your billing contact information.</DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
-            {PRODUCT_CATALOG.filter(cat =>
-              !selectedSub?.products.some(p => p.name === cat.name)
-            ).map(cat => {
-              const selected = newProducts.find(np => np.name === cat.name);
-              return (
-                <div key={cat.name} className="flex items-center gap-3 p-3 border rounded-lg">
-                  <Checkbox
-                    checked={!!selected}
-                    onCheckedChange={(checked) => {
-                      if (checked) {
-                        setNewProducts([...newProducts, { name: cat.name, count: 1, price: cat.defaultPrice }]);
-                      } else {
-                        setNewProducts(newProducts.filter(np => np.name !== cat.name));
-                      }
-                    }}
-                  />
-                  <div className="flex-1">
-                    <div className="font-medium">{cat.name}</div>
-                    <div className="text-xs text-muted-foreground">{cat.description} · ${cat.defaultPrice}/license</div>
-                  </div>
-                  {selected && (
-                    <Input
-                      type="number" min={1} max={100}
-                      value={selected.count}
-                      onChange={(e) => setNewProducts(newProducts.map(np =>
-                        np.name === cat.name ? { ...np, count: Math.max(1, parseInt(e.target.value) || 1) } : np
-                      ))}
-                      className="w-20 text-center"
-                    />
-                  )}
-                </div>
-              );
-            })}
-            {PRODUCT_CATALOG.filter(cat => !selectedSub?.products.some(p => p.name === cat.name)).length === 0 && (
-              <p className="text-sm text-muted-foreground">All available products are already added to this subscription.</p>
-            )}
+            <div className="space-y-2">
+              <Label>Company Name</Label>
+              <Input defaultValue={currentCompany?.name} />
+            </div>
+            <div className="space-y-2">
+              <Label>Address</Label>
+              <Input defaultValue="123 Main St, Suite 400" />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label>City</Label>
+                <Input defaultValue="New York" />
+              </div>
+              <div className="space-y-2">
+                <Label>State / ZIP</Label>
+                <Input defaultValue="NY 10001" />
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label>Contact Name</Label>
+              <Input defaultValue="John Smith" />
+            </div>
+            <div className="space-y-2">
+              <Label>Email</Label>
+              <Input defaultValue="billing@abcaccounting.com" />
+            </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setAddProductOpen(false)}>Cancel</Button>
-            <Button onClick={handleAddProduct} disabled={newProducts.length === 0}>Add Products</Button>
+            <Button variant="outline" onClick={() => setEditBillingOpen(false)}>Cancel</Button>
+            <Button onClick={() => { toast({ title: 'Billing details saved' }); setEditBillingOpen(false); }}>Save</Button>
           </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Payment Modal */}
-      <Dialog open={paymentOpen} onOpenChange={(open) => { if (!open && paymentStatus !== 'processing') { setPaymentOpen(false); setPaymentStatus('idle'); } }}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>{paymentStatus === 'success' ? 'Payment Successful' : paymentStatus === 'error' ? 'Payment Failed' : 'Confirm Payment'}</DialogTitle>
-          </DialogHeader>
-          {paymentStatus === 'success' ? (
-            <div className="text-center py-6">
-              <div className="h-16 w-16 rounded-full bg-success/10 flex items-center justify-center mx-auto mb-4">
-                <Check className="h-8 w-8 text-success" />
-              </div>
-              <p className="text-lg font-medium">Subscription Updated!</p>
-            </div>
-          ) : paymentStatus === 'error' ? (
-            <div className="text-center py-6">
-              <p className="text-lg font-medium text-destructive">Payment Failed</p>
-              <Button onClick={() => setPaymentStatus('idle')} className="mt-4">Retry</Button>
-            </div>
-          ) : paymentStatus === 'processing' ? (
-            <div className="text-center py-6">
-              <CreditCard className="h-8 w-8 text-primary mx-auto mb-4 animate-pulse" />
-              <p>Processing...</p>
-            </div>
-          ) : (
-            <div className="space-y-4">
-              <div className="bg-muted/50 rounded-lg p-4 space-y-2">
-                <div className="flex justify-between"><span className="text-muted-foreground">License change</span><span>{selectedProduct?.licenseCount} → {newLicenseCount}</span></div>
-                <div className="flex justify-between font-medium text-lg border-t pt-2">
-                  <span>Amount Due</span>
-                  <span className="text-primary">{getPriceChange() > 0 ? `$${getPriceChange().toLocaleString()}` : getPriceChange() < 0 ? `Credit: $${Math.abs(getPriceChange()).toLocaleString()}` : '$0'}</span>
-                </div>
-              </div>
-              <div className="space-y-2"><Label>Card Number</Label><Input placeholder="4242 4242 4242 4242" /></div>
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2"><Label>Expiry</Label><Input placeholder="MM/YY" /></div>
-                <div className="space-y-2"><Label>CVC</Label><Input placeholder="123" /></div>
-              </div>
-            </div>
-          )}
-          {paymentStatus === 'idle' && (
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setPaymentOpen(false)}>Cancel</Button>
-              <Button onClick={handlePayment}><CreditCard className="h-4 w-4 mr-2" />Pay Now</Button>
-            </DialogFooter>
-          )}
         </DialogContent>
       </Dialog>
     </MainLayout>

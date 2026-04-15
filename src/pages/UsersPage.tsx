@@ -7,7 +7,13 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
+import { Switch } from '@/components/ui/switch';
 import { Card, CardContent } from '@/components/ui/card';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
 import {
   ListingPageHeader,
   SearchFilterCard,
@@ -63,6 +69,7 @@ export const UsersPage = () => {
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
   const [newUser, setNewUser] = useState({ firstName: '', lastName: '', email: '', roles: ['standard'] as UserRole[], phone: '', jobTitle: '', sendInvite: true });
   const [selectedRoles, setSelectedRoles] = useState<UserRole[]>([]);
+  const [dataNetPrefs, setDataNetPrefs] = useState<Record<string, boolean>>({});
 
   const users = getCompanyUsers();
   const isOwner = hasAccess(['owner']);
@@ -172,6 +179,30 @@ export const UsersPage = () => {
                 <span className="font-medium">{prods.join(', ')}</span>
               </div>
             ))}
+          </div>
+        );
+      },
+    },
+    {
+      key: 'datanet', header: 'DataNet Emails',
+      render: (user) => {
+        const checked = dataNetPrefs[user.id] !== false; // default to checked
+        return (
+          <div className="flex justify-center" onClick={(e) => e.stopPropagation()}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <div>
+                  <Switch
+                    checked={checked}
+                    onCheckedChange={(v) => setDataNetPrefs(prev => ({ ...prev, [user.id]: v }))}
+                    disabled={user.status === 'inactive'}
+                  />
+                </div>
+              </TooltipTrigger>
+              <TooltipContent>
+                <p>Controls whether this user receives DataNet email updates.</p>
+              </TooltipContent>
+            </Tooltip>
           </div>
         );
       },
