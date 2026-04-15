@@ -17,6 +17,7 @@ import { LicensesPage } from "./pages/LicensesPage";
 import { LicenseReductionPage } from "./pages/LicenseReductionPage";
 import { BillingPage } from "./pages/BillingPage";
 import { DownloadsPage } from "./pages/DownloadsPage";
+import { NewsPage } from "./pages/NewsPage";
 import { SupportPage } from "./pages/SupportPage";
 import { ProfilePage } from "./pages/ProfilePage";
 import NotFound from "./pages/NotFound";
@@ -42,6 +43,7 @@ const App = () => (
             <Route path="/licenses/reduce" element={<LicenseReductionPage />} />
             <Route path="/billing" element={<BillingPage />} />
             <Route path="/downloads" element={<DownloadsPage />} />
+            <Route path="/news" element={<NewsPage />} />
             <Route path="/support" element={<SupportPage />} />
             <Route path="/profile" element={<ProfilePage />} />
             <Route path="*" element={<NotFound />} />
