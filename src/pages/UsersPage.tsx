@@ -184,6 +184,30 @@ export const UsersPage = () => {
       },
     },
     {
+      key: 'datanet', header: 'DataNet Emails',
+      render: (user) => {
+        const checked = dataNetPrefs[user.id] !== false; // default to checked
+        return (
+          <div className="flex justify-center" onClick={(e) => e.stopPropagation()}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <div>
+                  <Switch
+                    checked={checked}
+                    onCheckedChange={(v) => setDataNetPrefs(prev => ({ ...prev, [user.id]: v }))}
+                    disabled={user.status === 'inactive'}
+                  />
+                </div>
+              </TooltipTrigger>
+              <TooltipContent>
+                <p>Controls whether this user receives DataNet email updates.</p>
+              </TooltipContent>
+            </Tooltip>
+          </div>
+        );
+      },
+    },
+    {
       key: 'status', header: 'Status',
       render: (user) => <Badge variant="outline" className={statusColors[user.status]}>{user.status}</Badge>,
     },
