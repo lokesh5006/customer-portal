@@ -146,10 +146,12 @@ interface AppContextType extends AppState {
 
 // Product catalog for reference
 export const PRODUCT_CATALOG = [
-  { name: 'NumberCruncher Web', defaultPrice: 249, description: 'Cloud-based accounting solution' },
-  { name: 'Desktop Add-on', defaultPrice: 149, description: 'Desktop application add-on' },
-  { name: 'Rate Module', defaultPrice: 99, description: 'Tax rate lookup module' },
-  { name: 'Audit Module', defaultPrice: 199, description: 'Audit trail and compliance module' },
+  { name: 'NumberCruncher Desktop', defaultPrice: 349, description: 'Desktop accounting application', type: 'desktop' as const, latestVersion: '4.2', hasInstaller: true },
+  { name: 'NumberCruncher Web', defaultPrice: 249, description: 'Cloud-based accounting solution', type: 'web' as const, latestVersion: '3.0', hasInstaller: false },
+  { name: 'QuickView Desktop', defaultPrice: 199, description: 'Fast reporting and analytics desktop app', type: 'desktop' as const, latestVersion: '2.1', hasInstaller: true },
+  { name: 'DataNet', defaultPrice: 0, description: 'Industry data network and alerts', type: 'service' as const, latestVersion: '', hasInstaller: false },
+  { name: 'Rate Module', defaultPrice: 99, description: 'Tax rate lookup module', type: 'addon' as const, latestVersion: '1.5', hasInstaller: false },
+  { name: 'Audit Module', defaultPrice: 199, description: 'Audit trail and compliance module', type: 'addon' as const, latestVersion: '1.2', hasInstaller: false },
 ];
 
 // Initial mock data
@@ -189,23 +191,24 @@ const initialSubscriptions: Subscription[] = [
     billingFrequency: 'annual',
     status: 'active',
     startDate: '2024-01-01',
-    renewalDate: '2024-12-31',
+    renewalDate: '2026-12-01',
     products: [
-      { id: 'prod-1', name: 'NumberCruncher Web', licenseCount: 10, pricePerLicense: 249, status: 'active' },
-      { id: 'prod-2', name: 'Desktop Add-on', licenseCount: 5, pricePerLicense: 149, status: 'active' },
+      { id: 'prod-1', name: 'NumberCruncher Desktop', licenseCount: 22, pricePerLicense: 349, status: 'active' },
+      { id: 'prod-1b', name: 'NumberCruncher Web', licenseCount: 10, pricePerLicense: 249, status: 'active' },
+      { id: 'prod-2', name: 'DataNet', licenseCount: 30, pricePerLicense: 0, status: 'active' },
     ],
   },
   {
     id: 'sub-2',
     companyId: 'company-1',
-    name: 'Tax Add-on Plan',
-    planType: 'Add-on',
-    billingFrequency: 'annual',
+    name: 'QuickView Quarterly',
+    planType: 'Quarterly',
+    billingFrequency: 'monthly',
     status: 'active',
-    startDate: '2024-03-01',
-    renewalDate: '2024-12-31',
+    startDate: '2024-06-01',
+    renewalDate: '2026-12-01',
     products: [
-      { id: 'prod-3', name: 'Rate Module', licenseCount: 3, pricePerLicense: 99, status: 'active' },
+      { id: 'prod-3', name: 'QuickView Desktop', licenseCount: 8, pricePerLicense: 199, status: 'active' },
     ],
   },
   {
@@ -216,7 +219,7 @@ const initialSubscriptions: Subscription[] = [
     billingFrequency: 'annual',
     status: 'active',
     startDate: '2024-01-01',
-    renewalDate: '2024-12-31',
+    renewalDate: '2026-12-01',
     products: [
       { id: 'prod-4', name: 'NumberCruncher Web', licenseCount: 8, pricePerLicense: 249, status: 'active' },
     ],
