@@ -9,6 +9,7 @@ import {
   HelpCircle,
   User,
   LogOut,
+  Newspaper,
 } from 'lucide-react';
 import { useApp, UserRole } from '@/contexts/AppContext';
 import { cn } from '@/lib/utils';
@@ -26,9 +27,10 @@ const navItems: NavItem[] = [
   { label: 'Dashboard', icon: LayoutDashboard, path: '/dashboard', requiredRoles: ['owner', 'billing', 'admin', 'standard'] },
   { label: 'Users', icon: Users, path: '/users', requiredRoles: ['owner', 'admin'] },
   { label: 'Subscriptions', icon: CreditCard, path: '/subscriptions', requiredRoles: ['owner', 'billing', 'admin'] },
-  { label: 'Licenses', icon: Key, path: '/licenses', requiredRoles: ['owner', 'admin'] },
+  { label: 'License Assignments', icon: Key, path: '/licenses', requiredRoles: ['owner', 'admin'] },
   { label: 'Billing', icon: FileText, path: '/billing', requiredRoles: ['owner', 'billing'] },
-  { label: 'Downloads', icon: Download, path: '/downloads', requiredRoles: ['owner', 'billing', 'admin', 'standard'] },
+  { label: 'Product Downloads & Links', icon: Download, path: '/downloads', requiredRoles: ['owner', 'billing', 'admin', 'standard'] },
+  { label: 'News', icon: Newspaper, path: '/news', requiredRoles: ['owner', 'billing', 'admin', 'standard'] },
   { label: 'Support', icon: HelpCircle, path: '/support', requiredRoles: ['owner', 'billing', 'admin', 'standard'] },
   { label: 'Profile', icon: User, path: '/profile', requiredRoles: ['owner', 'billing', 'admin', 'standard'] },
 ];
@@ -55,7 +57,7 @@ export const Sidebar = () => {
               key={item.path}
               variant="ghost"
               className={cn(
-                'w-full justify-start gap-3 h-10',
+                'w-full justify-start gap-3 h-10 text-sm',
                 isActive && 'bg-sidebar-accent text-sidebar-accent-foreground font-medium'
               )}
               onClick={() => navigate(item.path)}

@@ -1,274 +1,272 @@
 import { useState } from 'react';
 import { MainLayout } from '@/components/layout/MainLayout';
-import { Card, CardContent } from '@/components/ui/card';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import {
-  ListingPageHeader,
-  SearchFilterCard,
-  FilterField,
-  DataTable,
-  DataTableColumn,
-  PaginationControls,
-} from '@/components/listing';
+import { useApp, PRODUCT_CATALOG } from '@/contexts/AppContext';
 import { useToast } from '@/hooks/use-toast';
-import { Download, FileText, Package } from 'lucide-react';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import {
+  Download,
+  ChevronDown,
+  Monitor,
+  Globe,
+  ExternalLink,
+  BookOpen,
+  FileText,
+  Info,
+  Package,
+} from 'lucide-react';
+import { ListingPageHeader } from '@/components/listing';
+import { cn } from '@/lib/utils';
 
-interface DownloadItem {
-  id: string;
-  name: string;
-  size: string;
-  product?: string;
-  version?: string;
-  date?: string;
-  type: string;
+interface ResourceItem {
+  label: string;
+  url: string;
 }
 
-const downloads: DownloadItem[] = [
-  { id: '1', name: 'NumberCruncher Desktop v5.2', size: '245 MB', product: 'Desktop', version: '5.2', date: '2024-01-15', type: 'installer' },
-  { id: '2', name: 'NumberCruncher Desktop v5.1', size: '240 MB', product: 'Desktop', version: '5.1', date: '2023-12-01', type: 'installer' },
-  { id: '3', name: 'NumberCruncher Web v3.0', size: '12 MB', product: 'Web', version: '3.0', date: '2024-01-10', type: 'installer' },
-  { id: '4', name: 'User Guide 2024', size: '12 MB', product: 'All', version: '2024', date: '2024-01-01', type: 'docs' },
-  { id: '5', name: 'Quick Start Guide', size: '2 MB', product: 'All', version: '2024', date: '2024-01-01', type: 'docs' },
-  { id: '6', name: 'API Documentation', size: '5 MB', product: 'Web', version: '3.0', date: '2024-01-10', type: 'docs' },
-  { id: '7', name: 'January 2024 Newsletter', size: '1 MB', date: '2024-01-15', type: 'newsletter' },
-  { id: '8', name: 'December 2023 Newsletter', size: '1 MB', date: '2023-12-15', type: 'newsletter' },
-  { id: '9', name: 'November 2023 Newsletter', size: '1 MB', date: '2023-11-15', type: 'newsletter' },
-  { id: '10', name: '2024 Rate Sheet', size: '500 KB', date: '2024-01-01', type: 'ratesheet' },
-  { id: '11', name: '2023 Rate Sheet', size: '480 KB', date: '2023-01-01', type: 'ratesheet' },
-  { id: '12', name: 'v5.2 Release Notes', size: '200 KB', version: '5.2', date: '2024-01-15', type: 'releasenotes' },
-  { id: '13', name: 'v5.1 Release Notes', size: '180 KB', version: '5.1', date: '2023-12-01', type: 'releasenotes' },
-  { id: '14', name: 'v5.0 Release Notes', size: '190 KB', version: '5.0', date: '2023-09-01', type: 'releasenotes' },
-];
+const productResources: Record<string, ResourceItem[]> = {
+  'NumberCruncher Desktop': [
+    { label: 'Installation Instructions', url: '#' },
+    { label: 'Quickstart Guide', url: '#' },
+    { label: 'Release Notes', url: '#' },
+    { label: 'Documentation', url: '#' },
+    { label: 'Product Info', url: '#' },
+  ],
+  'NumberCruncher Web': [
+    { label: 'Installation Instructions', url: '#' },
+    { label: 'Quickstart Guide', url: '#' },
+    { label: 'Release Notes', url: '#' },
+    { label: 'Documentation', url: '#' },
+    { label: 'Product Info', url: '#' },
+  ],
+  'QuickView Desktop': [
+    { label: 'Installation Instructions', url: '#' },
+    { label: 'Quickstart Guide', url: '#' },
+    { label: 'Release Notes', url: '#' },
+    { label: 'Documentation', url: '#' },
+    { label: 'Product Info', url: '#' },
+  ],
+  'DataNet': [
+    { label: 'Quickstart Guide', url: '#' },
+    { label: 'Documentation', url: '#' },
+    { label: 'Product Info', url: '#' },
+  ],
+};
+
+const downloadFormats: Record<string, { label: string; isDefault?: boolean }[]> = {
+  'NumberCruncher Desktop': [
+    { label: 'EXE Installer', isDefault: true },
+    { label: 'MSI Installer' },
+    { label: 'ZIP Archive' },
+  ],
+  'QuickView Desktop': [
+    { label: 'EXE Installer', isDefault: true },
+    { label: 'MSI Installer' },
+  ],
+};
 
 export const DownloadsPage = () => {
+  const { getCompanySubscriptions } = useApp();
   const { toast } = useToast();
+  const [resourcesOpen, setResourcesOpen] = useState(false);
+  const [selectedProduct, setSelectedProduct] = useState<string>('');
 
-  // Tab
-  const [activeTab, setActiveTab] = useState('all');
+  const subscriptions = getCompanySubscriptions();
 
-  // Filters
-  const [searchQuery, setSearchQuery] = useState('');
-  const [productFilter, setProductFilter] = useState<string>('all');
-  const [versionFilter, setVersionFilter] = useState<string>('all');
-  const [typeFilter, setTypeFilter] = useState<string>('all');
-  const [releaseDateFrom, setReleaseDateFrom] = useState<Date>();
-  const [releaseDateTo, setReleaseDateTo] = useState<Date>();
-
-  // Pagination
-  const [currentPage, setCurrentPage] = useState(1);
-  const [pageSize, setPageSize] = useState(25);
-
-  const handleDownload = (name: string) => {
-    toast({ title: 'Download started', description: `Downloading ${name}...` });
-  };
-
-  // Filter downloads
-  const filteredDownloads = downloads.filter(d => {
-    const matchesSearch = d.name.toLowerCase().includes(searchQuery.toLowerCase());
-    const matchesProduct = productFilter === 'all' || d.product === productFilter;
-    const matchesVersion = versionFilter === 'all' || d.version === versionFilter;
-    const matchesType = typeFilter === 'all' || d.type === typeFilter;
-    const matchesTab = activeTab === 'all' || d.type === activeTab;
-
-    let matchesDate = true;
-    if (releaseDateFrom && d.date) {
-      matchesDate = new Date(d.date) >= releaseDateFrom;
-    }
-    if (releaseDateTo && d.date && matchesDate) {
-      matchesDate = new Date(d.date) <= releaseDateTo;
-    }
-
-    return matchesSearch && matchesProduct && matchesVersion && matchesType && matchesTab && matchesDate;
+  // Get all purchased product names
+  const purchasedProducts = new Set<string>();
+  subscriptions.forEach(sub => {
+    sub.products.forEach(p => {
+      purchasedProducts.add(p.name);
+    });
   });
 
-  // Pagination
-  const totalPages = Math.ceil(filteredDownloads.length / pageSize);
-  const paginatedDownloads = filteredDownloads.slice(
-    (currentPage - 1) * pageSize,
-    currentPage * pageSize
-  );
-
-  const resetFilters = () => {
-    setSearchQuery('');
-    setProductFilter('all');
-    setVersionFilter('all');
-    setTypeFilter('all');
-    setReleaseDateFrom(undefined);
-    setReleaseDateTo(undefined);
-    setCurrentPage(1);
+  const handleDownload = (productName: string, format?: string) => {
+    toast({
+      title: 'Download Started',
+      description: `Downloading ${productName}${format ? ` (${format})` : ''}...`,
+    });
   };
 
-  const getTypeLabel = (type: string) => {
+  const openResources = (productName: string) => {
+    setSelectedProduct(productName);
+    setResourcesOpen(true);
+  };
+
+  const getProductIcon = (type: string) => {
     switch (type) {
-      case 'installer': return 'Installer';
-      case 'docs': return 'Documentation';
-      case 'newsletter': return 'Newsletter';
-      case 'ratesheet': return 'Rate Sheet';
-      case 'releasenotes': return 'Release Notes';
-      default: return type;
+      case 'desktop': return Monitor;
+      case 'web': return Globe;
+      case 'service': return ExternalLink;
+      default: return Package;
     }
   };
-
-  const columns: DataTableColumn<DownloadItem>[] = [
-    {
-      key: 'name',
-      header: 'Name',
-      render: (d) => (
-        <div className="flex items-center gap-3">
-          <div className="h-10 w-10 rounded bg-muted flex items-center justify-center">
-            {d.type === 'installer' ? (
-              <Package className="h-5 w-5 text-muted-foreground" />
-            ) : (
-              <FileText className="h-5 w-5 text-muted-foreground" />
-            )}
-          </div>
-          <div>
-            <p className="font-medium">{d.name}</p>
-            <p className="text-xs text-muted-foreground">{d.size}</p>
-          </div>
-        </div>
-      ),
-    },
-    {
-      key: 'type',
-      header: 'Type',
-      render: (d) => (
-        <Badge variant="outline">{getTypeLabel(d.type)}</Badge>
-      ),
-    },
-    {
-      key: 'product',
-      header: 'Product',
-      render: (d) => d.product || '-',
-    },
-    {
-      key: 'version',
-      header: 'Version',
-      render: (d) => d.version || '-',
-    },
-    {
-      key: 'date',
-      header: 'Release Date',
-      render: (d) => d.date ? new Date(d.date).toLocaleDateString() : '-',
-    },
-    {
-      key: 'actions',
-      header: '',
-      className: 'text-right',
-      render: (d) => (
-        <Button variant="outline" size="sm" onClick={() => handleDownload(d.name)}>
-          <Download className="h-4 w-4 mr-1" /> Download
-        </Button>
-      ),
-    },
-  ];
 
   return (
     <MainLayout>
       <div className="space-y-6">
-        {/* Page Header */}
         <ListingPageHeader
-          title="Downloads"
-          description="Software, documentation, and resources"
+          title="Product Downloads & Links"
+          description="Software downloads, documentation, and resources"
           showCompanyContext={false}
         />
 
-        {/* Tabs */}
-        <Tabs value={activeTab} onValueChange={(v) => { setActiveTab(v); setCurrentPage(1); }}>
-          <TabsList>
-            <TabsTrigger value="all">All</TabsTrigger>
-            <TabsTrigger value="installer">Installers</TabsTrigger>
-            <TabsTrigger value="docs">Documentation</TabsTrigger>
-            <TabsTrigger value="newsletter">Newsletters</TabsTrigger>
-            <TabsTrigger value="ratesheet">Rate Sheets</TabsTrigger>
-            <TabsTrigger value="releasenotes">Release Notes</TabsTrigger>
-          </TabsList>
-        </Tabs>
+        <div className="grid gap-4 md:grid-cols-2">
+          {PRODUCT_CATALOG.map(product => {
+            const isPurchased = purchasedProducts.has(product.name);
+            const Icon = getProductIcon(product.type);
+            const formats = downloadFormats[product.name];
 
-        {/* Search & Filters */}
-        <SearchFilterCard
-          searchValue={searchQuery}
-          onSearchChange={(v) => { setSearchQuery(v); setCurrentPage(1); }}
-          searchPlaceholder="Search downloads..."
-          onReset={resetFilters}
-          filters={
-            <>
-              <FilterField
-                label="Product"
-                value={productFilter}
-                onChange={(v) => { setProductFilter(v); setCurrentPage(1); }}
-                options={[
-                  { value: 'all', label: 'All Products' },
-                  { value: 'Desktop', label: 'Desktop' },
-                  { value: 'Web', label: 'Web' },
-                  { value: 'All', label: 'All Products' },
-                ]}
-              />
-              <FilterField
-                label="Version"
-                value={versionFilter}
-                onChange={(v) => { setVersionFilter(v); setCurrentPage(1); }}
-                options={[
-                  { value: 'all', label: 'All Versions' },
-                  { value: '5.2', label: 'v5.2' },
-                  { value: '5.1', label: 'v5.1' },
-                  { value: '5.0', label: 'v5.0' },
-                  { value: '3.0', label: 'v3.0' },
-                  { value: '2024', label: '2024' },
-                  { value: '2023', label: '2023' },
-                ]}
-              />
-              <FilterField
-                label="Document Type"
-                value={typeFilter}
-                onChange={(v) => { setTypeFilter(v); setCurrentPage(1); }}
-                options={[
-                  { value: 'all', label: 'All Types' },
-                  { value: 'installer', label: 'Installer' },
-                  { value: 'docs', label: 'Documentation' },
-                  { value: 'newsletter', label: 'Newsletter' },
-                  { value: 'ratesheet', label: 'Rate Sheet' },
-                  { value: 'releasenotes', label: 'Release Notes' },
-                ]}
-              />
-              <FilterField
-                label="Release"
-                type="dateRange"
-                dateFromValue={releaseDateFrom}
-                dateToValue={releaseDateTo}
-                onDateFromChange={(d) => { setReleaseDateFrom(d); setCurrentPage(1); }}
-                onDateToChange={(d) => { setReleaseDateTo(d); setCurrentPage(1); }}
-              />
-            </>
-          }
-        />
+            return (
+              <Card
+                key={product.name}
+                className={cn(
+                  'transition-all',
+                  !isPurchased && 'opacity-50'
+                )}
+              >
+                <CardContent className="p-5">
+                  <div className="flex items-start justify-between mb-3">
+                    <div className="flex items-center gap-3">
+                      <div className={cn(
+                        'h-10 w-10 rounded-lg flex items-center justify-center',
+                        isPurchased ? 'bg-primary/10' : 'bg-muted'
+                      )}>
+                        <Icon className={cn('h-5 w-5', isPurchased ? 'text-primary' : 'text-muted-foreground')} />
+                      </div>
+                      <div>
+                        <h3 className="font-semibold">{product.name}</h3>
+                        <p className="text-xs text-muted-foreground">{product.description}</p>
+                      </div>
+                    </div>
+                    {isPurchased ? (
+                      <Badge variant="outline" className="status-active">Licensed</Badge>
+                    ) : (
+                      <Badge variant="outline" className="status-inactive">Not Purchased</Badge>
+                    )}
+                  </div>
 
-        {/* Data Table */}
-        <div>
-          <DataTable
-            columns={columns}
-            data={paginatedDownloads}
-            keyExtractor={(d) => d.id}
-            emptyMessage="No downloads found matching your criteria."
-            emptyIcon={<FileText className="h-12 w-12 text-muted-foreground" />}
-          />
-          <Card className="rounded-t-none border-t-0">
-            <PaginationControls
-              currentPage={currentPage}
-              totalPages={totalPages}
-              pageSize={pageSize}
-              totalRecords={filteredDownloads.length}
-              onPageChange={setCurrentPage}
-              onPageSizeChange={(size) => {
-                setPageSize(size);
-                setCurrentPage(1);
-              }}
-            />
-          </Card>
+                  {product.latestVersion && (
+                    <p className="text-xs text-muted-foreground mb-3">Latest: v{product.latestVersion}</p>
+                  )}
+
+                  <div className="flex items-center gap-2">
+                    {/* Download split button */}
+                    {product.hasInstaller && isPurchased ? (
+                      <div className="flex">
+                        <Button
+                          size="sm"
+                          className="rounded-r-none"
+                          onClick={() => handleDownload(product.name)}
+                          disabled={!isPurchased}
+                        >
+                          <Download className="h-4 w-4 mr-1" />Download
+                        </Button>
+                        {formats ? (
+                          <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                              <Button size="sm" className="rounded-l-none border-l border-primary-foreground/20 px-2">
+                                <ChevronDown className="h-3 w-3" />
+                              </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end">
+                              <div className="px-2 py-1 text-xs font-medium text-muted-foreground">All Formats</div>
+                              {formats.map(f => (
+                                <DropdownMenuItem
+                                  key={f.label}
+                                  onClick={() => handleDownload(product.name, f.label)}
+                                >
+                                  {f.label}
+                                  {f.isDefault && (
+                                    <Badge variant="outline" className="ml-2 text-[10px] py-0">Default</Badge>
+                                  )}
+                                </DropdownMenuItem>
+                              ))}
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        ) : null}
+                      </div>
+                    ) : product.type === 'web' && isPurchased ? (
+                      <Button size="sm" variant="outline" onClick={() => window.open('#', '_blank')}>
+                        <ExternalLink className="h-4 w-4 mr-1" />Launch Web App
+                      </Button>
+                    ) : product.type === 'service' && isPurchased ? (
+                      <Button size="sm" variant="outline" onClick={() => window.open('#', '_blank')}>
+                        <ExternalLink className="h-4 w-4 mr-1" />Open DataNet
+                      </Button>
+                    ) : !isPurchased ? (
+                      <Button size="sm" variant="outline" disabled>
+                        <Download className="h-4 w-4 mr-1" />Not Available
+                      </Button>
+                    ) : null}
+
+                    {/* Resources button with tooltip */}
+                    {isPurchased && productResources[product.name] && (
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => openResources(product.name)}
+                          >
+                            <BookOpen className="h-4 w-4 mr-1" />Resources
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>
+                          <p>Helpful links including installation instructions and quick start guides are here.</p>
+                        </TooltipContent>
+                      </Tooltip>
+                    )}
+                  </div>
+                </CardContent>
+              </Card>
+            );
+          })}
         </div>
       </div>
+
+      {/* Resources Flyout */}
+      <Dialog open={resourcesOpen} onOpenChange={setResourcesOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>{selectedProduct} Resources</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-1">
+            {(productResources[selectedProduct] || []).map((res, i) => (
+              <a
+                key={i}
+                href={res.url}
+                className="flex items-center gap-3 p-3 rounded-md hover:bg-muted/50 transition-colors group"
+                onClick={(e) => {
+                  e.preventDefault();
+                  toast({ title: 'Opening resource', description: `Opening ${res.label}...` });
+                }}
+              >
+                <FileText className="h-4 w-4 text-muted-foreground group-hover:text-primary" />
+                <span className="text-sm font-medium group-hover:text-primary">{res.label}</span>
+                <ExternalLink className="h-3 w-3 text-muted-foreground ml-auto opacity-0 group-hover:opacity-100" />
+              </a>
+            ))}
+          </div>
+        </DialogContent>
+      </Dialog>
     </MainLayout>
   );
 };
