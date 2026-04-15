@@ -227,7 +227,7 @@ const initialSubscriptions: Subscription[] = [
 ];
 
 const initialLicenses: License[] = [
-  // ABC Accounting - sub-1, NumberCruncher Web (prod-1) - 8 assigned of 10
+  // ABC Accounting - sub-1, NumberCruncher Desktop (prod-1) - 20 assigned of 22
   { userId: 'user-1', subscriptionId: 'sub-1', productId: 'prod-1', assignedAt: '2023-01-15' },
   { userId: 'user-2', subscriptionId: 'sub-1', productId: 'prod-1', assignedAt: '2023-02-10' },
   { userId: 'user-3', subscriptionId: 'sub-1', productId: 'prod-1', assignedAt: '2023-03-05' },
@@ -236,14 +236,30 @@ const initialLicenses: License[] = [
   { userId: 'user-6', subscriptionId: 'sub-1', productId: 'prod-1', assignedAt: '2023-06-01' },
   { userId: 'user-8', subscriptionId: 'sub-1', productId: 'prod-1', assignedAt: '2023-07-15' },
   { userId: 'user-10', subscriptionId: 'sub-1', productId: 'prod-1', assignedAt: '2023-09-10' },
-  // ABC Accounting - sub-1, Desktop Add-on (prod-2) - 4 assigned of 5
+  { userId: 'user-11', subscriptionId: 'sub-1', productId: 'prod-1', assignedAt: '2023-10-05' },
+  { userId: 'user-12', subscriptionId: 'sub-1', productId: 'prod-1', assignedAt: '2023-11-20' },
+  { userId: 'user-13', subscriptionId: 'sub-1', productId: 'prod-1', assignedAt: '2023-12-01' },
+  // ABC Accounting - sub-1, NumberCruncher Web (prod-1b) - 8 assigned of 10
+  { userId: 'user-1', subscriptionId: 'sub-1', productId: 'prod-1b', assignedAt: '2023-01-15' },
+  { userId: 'user-2', subscriptionId: 'sub-1', productId: 'prod-1b', assignedAt: '2023-02-10' },
+  { userId: 'user-3', subscriptionId: 'sub-1', productId: 'prod-1b', assignedAt: '2023-03-05' },
+  { userId: 'user-4', subscriptionId: 'sub-1', productId: 'prod-1b', assignedAt: '2023-04-12' },
+  { userId: 'user-5', subscriptionId: 'sub-1', productId: 'prod-1b', assignedAt: '2023-05-20' },
+  { userId: 'user-6', subscriptionId: 'sub-1', productId: 'prod-1b', assignedAt: '2023-06-01' },
+  { userId: 'user-8', subscriptionId: 'sub-1', productId: 'prod-1b', assignedAt: '2023-07-15' },
+  { userId: 'user-10', subscriptionId: 'sub-1', productId: 'prod-1b', assignedAt: '2023-09-10' },
+  // ABC Accounting - sub-1, DataNet (prod-2) - assigned to most users
   { userId: 'user-1', subscriptionId: 'sub-1', productId: 'prod-2', assignedAt: '2023-01-15' },
+  { userId: 'user-2', subscriptionId: 'sub-1', productId: 'prod-2', assignedAt: '2023-02-10' },
   { userId: 'user-3', subscriptionId: 'sub-1', productId: 'prod-2', assignedAt: '2023-03-05' },
   { userId: 'user-5', subscriptionId: 'sub-1', productId: 'prod-2', assignedAt: '2023-05-20' },
   { userId: 'user-6', subscriptionId: 'sub-1', productId: 'prod-2', assignedAt: '2023-06-01' },
-  // ABC Accounting - sub-2, Rate Module (prod-3) - 2 assigned of 3
-  { userId: 'user-8', subscriptionId: 'sub-2', productId: 'prod-3', assignedAt: '2023-07-15' },
+  // ABC Accounting - sub-2, QuickView Desktop (prod-3) - 5 assigned of 8
+  { userId: 'user-1', subscriptionId: 'sub-2', productId: 'prod-3', assignedAt: '2023-01-15' },
+  { userId: 'user-3', subscriptionId: 'sub-2', productId: 'prod-3', assignedAt: '2023-03-05' },
   { userId: 'user-5', subscriptionId: 'sub-2', productId: 'prod-3', assignedAt: '2023-05-20' },
+  { userId: 'user-6', subscriptionId: 'sub-2', productId: 'prod-3', assignedAt: '2023-06-01' },
+  { userId: 'user-8', subscriptionId: 'sub-2', productId: 'prod-3', assignedAt: '2023-07-15' },
   // XYZ Consulting - sub-3, NumberCruncher Web (prod-4) - 4 assigned of 8
   { userId: 'user-20', subscriptionId: 'sub-3', productId: 'prod-4', assignedAt: '2023-06-20' },
   { userId: 'user-21', subscriptionId: 'sub-3', productId: 'prod-4', assignedAt: '2023-07-01' },
