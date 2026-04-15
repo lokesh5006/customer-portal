@@ -77,6 +77,7 @@ export const Header = () => {
       '/licenses': ['owner', 'admin'],
       '/billing': ['owner', 'billing'],
       '/downloads': ['owner', 'billing', 'admin', 'standard'],
+      '/news': ['owner', 'billing', 'admin', 'standard'],
       '/support': ['owner', 'billing', 'admin', 'standard'],
       '/profile': ['owner', 'billing', 'admin', 'standard'],
     };
