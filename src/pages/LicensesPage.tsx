@@ -2,9 +2,10 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useApp, User, Subscription, SubscriptionProduct } from '@/contexts/AppContext';
 import { MainLayout } from '@/components/layout/MainLayout';
-import { Card, CardContent } from '@/components/ui/card';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
 import {
   ListingPageHeader,
@@ -13,24 +14,14 @@ import {
   PaginationControls,
 } from '@/components/listing';
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
+  Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '@/components/ui/dialog';
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
+  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '@/components/ui/table';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { useToast } from '@/hooks/use-toast';
-import { Key, AlertTriangle, Check, Users, ChevronDown, ChevronUp } from 'lucide-react';
+import { Key, AlertTriangle, Check, Users, ChevronDown, ChevronUp, Minus, Plus, Settings } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 const roleLabels: Record<string, string> = {
@@ -39,6 +30,8 @@ const roleLabels: Record<string, string> = {
   admin: 'Firm Admin',
   standard: 'Standard User',
 };
+
+type RemovalType = 'now' | 'eoy' | null;
 
 export const LicensesPage = () => {
   const navigate = useNavigate();
@@ -49,6 +42,7 @@ export const LicensesPage = () => {
     getAssignedLicenseCount,
     assignLicense,
     unassignLicense,
+    updateProductLicenseCount,
     licenses,
     hasAccess,
   } = useApp();
@@ -64,6 +58,16 @@ export const LicensesPage = () => {
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
 
+  // Manage seats flyout state
+  const [manageOpen, setManageOpen] = useState(false);
+  const [manageSub, setManageSub] = useState<Subscription | null>(null);
+  const [manageProd, setManageProd] = useState<SubscriptionProduct | null>(null);
+  const [newSeatCount, setNewSeatCount] = useState(0);
+
+  // Seat reduction modal
+  const [reductionOpen, setReductionOpen] = useState(false);
+  const [removals, setRemovals] = useState<Record<string, RemovalType>>({});
+
   const subscriptions = getCompanySubscriptions();
   const users = getCompanyUsers();
   const canModify = hasAccess(['owner', 'admin']);
@@ -72,7 +76,6 @@ export const LicensesPage = () => {
   if (subscriptions.length > 0 && !selectedSubId) {
     const first = subscriptions[0];
     if (first.products.length > 0) {
-      // Set in next tick to avoid setState during render
       setTimeout(() => {
         setSelectedSubId(first.id);
         setSelectedProdId(first.products[0].id);
@@ -134,53 +137,124 @@ export const LicensesPage = () => {
     setExpandedSubs(prev => prev.includes(subId) ? prev.filter(id => id !== subId) : [...prev, subId]);
   };
 
+  // Manage seats
+  const openManageSeats = (sub: Subscription, prod: SubscriptionProduct) => {
+    setManageSub(sub);
+    setManageProd(prod);
+    setNewSeatCount(prod.licenseCount);
+    setManageOpen(true);
+  };
+
+  const handleApplySeats = () => {
+    if (!manageSub || !manageProd) return;
+    const assigned = getAssignedLicenseCount(manageSub.id, manageProd.id);
+
+    if (newSeatCount < assigned) {
+      // Need to open reduction modal
+      const assignedUsers = users.filter(u =>
+        licenses.some(l => l.userId === u.id && l.subscriptionId === manageSub.id && l.productId === manageProd.id)
+      );
+      setRemovals({});
+      setManageOpen(false);
+      setReductionOpen(true);
+      return;
+    }
+
+    updateProductLicenseCount(manageSub.id, manageProd.id, newSeatCount);
+    toast({ title: 'Seats Updated', description: `${manageProd.name} updated to ${newSeatCount} seats.` });
+    setManageOpen(false);
+  };
+
+  const manageSeatDelta = manageProd ? newSeatCount - manageProd.licenseCount : 0;
+  const managePriceChange = manageProd ? manageSeatDelta * manageProd.pricePerLicense : 0;
+  const manageAssigned = manageSub && manageProd ? getAssignedLicenseCount(manageSub.id, manageProd.id) : 0;
+
+  // Reduction logic
+  const assignedUsersForReduction = manageSub && manageProd
+    ? users.filter(u => licenses.some(l => l.userId === u.id && l.subscriptionId === manageSub.id && l.productId === manageProd.id))
+    : [];
+  const requiredRemovals = manageProd ? manageAssigned - newSeatCount : 0;
+  const selectedRemovalCount = Object.values(removals).filter(v => v !== null).length;
+
+  const handleRemovalChange = (userId: string, type: RemovalType) => {
+    setRemovals(prev => {
+      const updated = { ...prev };
+      if (updated[userId] === type) {
+        updated[userId] = null;
+      } else {
+        updated[userId] = type;
+      }
+      return updated;
+    });
+  };
+
+  const handleConfirmReduction = () => {
+    if (selectedRemovalCount < requiredRemovals) return;
+    if (!manageSub || !manageProd) return;
+
+    // Unassign "now" users
+    Object.entries(removals).forEach(([userId, type]) => {
+      if (type === 'now') {
+        unassignLicense(userId, manageSub.id, manageProd.id);
+      }
+    });
+
+    updateProductLicenseCount(manageSub.id, manageProd.id, newSeatCount);
+    toast({ title: 'Seats Reduced', description: `${manageProd.name} reduced to ${newSeatCount} seats.` });
+    setReductionOpen(false);
+  };
+
   return (
     <MainLayout>
       <div className="space-y-6">
         <ListingPageHeader
-          title="Licenses"
+          title="License Assignments"
           description={`Manage license assignments for ${currentCompany?.name}`}
         />
 
-        {/* Subscription → Product Hierarchy */}
-        <div className="space-y-2">
-          {subscriptions.map(sub => (
-            <Card key={sub.id}>
-              <Collapsible open={expandedSubs.includes(sub.id)} onOpenChange={() => toggleExpandSub(sub.id)}>
-                <CollapsibleTrigger className="w-full">
-                  <CardContent className="p-3 flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <Key className="h-4 w-4 text-muted-foreground" />
-                      <span className="font-medium">{sub.name}</span>
-                      <Badge variant="outline" className="text-xs">{sub.products.length} products</Badge>
+        {/* License Assignment Cards */}
+        <div className="grid gap-4 md:grid-cols-2">
+          {subscriptions.map(sub =>
+            sub.products.map(prod => {
+              const assigned = getAssignedLicenseCount(sub.id, prod.id);
+              const avail = prod.licenseCount - assigned;
+              const isSelected = selectedSubId === sub.id && selectedProdId === prod.id;
+              return (
+                <Card
+                  key={`${sub.id}-${prod.id}`}
+                  className={cn(
+                    'cursor-pointer transition-all hover:shadow-md',
+                    isSelected && 'ring-2 ring-primary border-primary'
+                  )}
+                  onClick={() => selectProduct(sub.id, prod.id)}
+                >
+                  <CardContent className="p-4">
+                    <div className="flex items-start justify-between">
+                      <div>
+                        <div className="font-semibold">{prod.name}</div>
+                        <div className="text-xs text-muted-foreground">{sub.name} &middot; {sub.planType}</div>
+                        <div className="text-xs text-muted-foreground">Renews {new Date(sub.renewalDate).toLocaleDateString()}</div>
+                      </div>
+                      <div className="text-right">
+                        <div className="font-bold text-lg">{avail}/{prod.licenseCount}</div>
+                        <div className="text-xs text-muted-foreground">seats available</div>
+                      </div>
                     </div>
-                    {expandedSubs.includes(sub.id) ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                    {canModify && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="w-full mt-3"
+                        onClick={(e) => { e.stopPropagation(); openManageSeats(sub, prod); }}
+                      >
+                        <Settings className="h-4 w-4 mr-1" />Manage
+                      </Button>
+                    )}
                   </CardContent>
-                </CollapsibleTrigger>
-                <CollapsibleContent>
-                  <div className="px-3 pb-3 space-y-1">
-                    {sub.products.map(prod => {
-                      const assigned = getAssignedLicenseCount(sub.id, prod.id);
-                      const isSelected = selectedSubId === sub.id && selectedProdId === prod.id;
-                      return (
-                        <div
-                          key={prod.id}
-                          className={cn(
-                            'flex items-center justify-between p-2 rounded-md cursor-pointer transition-colors',
-                            isSelected ? 'bg-primary/10 border border-primary/20' : 'hover:bg-muted/50'
-                          )}
-                          onClick={() => selectProduct(sub.id, prod.id)}
-                        >
-                          <span className="text-sm font-medium">{prod.name}</span>
-                          <span className="text-sm text-muted-foreground">{assigned}/{prod.licenseCount} assigned</span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </CollapsibleContent>
-              </Collapsible>
-            </Card>
-          ))}
+                </Card>
+              );
+            })
+          )}
         </div>
 
         {currentProduct && (
@@ -221,7 +295,7 @@ export const LicensesPage = () => {
               onReset={() => { setSearchQuery(''); setAssignedFilter('all'); setStatusFilter('all'); setCurrentPage(1); }}
               filters={
                 <>
-                  <FilterField label="License Status" value={assignedFilter}
+                  <FilterField label="Assignment" value={assignedFilter}
                     onChange={(v) => { setAssignedFilter(v); setCurrentPage(1); }}
                     options={[
                       { value: 'all', label: 'All Users' },
@@ -229,7 +303,7 @@ export const LicensesPage = () => {
                       { value: 'not-assigned', label: 'Unassigned' },
                     ]}
                   />
-                  <FilterField label="User Status" value={statusFilter}
+                  <FilterField label="Status" value={statusFilter}
                     onChange={(v) => { setStatusFilter(v); setCurrentPage(1); }}
                     options={[
                       { value: 'all', label: 'All Status' },
@@ -306,6 +380,7 @@ export const LicensesPage = () => {
         )}
       </div>
 
+      {/* License Limit Reached */}
       <Dialog open={limitReachedOpen} onOpenChange={setLimitReachedOpen}>
         <DialogContent>
           <DialogHeader>
@@ -326,6 +401,174 @@ export const LicensesPage = () => {
             {canModify && (
               <Button onClick={() => { setLimitReachedOpen(false); navigate('/subscriptions'); }}>Add More Licenses</Button>
             )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Manage Seats Flyout */}
+      <Dialog open={manageOpen} onOpenChange={setManageOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Manage Seats</DialogTitle>
+            <DialogDescription>
+              {manageProd?.name} &middot; {manageSub?.name} &middot; {manageSub?.planType}
+            </DialogDescription>
+          </DialogHeader>
+          {manageProd && manageSub && (
+            <div className="space-y-6">
+              {/* Seat counter */}
+              <div className="flex items-center justify-center gap-4">
+                <Button variant="outline" size="icon" onClick={() => setNewSeatCount(Math.max(1, newSeatCount - 1))} disabled={newSeatCount <= 1}>
+                  <Minus className="h-4 w-4" />
+                </Button>
+                <Input
+                  type="number" min={1} max={500} value={newSeatCount}
+                  onChange={(e) => setNewSeatCount(Math.max(1, Math.min(500, parseInt(e.target.value) || 1)))}
+                  className="w-24 text-center text-lg font-semibold"
+                />
+                <Button variant="outline" size="icon" onClick={() => setNewSeatCount(Math.min(500, newSeatCount + 1))}>
+                  <Plus className="h-4 w-4" />
+                </Button>
+              </div>
+
+              {/* Summary */}
+              <div className="bg-muted/50 rounded-lg p-4 space-y-2">
+                <div className="flex justify-between text-sm"><span className="text-muted-foreground">Current seats</span><span>{manageProd.licenseCount}</span></div>
+                <div className="flex justify-between text-sm"><span className="text-muted-foreground">New seats</span><span>{newSeatCount}</span></div>
+                <div className="flex justify-between text-sm"><span className="text-muted-foreground">Currently assigned</span><span>{manageAssigned}</span></div>
+                {manageSeatDelta !== 0 && (
+                  <>
+                    <div className="border-t pt-2 flex justify-between font-medium">
+                      <span>Seats delta</span>
+                      <span className={manageSeatDelta > 0 ? 'text-success' : 'text-destructive'}>
+                        {manageSeatDelta > 0 ? '+' : ''}{manageSeatDelta}
+                      </span>
+                    </div>
+                    <div className="flex justify-between font-medium">
+                      <span>Price change</span>
+                      <span className={managePriceChange > 0 ? 'text-destructive' : 'text-success'}>
+                        {managePriceChange > 0 ? '+' : ''}${managePriceChange.toLocaleString()}/year
+                      </span>
+                    </div>
+                    <div className="flex justify-between text-xs text-muted-foreground">
+                      <span>Per-seat annual cost</span>
+                      <span>${manageProd.pricePerLicense}/seat</span>
+                    </div>
+                  </>
+                )}
+              </div>
+
+              {/* Assigned users list */}
+              <div>
+                <p className="text-sm font-medium mb-2">{manageAssigned} of {manageProd.licenseCount} seats assigned</p>
+                <div className="max-h-40 overflow-y-auto space-y-1">
+                  {users.filter(u => licenses.some(l => l.userId === u.id && l.subscriptionId === manageSub.id && l.productId === manageProd.id)).map(u => (
+                    <div key={u.id} className="flex items-center gap-3 p-2 bg-muted/30 rounded-md">
+                      <div className="h-7 w-7 rounded-full bg-primary/10 flex items-center justify-center">
+                        <span className="text-xs font-medium text-primary">{u.firstName.charAt(0)}{u.lastName.charAt(0)}</span>
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm font-medium">{u.firstName} {u.lastName}</div>
+                        <div className="text-xs text-muted-foreground truncate">{u.email}</div>
+                      </div>
+                      <Badge variant="outline" className={`text-xs ${u.status === 'active' ? 'status-active' : 'status-inactive'}`}>
+                        {u.status}
+                      </Badge>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {newSeatCount < manageAssigned && (
+                <div className="bg-warning/10 border border-warning/20 rounded-lg p-3 flex items-start gap-2">
+                  <AlertTriangle className="h-4 w-4 text-warning mt-0.5" />
+                  <p className="text-sm">
+                    Reducing to {newSeatCount} seats requires removing {manageAssigned - newSeatCount} assignment(s).
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setManageOpen(false)}>Cancel</Button>
+            <Button onClick={handleApplySeats} disabled={newSeatCount === manageProd?.licenseCount}>
+              {manageProd && newSeatCount < manageAssigned ? 'Select Removals' : 'Apply'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Seat Reduction / Required Removals Modal */}
+      <Dialog open={reductionOpen} onOpenChange={setReductionOpen}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Manage Seats – Required Removals</DialogTitle>
+            <DialogDescription>
+              {manageProd?.name} &middot; Reducing from {manageProd?.licenseCount} to {newSeatCount} seats
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              Licenses already paid for last through the end of the year. Select users to remove now or let their access expire at end of year.
+            </p>
+
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>User</TableHead>
+                  <TableHead className="text-center">Remove Now</TableHead>
+                  <TableHead className="text-center">Expire End of Year</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {assignedUsersForReduction.map(u => (
+                  <TableRow key={u.id}>
+                    <TableCell>
+                      <div className="flex items-center gap-2">
+                        <div className="h-7 w-7 rounded-full bg-primary/10 flex items-center justify-center">
+                          <span className="text-xs font-medium text-primary">{u.firstName.charAt(0)}{u.lastName.charAt(0)}</span>
+                        </div>
+                        <div>
+                          <div className="text-sm font-medium">{u.firstName} {u.lastName}</div>
+                          <div className="text-xs text-muted-foreground">{u.email}</div>
+                        </div>
+                      </div>
+                    </TableCell>
+                    <TableCell className="text-center">
+                      <input
+                        type="radio"
+                        name={`removal-${u.id}`}
+                        checked={removals[u.id] === 'now'}
+                        onChange={() => handleRemovalChange(u.id, 'now')}
+                        className="h-4 w-4 accent-destructive"
+                      />
+                    </TableCell>
+                    <TableCell className="text-center">
+                      <input
+                        type="radio"
+                        name={`removal-${u.id}`}
+                        checked={removals[u.id] === 'eoy'}
+                        onChange={() => handleRemovalChange(u.id, 'eoy')}
+                        className="h-4 w-4"
+                      />
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+
+            <p className={cn(
+              'text-sm font-medium',
+              selectedRemovalCount >= requiredRemovals ? 'text-success' : 'text-muted-foreground'
+            )}>
+              {selectedRemovalCount} of {requiredRemovals} required removals selected
+            </p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => { setReductionOpen(false); setManageOpen(true); }}>Back</Button>
+            <Button onClick={handleConfirmReduction} disabled={selectedRemovalCount < requiredRemovals}>
+              Confirm
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
