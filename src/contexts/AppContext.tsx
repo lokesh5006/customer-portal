@@ -146,8 +146,7 @@ interface AppContextType extends AppState {
 
 // Product catalog for reference
 export const PRODUCT_CATALOG = [
-  { name: 'NumberCruncher Desktop', defaultPrice: 349, description: 'Desktop accounting application', type: 'desktop' as const, latestVersion: '4.2', hasInstaller: true },
-  { name: 'NumberCruncher Web', defaultPrice: 249, description: 'Cloud-based accounting solution', type: 'web' as const, latestVersion: '3.0', hasInstaller: false },
+  { name: 'NumberCruncher', defaultPrice: 349, description: 'Accounting application — Desktop & Web access included', type: 'hybrid' as const, latestVersion: '4.2', hasInstaller: true },
   { name: 'QuickView Desktop', defaultPrice: 199, description: 'Fast reporting and analytics desktop app', type: 'desktop' as const, latestVersion: '2.1', hasInstaller: true },
   { name: 'DataNet', defaultPrice: 0, description: 'Industry data network and alerts', type: 'service' as const, latestVersion: '', hasInstaller: false },
   { name: 'Rate Module', defaultPrice: 99, description: 'Tax rate lookup module', type: 'addon' as const, latestVersion: '1.5', hasInstaller: false },
