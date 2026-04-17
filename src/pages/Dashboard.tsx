@@ -194,7 +194,7 @@ export const Dashboard = () => {
             <div className="flex items-center gap-2">
               <Download className="h-4 w-4 text-primary" />
               <span className="text-sm">
-                Your last download was <strong>NumberCruncher Desktop v4.1</strong> &mdash; <strong>v4.2 is available</strong>.
+                Your last download was <strong>NumberCruncher v4.1</strong> &mdash; <strong>v4.2 is available</strong>.
               </span>
             </div>
             <Button variant="outline" size="sm" onClick={() => navigate('/downloads')}>

@@ -8,7 +8,7 @@ import { ListingPageHeader } from '@/components/listing';
 const newsItems = [
   {
     id: '1',
-    title: 'NumberCruncher Desktop v4.2 Released',
+    title: 'NumberCruncher v4.2 Released',
     date: '2026-04-10',
     summary: 'New performance improvements, bug fixes, and enhanced reporting features in the latest desktop release.',
     category: 'Product Update',
