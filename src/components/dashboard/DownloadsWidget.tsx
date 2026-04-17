@@ -7,7 +7,7 @@ export const DownloadsWidget = () => {
   const navigate = useNavigate();
 
   const recentDownloads = [
-    { name: 'NumberCruncher Desktop v4.2.1', type: 'Installer', icon: Download },
+    { name: 'NumberCruncher v4.2.1', type: 'Installer', icon: Download },
     { name: 'Getting Started Guide', type: 'Documentation', icon: BookOpen },
     { name: 'Release Notes Q1 2024', type: 'Release Notes', icon: FileText },
   ];

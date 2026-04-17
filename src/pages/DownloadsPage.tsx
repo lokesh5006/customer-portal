@@ -203,10 +203,6 @@ export const DownloadsPage = () => {
                           </DropdownMenu>
                         ) : null}
                       </div>
-                    ) : product.type === 'web' && isPurchased ? (
-                      <Button size="sm" variant="outline" onClick={() => window.open('#', '_blank')}>
-                        <ExternalLink className="h-4 w-4 mr-1" />Launch Web App
-                      </Button>
                     ) : product.type === 'service' && isPurchased ? (
                       <Button size="sm" variant="outline" onClick={() => window.open('#', '_blank')}>
                         <ExternalLink className="h-4 w-4 mr-1" />Open DataNet
@@ -216,6 +212,13 @@ export const DownloadsPage = () => {
                         <Download className="h-4 w-4 mr-1" />Not Available
                       </Button>
                     ) : null}
+
+                    {/* Hybrid: also offer Launch Web App alongside the desktop download */}
+                    {product.type === 'hybrid' && isPurchased && (
+                      <Button size="sm" variant="outline" onClick={() => window.open('#', '_blank')}>
+                        <Globe className="h-4 w-4 mr-1" />Launch Web App
+                      </Button>
+                    )}
 
                     {/* Resources button with tooltip */}
                     {isPurchased && productResources[product.name] && (
