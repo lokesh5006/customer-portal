@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useApp, Subscription, SubscriptionProduct, Invoice } from '@/contexts/AppContext';
+import { useApp } from '@/contexts/AppContext';
 import { MainLayout } from '@/components/layout/MainLayout';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -14,23 +14,15 @@ import {
 import {
   Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogDescription,
 } from '@/components/ui/dialog';
-import {
-  ListingPageHeader,
-  DataTable,
-  DataTableColumn,
-  PaginationControls,
-} from '@/components/listing';
+import { ListingPageHeader } from '@/components/listing';
 import { useToast } from '@/hooks/use-toast';
 import {
-  CreditCard,
-  Eye,
-  Check,
-  Calendar,
-  Building2,
-  Edit,
-  Info,
+  CreditCard, Eye, Calendar, Edit, CheckCircle2, AlertTriangle, ArrowRight, Download, Check,
+  Building2, Mail, Phone, MapPin, FileText, Receipt, FileSignature, RefreshCw,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+
+type PaymentMethod = 'Direct ACH' | 'Credit Card' | 'ACH e-Check' | 'Paper Check' | 'Invoice Only (Net 30)';
 
 export const SubscriptionsPage = () => {
   const navigate = useNavigate();
@@ -39,48 +31,85 @@ export const SubscriptionsPage = () => {
     getCompanySubscriptions,
     getCompanyInvoices,
     getAssignedLicenseCount,
-    hasAccess,
   } = useApp();
   const { toast } = useToast();
 
   const subscriptions = getCompanySubscriptions();
   const invoices = getCompanyInvoices();
-  const canModify = hasAccess(['owner', 'billing']);
 
   const [selectedSubIndex, setSelectedSubIndex] = useState(0);
   const [activeTab, setActiveTab] = useState('overview');
   const [editBillingOpen, setEditBillingOpen] = useState(false);
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('Credit Card');
+  const [invoiceFilter, setInvoiceFilter] = useState<string>('all');
 
   const currentSub = subscriptions[selectedSubIndex] || null;
   const subInvoices = invoices.filter(i => currentSub && i.subscriptionId === currentSub.id);
 
-  // Quotes sample data
+  // Realistic billing details (state-managed for the edit modal)
+  const [billing, setBilling] = useState({
+    companyName: currentCompany?.name || 'ABC Accounting',
+    address: '123 Main St, Suite 400',
+    city: 'New York',
+    stateZip: 'NY 10001',
+    contactName: 'Sarah Johnson',
+    contactEmail: 'billing@abcaccounting.com',
+    phone: '(212) 555-0101',
+    taxId: '12-3456789',
+  });
+  const [draftBilling, setDraftBilling] = useState(billing);
+
+  const subTotal = (sub: typeof subscriptions[number]) =>
+    sub.products.reduce((a, p) => a + p.licenseCount * p.pricePerLicense, 0);
+
+  // Realistic quotes
   const quotes = currentSub ? [
-    {
-      id: 'Q-2026-001',
-      date: '2026-03-20',
-      description: `Renewal Quote – ${currentSub.name}`,
-      amount: currentSub.products.reduce((a, p) => a + p.licenseCount * p.pricePerLicense, 0),
-      status: 'pending',
-    },
+    { id: 'Q-2026-001', date: '2026-03-20', expires: '2026-05-20',
+      description: `Renewal Quote — ${currentSub.name}`,
+      amount: subTotal(currentSub), status: 'pending' as const },
+    { id: 'Q-2026-002', date: '2026-02-10', expires: '2026-04-10',
+      description: `Add-on Seats — ${currentSub.name}`,
+      amount: 1495, status: 'expired' as const },
   ] : [];
 
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case 'paid': return 'status-active';
-      case 'pending': return 'status-pending';
-      case 'overdue': return 'status-overdue';
-      case 'active': return 'status-active';
+  const accountStatus: 'Current' | 'Renewal Due' | 'Payment Overdue' = (() => {
+    const overdue = subInvoices.some(i => i.status === 'overdue');
+    if (overdue) return 'Payment Overdue';
+    const renewal = currentSub ? new Date(currentSub.renewalDate) : null;
+    if (renewal && (renewal.getTime() - Date.now()) / (1000 * 60 * 60 * 24) < 60) return 'Renewal Due';
+    return 'Current';
+  })();
+
+  const statusBadgeClass = (s: string) => {
+    switch (s) {
+      case 'paid':
+      case 'active':
+      case 'Current':
+        return 'status-active';
+      case 'pending':
+      case 'Renewal Due':
+        return 'status-invited';
+      case 'overdue':
+      case 'Payment Overdue':
+        return 'status-overdue';
       default: return '';
     }
   };
+
+  const filteredInvoices = subInvoices.filter(i => invoiceFilter === 'all' || i.status === invoiceFilter);
+
+  const lastPaid = subInvoices.find(i => i.status === 'paid');
+  const nextInvoice = subInvoices.find(i => i.status !== 'paid');
+  const outstanding = subInvoices.filter(i => i.balance > 0).reduce((a, i) => a + i.balance, 0);
+
+  const paymentMethods: PaymentMethod[] = ['Direct ACH', 'Credit Card', 'ACH e-Check', 'Paper Check', 'Invoice Only (Net 30)'];
 
   return (
     <MainLayout>
       <div className="space-y-6">
         <ListingPageHeader
           title="Subscriptions"
-          description={`Manage subscriptions for ${currentCompany?.name}`}
+          description="Manage your active products, renewal options, invoices, and billing details."
         />
 
         {subscriptions.length === 0 ? (
@@ -93,242 +122,321 @@ export const SubscriptionsPage = () => {
             </CardContent>
           </Card>
         ) : (
-          <div className="flex gap-4">
-            {/* Subscription Selector - left side */}
+          <>
+            {/* Subscription Selector */}
             {subscriptions.length > 1 && (
-              <div className="flex flex-col gap-2 shrink-0">
+              <div className="flex flex-wrap gap-2">
                 {subscriptions.map((sub, idx) => (
                   <Button
                     key={sub.id}
                     variant={selectedSubIndex === idx ? 'default' : 'outline'}
-                    className="justify-start text-left h-auto py-3 px-4"
                     onClick={() => { setSelectedSubIndex(idx); setActiveTab('overview'); }}
+                    className="h-auto py-2 px-4"
                   >
-                    <div>
-                      <div className="font-medium text-sm">{sub.name}</div>
-                      <div className="text-xs opacity-80">{sub.planType}</div>
+                    <div className="text-left">
+                      <div className="text-sm font-medium">{sub.name}</div>
+                      <div className="text-xs opacity-80">{sub.planType} · {sub.products.length} product{sub.products.length !== 1 ? 's' : ''}</div>
                     </div>
                   </Button>
                 ))}
               </div>
             )}
 
-            {/* Main Content */}
-            <div className="flex-1 min-w-0">
-              {currentSub && (
-                <Card>
-                  <CardContent className="p-0">
-                    <Tabs value={activeTab} onValueChange={setActiveTab}>
-                      <div className="border-b px-4 pt-4">
-                        <TabsList>
-                          <TabsTrigger value="overview">Overview</TabsTrigger>
-                          <TabsTrigger value="invoices">Invoices</TabsTrigger>
-                          <TabsTrigger value="quotes">Quotes</TabsTrigger>
-                        </TabsList>
+            {currentSub && (
+              <Card>
+                <CardContent className="p-0">
+                  <Tabs value={activeTab} onValueChange={setActiveTab}>
+                    <div className="border-b px-4 pt-4">
+                      <TabsList>
+                        <TabsTrigger value="overview">Overview</TabsTrigger>
+                        <TabsTrigger value="invoices">Invoices</TabsTrigger>
+                        <TabsTrigger value="quotes">Quotes</TabsTrigger>
+                      </TabsList>
+                    </div>
+
+                    {/* OVERVIEW TAB */}
+                    <TabsContent value="overview" className="p-6 space-y-6">
+                      {/* Section 1: Subscription Summary Cards (per product) */}
+                      <div>
+                        <h3 className="font-semibold mb-3">Active Products</h3>
+                        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+                          {currentSub.products.map(prod => {
+                            const assigned = getAssignedLicenseCount(currentSub.id, prod.id);
+                            return (
+                              <Card key={prod.id} className="border-2 hover:border-primary/40 transition-colors">
+                                <CardContent className="p-4 space-y-3">
+                                  <div className="flex items-start justify-between">
+                                    <div>
+                                      <h4 className="font-semibold">{prod.name}</h4>
+                                      <p className="text-xs text-muted-foreground">{currentSub.planType}</p>
+                                    </div>
+                                    <Badge variant="outline" className={statusBadgeClass(prod.status)}>{prod.status}</Badge>
+                                  </div>
+                                  <div className="grid grid-cols-2 gap-2 text-xs">
+                                    <div>
+                                      <p className="text-muted-foreground">Renews</p>
+                                      <p className="font-medium">{new Date(currentSub.renewalDate).toLocaleDateString()}</p>
+                                    </div>
+                                    <div>
+                                      <p className="text-muted-foreground">Last Payment</p>
+                                      <p className="font-medium">Credit Card</p>
+                                    </div>
+                                  </div>
+                                  <div className="flex items-center justify-between p-2 bg-muted/40 rounded-md text-sm">
+                                    <span className="text-muted-foreground">Seats</span>
+                                    <span className="font-semibold">{assigned}/{prod.licenseCount} assigned</span>
+                                  </div>
+                                  <Button variant="outline" size="sm" className="w-full" onClick={() => navigate('/licenses')}>
+                                    View License Assignments<ArrowRight className="h-3 w-3 ml-1" />
+                                  </Button>
+                                </CardContent>
+                              </Card>
+                            );
+                          })}
+                        </div>
                       </div>
 
-                      {/* OVERVIEW TAB */}
-                      <TabsContent value="overview" className="p-6 space-y-6">
-                        {/* Sub Info */}
-                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                          <div>
-                            <p className="text-xs text-muted-foreground">Subscription</p>
-                            <p className="font-semibold">{currentSub.name}</p>
-                          </div>
-                          <div>
-                            <p className="text-xs text-muted-foreground">Plan Type</p>
-                            <p className="font-medium">{currentSub.planType}</p>
-                          </div>
-                          <div>
-                            <p className="text-xs text-muted-foreground">Billing</p>
-                            <p className="font-medium capitalize">{currentSub.billingFrequency}</p>
-                          </div>
-                          <div>
-                            <p className="text-xs text-muted-foreground">Renewal Date</p>
-                            <p className="font-medium">{new Date(currentSub.renewalDate).toLocaleDateString()}</p>
-                          </div>
-                        </div>
+                      {/* Section 2: Billing Summary */}
+                      <div className="grid gap-4 md:grid-cols-2">
+                        <Card>
+                          <CardHeader className="pb-2">
+                            <CardTitle className="text-base flex items-center gap-2">
+                              <Receipt className="h-4 w-4 text-primary" />Billing Summary
+                            </CardTitle>
+                          </CardHeader>
+                          <CardContent className="space-y-3 text-sm">
+                            <div className="flex justify-between">
+                              <span className="text-muted-foreground">Last Payment Date</span>
+                              <span className="font-medium">{lastPaid ? new Date(lastPaid.date).toLocaleDateString() : '—'}</span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-muted-foreground">Last Payment Method</span>
+                              <span className="font-medium">Credit Card</span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-muted-foreground">Next Invoice Amount</span>
+                              <span className="font-medium">${(nextInvoice?.amount || subTotal(currentSub)).toLocaleString()}</span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-muted-foreground">Next Renewal Date</span>
+                              <span className="font-medium">{new Date(currentSub.renewalDate).toLocaleDateString()}</span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span className="text-muted-foreground">Current Balance</span>
+                              <span className="font-medium">${outstanding.toLocaleString()}</span>
+                            </div>
+                            {outstanding > 0 && (
+                              <div className="flex justify-between text-destructive">
+                                <span>Outstanding Balance</span>
+                                <span className="font-semibold">${outstanding.toLocaleString()}</span>
+                              </div>
+                            )}
+                            <div className="pt-2 border-t flex justify-between items-center">
+                              <span className="text-muted-foreground">Status</span>
+                              <Badge variant="outline" className={statusBadgeClass(accountStatus)}>{accountStatus}</Badge>
+                            </div>
+                          </CardContent>
+                        </Card>
 
-                        <div>
-                          <Badge variant="outline" className={getStatusColor(currentSub.status)}>
-                            {currentSub.status}
-                          </Badge>
-                        </div>
-
-                        {/* Products table */}
-                        <div>
-                          <h4 className="font-semibold mb-3">Products</h4>
-                          <Table>
-                            <TableHeader>
-                              <TableRow>
-                                <TableHead>Product</TableHead>
-                                <TableHead className="text-center">Seats</TableHead>
-                                <TableHead className="text-center">Assigned</TableHead>
-                                <TableHead className="text-center">Available</TableHead>
-                                <TableHead className="text-right">Price/Seat</TableHead>
-                                <TableHead className="text-right">Total</TableHead>
-                              </TableRow>
-                            </TableHeader>
-                            <TableBody>
-                              {currentSub.products.map(prod => {
-                                const assigned = getAssignedLicenseCount(currentSub.id, prod.id);
+                        {/* Section 3: Renewal Options */}
+                        <Card>
+                          <CardHeader className="pb-2">
+                            <CardTitle className="text-base flex items-center gap-2">
+                              <RefreshCw className="h-4 w-4 text-primary" />Renewal Options
+                            </CardTitle>
+                          </CardHeader>
+                          <CardContent>
+                            <p className="text-xs text-muted-foreground mb-3">Select a payment method for your next renewal.</p>
+                            <div className="space-y-2">
+                              {paymentMethods.map(opt => {
+                                const selected = paymentMethod === opt;
                                 return (
-                                  <TableRow key={prod.id}>
-                                    <TableCell className="font-medium">{prod.name}</TableCell>
-                                    <TableCell className="text-center">{prod.licenseCount}</TableCell>
-                                    <TableCell className="text-center">{assigned}</TableCell>
-                                    <TableCell className="text-center">{prod.licenseCount - assigned}</TableCell>
-                                    <TableCell className="text-right">${prod.pricePerLicense.toLocaleString()}</TableCell>
-                                    <TableCell className="text-right">${(prod.licenseCount * prod.pricePerLicense).toLocaleString()}</TableCell>
-                                  </TableRow>
+                                  <button
+                                    key={opt}
+                                    onClick={() => { setPaymentMethod(opt); toast({ title: 'Renewal payment method updated', description: opt }); }}
+                                    className={cn(
+                                      'w-full flex items-center justify-between p-2.5 rounded-md border text-sm transition-colors text-left',
+                                      selected ? 'border-primary bg-primary/5' : 'border-border hover:border-primary/40'
+                                    )}
+                                  >
+                                    <span className={cn('flex items-center gap-2', selected && 'font-medium')}>
+                                      <CreditCard className="h-4 w-4 text-muted-foreground" />
+                                      {opt}
+                                    </span>
+                                    {selected && <Badge variant="outline" className="status-active text-xs"><Check className="h-3 w-3 mr-1" />Current</Badge>}
+                                  </button>
                                 );
                               })}
-                            </TableBody>
-                          </Table>
-                        </div>
+                            </div>
+                          </CardContent>
+                        </Card>
+                      </div>
 
-                        {/* Payment Method */}
-                        <div className="bg-muted/30 rounded-lg p-4 space-y-3">
-                          <div className="flex items-center gap-2">
-                            <CreditCard className="h-4 w-4 text-muted-foreground" />
-                            <span className="text-sm">You last paid by <strong>Credit Card</strong>.</span>
-                          </div>
-                        </div>
-
-                        {/* Renewal Options */}
-                        <div>
-                          <h4 className="font-semibold mb-2">Renewal Options</h4>
-                          <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
-                            {['Direct ACH', 'Credit Card', 'ACH e-Check', 'Paper Check', 'Invoice Only (Net 30)'].map(opt => (
-                              <div
-                                key={opt}
-                                className={cn(
-                                  'p-3 rounded-md border text-center text-sm cursor-pointer hover:border-primary/50 transition-colors',
-                                  opt === 'Credit Card' ? 'border-primary bg-primary/5 font-medium' : ''
-                                )}
-                              >
-                                {opt}
+                      {/* Section 4: Billing Details */}
+                      <Card className="group">
+                        <CardHeader className="pb-2 flex flex-row items-center justify-between">
+                          <CardTitle className="text-base flex items-center gap-2">
+                            <Building2 className="h-4 w-4 text-primary" />Billing Details
+                          </CardTitle>
+                          <Button
+                            variant="ghost" size="sm"
+                            className="h-8 w-8 p-0 opacity-0 group-hover:opacity-100 transition-opacity"
+                            onClick={() => { setDraftBilling(billing); setEditBillingOpen(true); }}
+                          >
+                            <Edit className="h-4 w-4" />
+                          </Button>
+                        </CardHeader>
+                        <CardContent>
+                          <div className="grid gap-4 md:grid-cols-2 text-sm">
+                            <div className="flex items-start gap-2">
+                              <Building2 className="h-4 w-4 text-muted-foreground mt-0.5" />
+                              <div>
+                                <p className="text-xs text-muted-foreground">Company Name</p>
+                                <p className="font-medium">{billing.companyName}</p>
                               </div>
-                            ))}
+                            </div>
+                            <div className="flex items-start gap-2">
+                              <MapPin className="h-4 w-4 text-muted-foreground mt-0.5" />
+                              <div>
+                                <p className="text-xs text-muted-foreground">Address</p>
+                                <p className="font-medium">{billing.address}<br />{billing.city}, {billing.stateZip}</p>
+                              </div>
+                            </div>
+                            <div className="flex items-start gap-2">
+                              <Mail className="h-4 w-4 text-muted-foreground mt-0.5" />
+                              <div>
+                                <p className="text-xs text-muted-foreground">Billing Contact</p>
+                                <p className="font-medium">{billing.contactName}</p>
+                                <p className="text-xs text-muted-foreground">{billing.contactEmail}</p>
+                              </div>
+                            </div>
+                            <div className="flex items-start gap-2">
+                              <Phone className="h-4 w-4 text-muted-foreground mt-0.5" />
+                              <div>
+                                <p className="text-xs text-muted-foreground">Phone</p>
+                                <p className="font-medium">{billing.phone}</p>
+                                <p className="text-xs text-muted-foreground mt-1">Tax ID: {billing.taxId}</p>
+                              </div>
+                            </div>
                           </div>
-                        </div>
+                        </CardContent>
+                      </Card>
+                    </TabsContent>
 
-                        {/* Billing Details */}
-                        <div>
-                          <div className="flex items-center justify-between mb-2">
-                            <h4 className="font-semibold">Billing Details</h4>
+                    {/* INVOICES TAB */}
+                    <TabsContent value="invoices" className="p-6 space-y-4">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex gap-1">
+                          {(['all', 'paid', 'pending', 'overdue'] as const).map(f => (
                             <Button
-                              variant="ghost"
+                              key={f}
+                              variant={invoiceFilter === f ? 'default' : 'outline'}
                               size="sm"
-                              onClick={() => setEditBillingOpen(true)}
-                              className="h-8 w-8 p-0"
+                              onClick={() => setInvoiceFilter(f)}
+                              className="capitalize"
                             >
-                              <Edit className="h-4 w-4" />
+                              {f}
                             </Button>
-                          </div>
-                          <div className="bg-muted/30 rounded-lg p-4 grid grid-cols-2 gap-3 text-sm">
-                            <div>
-                              <p className="text-xs text-muted-foreground">Company</p>
-                              <p className="font-medium">{currentCompany?.name}</p>
-                            </div>
-                            <div>
-                              <p className="text-xs text-muted-foreground">Address</p>
-                              <p className="font-medium">123 Main St, Suite 400<br />New York, NY 10001</p>
-                            </div>
-                            <div>
-                              <p className="text-xs text-muted-foreground">Company Contact</p>
-                              <p className="font-medium">John Smith</p>
-                            </div>
-                            <div>
-                              <p className="text-xs text-muted-foreground">Email</p>
-                              <p className="font-medium">billing@abcaccounting.com</p>
-                            </div>
-                          </div>
+                          ))}
                         </div>
-                      </TabsContent>
-
-                      {/* INVOICES TAB */}
-                      <TabsContent value="invoices" className="p-6">
-                        {subInvoices.length === 0 ? (
-                          <div className="text-center py-8 text-muted-foreground">No invoices for this subscription.</div>
-                        ) : (
-                          <Table>
-                            <TableHeader>
-                              <TableRow>
-                                <TableHead>Invoice #</TableHead>
-                                <TableHead>Date</TableHead>
-                                <TableHead>Due Date</TableHead>
-                                <TableHead>Status</TableHead>
-                                <TableHead className="text-right">Amount</TableHead>
-                                <TableHead className="text-right">Balance</TableHead>
-                                <TableHead className="text-right">Actions</TableHead>
+                        <Button variant="outline" size="sm" onClick={() => navigate('/invoices')}>
+                          <FileText className="h-4 w-4 mr-1" />All Invoices
+                        </Button>
+                      </div>
+                      {filteredInvoices.length === 0 ? (
+                        <div className="text-center py-12 text-muted-foreground">
+                          <Receipt className="h-12 w-12 mx-auto mb-2 opacity-30" />
+                          No invoices match this filter.
+                        </div>
+                      ) : (
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead>Invoice #</TableHead>
+                              <TableHead>Product</TableHead>
+                              <TableHead>Date</TableHead>
+                              <TableHead>Due Date</TableHead>
+                              <TableHead>Status</TableHead>
+                              <TableHead className="text-right">Amount</TableHead>
+                              <TableHead className="text-right">Actions</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {filteredInvoices.map(inv => (
+                              <TableRow key={inv.id}>
+                                <TableCell className="font-medium">{inv.invoiceNumber}</TableCell>
+                                <TableCell className="text-sm text-muted-foreground">
+                                  {inv.lineItems.map(l => l.product).join(', ')}
+                                </TableCell>
+                                <TableCell>{new Date(inv.date).toLocaleDateString()}</TableCell>
+                                <TableCell>{new Date(inv.dueDate).toLocaleDateString()}</TableCell>
+                                <TableCell>
+                                  <Badge variant="outline" className={statusBadgeClass(inv.status)}>{inv.status}</Badge>
+                                </TableCell>
+                                <TableCell className="text-right font-medium">${inv.amount.toLocaleString()}</TableCell>
+                                <TableCell className="text-right">
+                                  <Button variant="ghost" size="sm" onClick={() => toast({ title: 'Downloading PDF', description: inv.invoiceNumber })}>
+                                    <Download className="h-4 w-4" />
+                                  </Button>
+                                  <Button variant="ghost" size="sm" onClick={() => navigate('/invoices')}>
+                                    <Eye className="h-4 w-4" />
+                                  </Button>
+                                </TableCell>
                               </TableRow>
-                            </TableHeader>
-                            <TableBody>
-                              {subInvoices.map(inv => (
-                                <TableRow key={inv.id}>
-                                  <TableCell className="font-medium">{inv.invoiceNumber}</TableCell>
-                                  <TableCell>{new Date(inv.date).toLocaleDateString()}</TableCell>
-                                  <TableCell>{new Date(inv.dueDate).toLocaleDateString()}</TableCell>
-                                  <TableCell>
-                                    <Badge variant="outline" className={getStatusColor(inv.status)}>{inv.status}</Badge>
-                                  </TableCell>
-                                  <TableCell className="text-right">${inv.amount.toLocaleString()}</TableCell>
-                                  <TableCell className="text-right">${inv.balance.toLocaleString()}</TableCell>
-                                  <TableCell className="text-right">
-                                    <Button variant="ghost" size="sm">
-                                      <Eye className="h-4 w-4" />
+                            ))}
+                          </TableBody>
+                        </Table>
+                      )}
+                    </TabsContent>
+
+                    {/* QUOTES TAB */}
+                    <TabsContent value="quotes" className="p-6">
+                      {quotes.length === 0 ? (
+                        <div className="text-center py-12 text-muted-foreground">No quotes available.</div>
+                      ) : (
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead>Quote #</TableHead>
+                              <TableHead>Product</TableHead>
+                              <TableHead>Created</TableHead>
+                              <TableHead>Expires</TableHead>
+                              <TableHead className="text-right">Amount</TableHead>
+                              <TableHead>Status</TableHead>
+                              <TableHead className="text-right">Actions</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {quotes.map(q => (
+                              <TableRow key={q.id}>
+                                <TableCell className="font-medium">{q.id}</TableCell>
+                                <TableCell className="text-sm">{q.description}</TableCell>
+                                <TableCell>{new Date(q.date).toLocaleDateString()}</TableCell>
+                                <TableCell>{new Date(q.expires).toLocaleDateString()}</TableCell>
+                                <TableCell className="text-right font-medium">${q.amount.toLocaleString()}</TableCell>
+                                <TableCell>
+                                  <Badge variant="outline" className={q.status === 'pending' ? 'status-invited' : 'status-inactive'}>{q.status}</Badge>
+                                </TableCell>
+                                <TableCell className="text-right">
+                                  <Button variant="ghost" size="sm" onClick={() => toast({ title: 'Quote viewed', description: q.id })}><Eye className="h-4 w-4" /></Button>
+                                  <Button variant="ghost" size="sm" onClick={() => toast({ title: 'Downloading quote PDF', description: q.id })}><Download className="h-4 w-4" /></Button>
+                                  {q.status === 'pending' && (
+                                    <Button variant="outline" size="sm" className="ml-1" onClick={() => toast({ title: 'Quote accepted', description: q.id })}>
+                                      <Check className="h-4 w-4 mr-1" />Accept
                                     </Button>
-                                    {inv.balance > 0 && (
-                                      <Button variant="outline" size="sm" className="ml-1" onClick={() => navigate('/billing')}>
-                                        Pay
-                                      </Button>
-                                    )}
-                                  </TableCell>
-                                </TableRow>
-                              ))}
-                            </TableBody>
-                          </Table>
-                        )}
-                      </TabsContent>
-
-                      {/* QUOTES TAB */}
-                      <TabsContent value="quotes" className="p-6">
-                        {quotes.length === 0 ? (
-                          <div className="text-center py-8 text-muted-foreground">No quotes available.</div>
-                        ) : (
-                          <Table>
-                            <TableHeader>
-                              <TableRow>
-                                <TableHead>Quote #</TableHead>
-                                <TableHead>Date</TableHead>
-                                <TableHead>Description</TableHead>
-                                <TableHead>Status</TableHead>
-                                <TableHead className="text-right">Amount</TableHead>
+                                  )}
+                                </TableCell>
                               </TableRow>
-                            </TableHeader>
-                            <TableBody>
-                              {quotes.map(q => (
-                                <TableRow key={q.id}>
-                                  <TableCell className="font-medium">{q.id}</TableCell>
-                                  <TableCell>{new Date(q.date).toLocaleDateString()}</TableCell>
-                                  <TableCell>{q.description}</TableCell>
-                                  <TableCell>
-                                    <Badge variant="outline" className={getStatusColor(q.status)}>{q.status}</Badge>
-                                  </TableCell>
-                                  <TableCell className="text-right">${q.amount.toLocaleString()}</TableCell>
-                                </TableRow>
-                              ))}
-                            </TableBody>
-                          </Table>
-                        )}
-                      </TabsContent>
-                    </Tabs>
-                  </CardContent>
-                </Card>
-              )}
-            </div>
-          </div>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      )}
+                    </TabsContent>
+                  </Tabs>
+                </CardContent>
+              </Card>
+            )}
+          </>
         )}
       </div>
 
@@ -337,39 +445,25 @@ export const SubscriptionsPage = () => {
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>Edit Billing Details</DialogTitle>
-            <DialogDescription>Update your billing contact information.</DialogDescription>
+            <DialogDescription>Update your billing contact and address information.</DialogDescription>
           </DialogHeader>
-          <div className="space-y-4">
-            <div className="space-y-2">
-              <Label>Company Name</Label>
-              <Input defaultValue={currentCompany?.name} />
+          <div className="space-y-3">
+            <div className="space-y-1.5"><Label>Company Name</Label><Input value={draftBilling.companyName} onChange={e => setDraftBilling({ ...draftBilling, companyName: e.target.value })} /></div>
+            <div className="space-y-1.5"><Label>Address</Label><Input value={draftBilling.address} onChange={e => setDraftBilling({ ...draftBilling, address: e.target.value })} /></div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5"><Label>City</Label><Input value={draftBilling.city} onChange={e => setDraftBilling({ ...draftBilling, city: e.target.value })} /></div>
+              <div className="space-y-1.5"><Label>State / ZIP</Label><Input value={draftBilling.stateZip} onChange={e => setDraftBilling({ ...draftBilling, stateZip: e.target.value })} /></div>
             </div>
-            <div className="space-y-2">
-              <Label>Address</Label>
-              <Input defaultValue="123 Main St, Suite 400" />
-            </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label>City</Label>
-                <Input defaultValue="New York" />
-              </div>
-              <div className="space-y-2">
-                <Label>State / ZIP</Label>
-                <Input defaultValue="NY 10001" />
-              </div>
-            </div>
-            <div className="space-y-2">
-              <Label>Contact Name</Label>
-              <Input defaultValue="John Smith" />
-            </div>
-            <div className="space-y-2">
-              <Label>Email</Label>
-              <Input defaultValue="billing@abcaccounting.com" />
+            <div className="space-y-1.5"><Label>Contact Name</Label><Input value={draftBilling.contactName} onChange={e => setDraftBilling({ ...draftBilling, contactName: e.target.value })} /></div>
+            <div className="space-y-1.5"><Label>Contact Email</Label><Input value={draftBilling.contactEmail} onChange={e => setDraftBilling({ ...draftBilling, contactEmail: e.target.value })} /></div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5"><Label>Phone</Label><Input value={draftBilling.phone} onChange={e => setDraftBilling({ ...draftBilling, phone: e.target.value })} /></div>
+              <div className="space-y-1.5"><Label>Tax ID</Label><Input value={draftBilling.taxId} onChange={e => setDraftBilling({ ...draftBilling, taxId: e.target.value })} /></div>
             </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setEditBillingOpen(false)}>Cancel</Button>
-            <Button onClick={() => { toast({ title: 'Billing details saved' }); setEditBillingOpen(false); }}>Save</Button>
+            <Button onClick={() => { setBilling(draftBilling); toast({ title: 'Billing details saved' }); setEditBillingOpen(false); }}>Save</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
