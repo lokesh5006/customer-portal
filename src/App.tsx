@@ -12,6 +12,7 @@ import { CompanySelection } from "./pages/CompanySelection";
 import { SignupWizard } from "./pages/SignupWizard";
 import { Dashboard } from "./pages/Dashboard";
 import { UsersPage } from "./pages/UsersPage";
+import { UsersContactsPage } from "./pages/UsersContactsPage";
 import { SubscriptionsPage } from "./pages/SubscriptionsPage";
 import { LicensesPage } from "./pages/LicensesPage";
 import { LicenseReductionPage } from "./pages/LicenseReductionPage";
@@ -39,14 +40,15 @@ const App = () => (
             <Route path="/select-company" element={<CompanySelection />} />
             <Route path="/signup" element={<SignupWizard />} />
             <Route path="/dashboard" element={<Dashboard />} />
-            <Route path="/users" element={<UsersPage />} />
+            <Route path="/users" element={<UsersContactsPage />} />
+            <Route path="/users-contacts" element={<UsersContactsPage />} />
             <Route path="/subscriptions" element={<SubscriptionsPage />} />
             <Route path="/licenses" element={<LicensesPage />} />
             <Route path="/licenses/reduce" element={<LicenseReductionPage />} />
             <Route path="/billing" element={<BillingPage />} />
             <Route path="/invoices" element={<BillingPage />} />
             <Route path="/quotes" element={<QuotesPage />} />
-            <Route path="/contacts" element={<ContactsPage />} />
+            <Route path="/contacts" element={<UsersContactsPage />} />
             <Route path="/downloads" element={<DownloadsPage />} />
             <Route path="/news" element={<NewsPage />} />
             <Route path="/support" element={<SupportPage />} />

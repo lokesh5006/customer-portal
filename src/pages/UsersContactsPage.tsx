@@ -1,50 +1,42 @@
 import { useState } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { MainLayout } from '@/components/layout/MainLayout';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { ListingPageHeader } from '@/components/listing';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { UsersPage } from './UsersPage';
 import { ContactsPage } from './ContactsPage';
 
 /**
- * Combined Users & Contacts page with tabs.
- * Reuses the existing UsersPage and ContactsPage components by rendering their
- * inner content within tabs. Each child page already wraps itself in MainLayout,
- * so we render them directly — they each provide their own toolbar/header.
+ * Combined Users & Contacts page.
+ * Uses a top tab bar to switch between the existing UsersPage and ContactsPage.
+ * Each child page brings its own MainLayout/header/toolbar which keeps the
+ * implementation minimal while reducing nav clutter.
  */
 export const UsersContactsPage = () => {
-  const [tab, setTab] = useState('users');
+  const [params, setParams] = useSearchParams();
+  const initial = params.get('tab') === 'contacts' ? 'contacts' : 'users';
+  const [tab, setTab] = useState<string>(initial);
+
+  const handleChange = (value: string) => {
+    setTab(value);
+    setParams({ tab: value }, { replace: true });
+  };
 
   return (
-    <Tabs value={tab} onValueChange={setTab} className="contents">
-      {/* Header rendered outside MainLayout via children — children provide their own MainLayout. */}
-      <div style={{ display: 'none' }} aria-hidden />
-      {tab === 'users' ? <UsersWithTabs tab={tab} setTab={setTab} /> : <ContactsWithTabs tab={tab} setTab={setTab} />}
-    </Tabs>
+    <div>
+      {/* Sticky tab bar above the page content */}
+      <div className="sticky top-14 z-30 bg-background border-b">
+        <div className="container mx-auto px-6">
+          <Tabs value={tab} onValueChange={handleChange}>
+            <TabsList className="my-2">
+              <TabsTrigger value="users">Users</TabsTrigger>
+              <TabsTrigger value="contacts">Contacts</TabsTrigger>
+            </TabsList>
+          </Tabs>
+        </div>
+      </div>
+      {tab === 'users' ? <UsersPage /> : <ContactsPage />}
+    </div>
   );
 };
-
-// Lightweight wrappers that inject the tab switcher above each page's existing content.
-const TabSwitcher = ({ tab, setTab }: { tab: string; setTab: (v: string) => void }) => (
-  <div className="border-b bg-card">
-    <div className="container mx-auto px-6 pt-4">
-      <TabsList>
-        <TabsTrigger value="users" onClick={() => setTab('users')}>Users</TabsTrigger>
-        <TabsTrigger value="contacts" onClick={() => setTab('contacts')}>Contacts</TabsTrigger>
-      </TabsList>
-    </div>
-  </div>
-);
-
-const UsersWithTabs = ({ tab, setTab }: { tab: string; setTab: (v: string) => void }) => (
-  <>
-    <UsersPage />
-  </>
-);
-
-const ContactsWithTabs = ({ tab, setTab }: { tab: string; setTab: (v: string) => void }) => (
-  <>
-    <ContactsPage />
-  </>
-);
 
 export default UsersContactsPage;
