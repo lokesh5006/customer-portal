@@ -20,6 +20,8 @@ import { DownloadsPage } from "./pages/DownloadsPage";
 import { NewsPage } from "./pages/NewsPage";
 import { SupportPage } from "./pages/SupportPage";
 import { ProfilePage } from "./pages/ProfilePage";
+import { ContactsPage } from "./pages/ContactsPage";
+import { QuotesPage } from "./pages/QuotesPage";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -42,6 +44,9 @@ const App = () => (
             <Route path="/licenses" element={<LicensesPage />} />
             <Route path="/licenses/reduce" element={<LicenseReductionPage />} />
             <Route path="/billing" element={<BillingPage />} />
+            <Route path="/invoices" element={<BillingPage />} />
+            <Route path="/quotes" element={<QuotesPage />} />
+            <Route path="/contacts" element={<ContactsPage />} />
             <Route path="/downloads" element={<DownloadsPage />} />
             <Route path="/news" element={<NewsPage />} />
             <Route path="/support" element={<SupportPage />} />
