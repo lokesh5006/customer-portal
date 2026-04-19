@@ -204,16 +204,52 @@ export const LicensesPage = () => {
     setReductionOpen(false);
   };
 
+  // Aggregate summary across all subscriptions/products
+  const totalSeats = subscriptions.reduce((a, s) => a + s.products.reduce((b, p) => b + p.licenseCount, 0), 0);
+  const totalAssigned = subscriptions.reduce(
+    (a, s) => a + s.products.reduce((b, p) => b + getAssignedLicenseCount(s.id, p.id), 0),
+    0
+  );
+  const totalAvailable = totalSeats - totalAssigned;
+  const productsWithOpenSeats = subscriptions.reduce(
+    (a, s) => a + s.products.filter(p => p.licenseCount - getAssignedLicenseCount(s.id, p.id) > 0).length,
+    0
+  );
+
+  const summaryCards = [
+    { label: 'Total Seats', value: totalSeats, icon: Key, color: 'text-primary', bg: 'bg-primary/10' },
+    { label: 'Assigned Seats', value: totalAssigned, icon: Users, color: 'text-info', bg: 'bg-info/10' },
+    { label: 'Available Seats', value: totalAvailable, icon: Check, color: 'text-success', bg: 'bg-success/10' },
+    { label: 'Products with Open Seats', value: productsWithOpenSeats, icon: Settings, color: 'text-warning', bg: 'bg-warning/10' },
+  ];
+
   return (
     <MainLayout>
       <div className="space-y-6">
         <ListingPageHeader
           title="License Assignments"
-          description={`Manage license assignments for ${currentCompany?.name}`}
+          description="Manage product seats, assigned users, and available licenses."
         />
 
+        {/* Top summary cards */}
+        <div className="grid gap-4 md:grid-cols-4">
+          {summaryCards.map(s => (
+            <Card key={s.label}>
+              <CardContent className="p-4 flex items-center justify-between">
+                <div>
+                  <p className="text-sm text-muted-foreground">{s.label}</p>
+                  <p className="text-2xl font-bold mt-1">{s.value}</p>
+                </div>
+                <div className={`h-10 w-10 rounded-lg ${s.bg} flex items-center justify-center`}>
+                  <s.icon className={`h-5 w-5 ${s.color}`} />
+                </div>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+
         {/* License Assignment Cards */}
-        <div className="grid gap-4 md:grid-cols-2">
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
           {subscriptions.map(sub =>
             sub.products.map(prod => {
               const assigned = getAssignedLicenseCount(sub.id, prod.id);
@@ -229,17 +265,21 @@ export const LicensesPage = () => {
                   onClick={() => selectProduct(sub.id, prod.id)}
                 >
                   <CardContent className="p-4">
-                    <div className="flex items-start justify-between">
-                      <div>
-                        <div className="font-semibold">{prod.name}</div>
-                        <div className="text-xs text-muted-foreground">{sub.name} &middot; {sub.planType}</div>
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="font-semibold truncate">{prod.name}</div>
+                        <div className="text-xs text-muted-foreground truncate">{sub.name} · {sub.planType}</div>
                         <div className="text-xs text-muted-foreground">Renews {new Date(sub.renewalDate).toLocaleDateString()}</div>
                       </div>
-                      <div className="text-right">
-                        <div className="font-bold text-lg">{avail}/{prod.licenseCount}</div>
-                        <div className="text-xs text-muted-foreground">seats available</div>
-                      </div>
+                      <Badge variant="outline" className={avail === 0 ? 'status-overdue' : 'status-active'}>
+                        {avail === 0 ? 'Full' : 'Open'}
+                      </Badge>
                     </div>
+                    <div className="mt-3 flex items-baseline justify-between">
+                      <div className="text-xs text-muted-foreground">Seats available</div>
+                      <div className="font-bold text-lg">{avail}/{prod.licenseCount}</div>
+                    </div>
+                    <div className="mt-1 text-xs text-muted-foreground">{assigned}/{prod.licenseCount} seats assigned</div>
                     {canModify && (
                       <Button
                         variant="outline"
