@@ -162,22 +162,15 @@ export const UsersPage = () => {
       ),
     },
     {
-      key: 'products', header: 'Products Assigned',
+      key: 'products', header: 'Product Access',
       render: (user) => {
         const products = getUserAssignedProducts(user.id);
-        if (products.length === 0) return <span className="text-muted-foreground text-sm">None</span>;
-        const grouped = products.reduce<Record<string, string[]>>((acc, p) => {
-          if (!acc[p.subscriptionName]) acc[p.subscriptionName] = [];
-          acc[p.subscriptionName].push(p.productName);
-          return acc;
-        }, {});
+        if (products.length === 0) return <span className="text-muted-foreground text-xs">None</span>;
+        const unique = Array.from(new Set(products.map(p => p.productName)));
         return (
-          <div className="space-y-0.5">
-            {Object.entries(grouped).map(([subName, prods]) => (
-              <div key={subName} className="text-xs">
-                <span className="text-muted-foreground">{subName} →</span>{' '}
-                <span className="font-medium">{prods.join(', ')}</span>
-              </div>
+          <div className="flex flex-wrap gap-1">
+            {unique.map(name => (
+              <Badge key={name} variant="outline" className="text-xs bg-primary/5 text-primary border-primary/20">{name}</Badge>
             ))}
           </div>
         );
@@ -236,14 +229,44 @@ export const UsersPage = () => {
     },
   ];
 
+  const totalUsers = users.length;
+  const activeUsers = users.filter(u => u.status === 'active').length;
+  const inactiveUsers = users.filter(u => u.status === 'inactive').length;
+  const pendingUsers = users.filter(u => u.status === 'invited').length;
+
+  const summaryCards = [
+    { label: 'Total Users', value: totalUsers, icon: 'users', color: 'text-primary', bg: 'bg-primary/10' },
+    { label: 'Active Users', value: activeUsers, icon: 'check', color: 'text-success', bg: 'bg-success/10' },
+    { label: 'Inactive Users', value: inactiveUsers, icon: 'x', color: 'text-muted-foreground', bg: 'bg-muted' },
+    { label: 'Pending Invitations', value: pendingUsers, icon: 'mail', color: 'text-warning', bg: 'bg-warning/10' },
+  ] as const;
+
   return (
     <MainLayout>
       <div className="space-y-6">
-        <ListingPageHeader title="Users" description={`Manage users for ${currentCompany?.name}`}
+        <ListingPageHeader title="Users" description="Manage users, access, roles, and communication preferences."
           primaryAction={<Button onClick={() => setAddUserOpen(true)}><Plus className="h-4 w-4 mr-2" />Add User</Button>}
           secondaryAction={<Button variant="outline"><Download className="h-4 w-4 mr-2" />Export CSV</Button>}
         />
 
+        <div className="grid gap-4 md:grid-cols-4">
+          {summaryCards.map(s => {
+            const Icon = s.icon === 'users' ? UserCheck : s.icon === 'check' ? UserCheck : s.icon === 'x' ? UserX : Mail;
+            return (
+              <Card key={s.label}>
+                <CardContent className="p-4 flex items-center justify-between">
+                  <div>
+                    <p className="text-sm text-muted-foreground">{s.label}</p>
+                    <p className="text-2xl font-bold mt-1">{s.value}</p>
+                  </div>
+                  <div className={`h-10 w-10 rounded-lg ${s.bg} flex items-center justify-center`}>
+                    <Icon className={`h-5 w-5 ${s.color}`} />
+                  </div>
+                </CardContent>
+              </Card>
+            );
+          })}
+        </div>
         <SearchFilterCard searchValue={searchQuery} onSearchChange={(v) => { setSearchQuery(v); setCurrentPage(1); }}
           searchPlaceholder="Search by name or email..." onReset={resetFilters}
           filters={
