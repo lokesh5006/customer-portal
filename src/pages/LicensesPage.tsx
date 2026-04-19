@@ -248,54 +248,64 @@ export const LicensesPage = () => {
           ))}
         </div>
 
-        {/* License Assignment Cards */}
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-          {subscriptions.map(sub =>
-            sub.products.map(prod => {
-              const assigned = getAssignedLicenseCount(sub.id, prod.id);
-              const avail = prod.licenseCount - assigned;
-              const isSelected = selectedSubId === sub.id && selectedProdId === prod.id;
-              return (
-                <Card
-                  key={`${sub.id}-${prod.id}`}
-                  className={cn(
-                    'cursor-pointer transition-all hover:shadow-md',
-                    isSelected && 'ring-2 ring-primary border-primary'
-                  )}
-                  onClick={() => selectProduct(sub.id, prod.id)}
-                >
-                  <CardContent className="p-4">
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="min-w-0">
-                        <div className="font-semibold truncate">{prod.name}</div>
-                        <div className="text-xs text-muted-foreground truncate">{sub.name} · {sub.planType}</div>
-                        <div className="text-xs text-muted-foreground">Renews {new Date(sub.renewalDate).toLocaleDateString()}</div>
-                      </div>
-                      <Badge variant="outline" className={avail === 0 ? 'status-overdue' : 'status-active'}>
-                        {avail === 0 ? 'Full' : 'Open'}
-                      </Badge>
-                    </div>
-                    <div className="mt-3 flex items-baseline justify-between">
-                      <div className="text-xs text-muted-foreground">Seats available</div>
-                      <div className="font-bold text-lg">{avail}/{prod.licenseCount}</div>
-                    </div>
-                    <div className="mt-1 text-xs text-muted-foreground">{assigned}/{prod.licenseCount} seats assigned</div>
-                    {canModify && (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="w-full mt-3"
-                        onClick={(e) => { e.stopPropagation(); openManageSeats(sub, prod); }}
-                      >
-                        <Settings className="h-4 w-4 mr-1" />Manage
-                      </Button>
-                    )}
-                  </CardContent>
-                </Card>
-              );
-            })
-          )}
-        </div>
+        {/* License Assignments Table */}
+        <Card>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Product</TableHead>
+                <TableHead>Subscription</TableHead>
+                <TableHead className="text-center">Seats Assigned</TableHead>
+                <TableHead className="text-center">Seats Available</TableHead>
+                <TableHead>Renewal Date</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead className="text-right">Action</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {subscriptions.flatMap(sub =>
+                sub.products.map(prod => {
+                  const assigned = getAssignedLicenseCount(sub.id, prod.id);
+                  const avail = prod.licenseCount - assigned;
+                  const isSelected = selectedSubId === sub.id && selectedProdId === prod.id;
+                  return (
+                    <TableRow
+                      key={`${sub.id}-${prod.id}`}
+                      className={cn('cursor-pointer', isSelected && 'bg-primary/5')}
+                      onClick={() => selectProduct(sub.id, prod.id)}
+                    >
+                      <TableCell className="font-medium">{prod.name}</TableCell>
+                      <TableCell className="text-sm text-muted-foreground">{sub.name} · {sub.planType}</TableCell>
+                      <TableCell className="text-center font-medium">{assigned}/{prod.licenseCount}</TableCell>
+                      <TableCell className="text-center">
+                        <span className={cn('font-semibold', avail === 0 ? 'text-destructive' : 'text-success')}>
+                          {avail}/{prod.licenseCount}
+                        </span>
+                      </TableCell>
+                      <TableCell className="text-sm">{new Date(sub.renewalDate).toLocaleDateString()}</TableCell>
+                      <TableCell>
+                        <Badge variant="outline" className={avail === 0 ? 'status-overdue' : 'status-active'}>
+                          {avail === 0 ? 'Full' : 'Active'}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="text-right">
+                        {canModify && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={(e) => { e.stopPropagation(); openManageSeats(sub, prod); }}
+                          >
+                            <Settings className="h-4 w-4 mr-1" />Manage
+                          </Button>
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  );
+                })
+              )}
+            </TableBody>
+          </Table>
+        </Card>
 
         {currentProduct && (
           <>

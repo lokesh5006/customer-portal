@@ -156,35 +156,74 @@ export const SubscriptionsPage = () => {
 
                     {/* OVERVIEW TAB */}
                     <TabsContent value="overview" className="p-6 space-y-6">
-                      {/* Section 1: Subscription Summary Cards (per product) */}
+                      {/* SECTION 1: Subscription Summary Header */}
+                      <Card className="border-2 border-primary/20 bg-gradient-to-br from-primary/5 to-transparent">
+                        <CardContent className="p-5">
+                          <div className="flex flex-wrap items-start justify-between gap-4">
+                            <div className="space-y-1">
+                              <div className="flex items-center gap-2">
+                                <h3 className="text-lg font-semibold">{currentSub.name}</h3>
+                                <Badge variant="outline" className={statusBadgeClass(accountStatus)}>{accountStatus}</Badge>
+                              </div>
+                              <p className="text-xs text-muted-foreground">
+                                Renews {new Date(currentSub.renewalDate).toLocaleDateString()} · Billed {currentSub.planType} · Last paid by {paymentMethod}
+                              </p>
+                            </div>
+                            <div className="flex gap-2">
+                              <Button variant="outline" size="sm" onClick={() => document.getElementById('renewal-options')?.scrollIntoView({ behavior: 'smooth' })}>
+                                <RefreshCw className="h-3 w-3 mr-1" />Renewal Options
+                              </Button>
+                              <Button variant="outline" size="sm" onClick={() => { setDraftBilling(billing); setEditBillingOpen(true); }}>
+                                <Building2 className="h-3 w-3 mr-1" />Billing Details
+                              </Button>
+                            </div>
+                          </div>
+                          <div className="grid gap-4 md:grid-cols-4 mt-4 pt-4 border-t">
+                            <div>
+                              <p className="text-xs text-muted-foreground">Next Invoice</p>
+                              <p className="font-semibold">${(nextInvoice?.amount || subTotal(currentSub)).toLocaleString()}</p>
+                              <p className="text-xs text-muted-foreground">due {new Date(currentSub.renewalDate).toLocaleDateString()}</p>
+                            </div>
+                            <div>
+                              <p className="text-xs text-muted-foreground">Last Payment</p>
+                              <p className="font-semibold">{lastPaid ? `$${lastPaid.amount.toLocaleString()}` : '—'}</p>
+                              <p className="text-xs text-muted-foreground">{lastPaid ? new Date(lastPaid.date).toLocaleDateString() : '—'} · {paymentMethod}</p>
+                            </div>
+                            <div>
+                              <p className="text-xs text-muted-foreground">Outstanding Balance</p>
+                              <p className={cn('font-semibold', outstanding > 0 && 'text-destructive')}>${outstanding.toLocaleString()}</p>
+                              <p className="text-xs text-muted-foreground">{outstanding > 0 ? 'Action required' : 'Nothing due'}</p>
+                            </div>
+                            <div>
+                              <p className="text-xs text-muted-foreground">Products</p>
+                              <p className="font-semibold">{currentSub.products.length}</p>
+                              <p className="text-xs text-muted-foreground">in this subscription</p>
+                            </div>
+                          </div>
+                        </CardContent>
+                      </Card>
+
+                      {/* SECTION 2: Products Under This Subscription */}
                       <div>
-                        <h3 className="font-semibold mb-3">Active Products</h3>
-                        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+                        <h3 className="font-semibold mb-3 text-sm">Products in this subscription</h3>
+                        <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
                           {currentSub.products.map(prod => {
                             const assigned = getAssignedLicenseCount(currentSub.id, prod.id);
+                            const avail = prod.licenseCount - assigned;
                             return (
-                              <Card key={prod.id} className="border-2 hover:border-primary/40 transition-colors">
+                              <Card key={prod.id} className="hover:border-primary/40 transition-colors">
                                 <CardContent className="p-4 space-y-3">
-                                  <div className="flex items-start justify-between">
-                                    <div>
-                                      <h4 className="font-semibold">{prod.name}</h4>
-                                      <p className="text-xs text-muted-foreground">{currentSub.planType}</p>
-                                    </div>
+                                  <div className="flex items-start justify-between gap-2">
+                                    <h4 className="font-semibold text-sm">{prod.name}</h4>
                                     <Badge variant="outline" className={statusBadgeClass(prod.status)}>{prod.status}</Badge>
                                   </div>
-                                  <div className="grid grid-cols-2 gap-2 text-xs">
-                                    <div>
-                                      <p className="text-muted-foreground">Renews</p>
-                                      <p className="font-medium">{new Date(currentSub.renewalDate).toLocaleDateString()}</p>
-                                    </div>
-                                    <div>
-                                      <p className="text-muted-foreground">Last Payment</p>
-                                      <p className="font-medium">Credit Card</p>
-                                    </div>
+                                  <div className="flex items-baseline justify-between text-sm">
+                                    <span className="text-muted-foreground text-xs">Seats assigned</span>
+                                    <span className="font-semibold">{assigned}/{prod.licenseCount}</span>
                                   </div>
-                                  <div className="flex items-center justify-between p-2 bg-muted/40 rounded-md text-sm">
-                                    <span className="text-muted-foreground">Seats</span>
-                                    <span className="font-semibold">{assigned}/{prod.licenseCount} assigned</span>
+                                  <div className="flex items-baseline justify-between text-sm">
+                                    <span className="text-muted-foreground text-xs">Available</span>
+                                    <span className={cn('font-semibold', avail === 0 ? 'text-destructive' : 'text-success')}>{avail}</span>
                                   </div>
                                   <Button variant="outline" size="sm" className="w-full" onClick={() => navigate('/licenses')}>
                                     View License Assignments<ArrowRight className="h-3 w-3 ml-1" />
@@ -196,8 +235,8 @@ export const SubscriptionsPage = () => {
                         </div>
                       </div>
 
-                      {/* Section 2: Billing Summary */}
-                      <div className="grid gap-4 md:grid-cols-2">
+                      {/* Section 3: Billing Summary + Renewal Options */}
+                      <div id="renewal-options" className="grid gap-4 md:grid-cols-2">
                         <Card>
                           <CardHeader className="pb-2">
                             <CardTitle className="text-base flex items-center gap-2">
