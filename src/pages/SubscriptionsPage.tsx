@@ -43,6 +43,7 @@ export const SubscriptionsPage = () => {
   const [editBillingOpen, setEditBillingOpen] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('Credit Card');
   const [invoiceFilter, setInvoiceFilter] = useState<string>('all');
+  const [renewalOpen, setRenewalOpen] = useState(false);
 
   const currentSub = subscriptions[selectedSubIndex] || null;
   const subInvoices = invoices.filter(i => currentSub && i.subscriptionId === currentSub.id);
