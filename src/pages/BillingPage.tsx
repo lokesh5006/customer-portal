@@ -81,7 +81,13 @@ export const BillingPage = () => {
       render: (inv) => (
         <div className="flex justify-end gap-2">
           <Button variant="ghost" size="sm" onClick={() => { setSelectedInvoice(inv); setDetailsOpen(true); }}><Eye className="h-4 w-4" /></Button>
-          {inv.balance > 0 && <Button size="sm" variant="outline" onClick={() => { setSelectedInvoice(inv); setPaymentOpen(true); }}><CreditCard className="h-4 w-4 mr-1" />Pay</Button>}
+          {inv.balance > 0 && (
+            <Button size="sm" variant="outline" onClick={() => {
+              setSelectedInvoice(inv);
+              if (inv.invoiceType === 'Renewal Invoice' || inv.invoiceType === 'Initial Invoice') setRenewalOpen(true);
+              else setPaymentOpen(true);
+            }}><CreditCard className="h-4 w-4 mr-1" />Pay Now</Button>
+          )}
         </div>
       ),
     },
