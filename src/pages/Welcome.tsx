@@ -44,7 +44,7 @@ export const Welcome = () => {
               onClick={() => navigate('/signup')}
             >
               <UserPlus className="h-4 w-4" />
-              Create Account & Buy Subscription
+              Create Account &amp; Start Subscription
             </Button>
           </CardContent>
         </Card>
