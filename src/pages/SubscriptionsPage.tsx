@@ -518,6 +518,13 @@ export const SubscriptionsPage = () => {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <RenewalFlyout
+        open={renewalOpen}
+        onOpenChange={setRenewalOpen}
+        subscription={currentSub}
+        renewalPeriod="Jan 1, 2027 → Dec 31, 2027"
+      />
     </MainLayout>
   );
 };
