@@ -415,6 +415,17 @@ export const SubscriptionsPage = () => {
                                 </TableCell>
                                 <TableCell className="text-right font-medium">${inv.amount.toLocaleString()}</TableCell>
                                 <TableCell className="text-right">
+                                  {(inv.status === 'overdue' || inv.status === 'unpaid' || inv.status === 'pending') && (
+                                    <Button variant="default" size="sm" className="mr-1" onClick={() => {
+                                      if (inv.invoiceType === 'Renewal Invoice' || inv.invoiceType === 'Initial Invoice') {
+                                        setRenewalOpen(true);
+                                      } else {
+                                        toast({ title: 'Pay invoice', description: `Opening payment for ${inv.invoiceNumber}` });
+                                      }
+                                    }}>
+                                      <CreditCard className="h-3 w-3 mr-1" />Pay Now
+                                    </Button>
+                                  )}
                                   <Button variant="ghost" size="sm" onClick={() => toast({ title: 'Downloading PDF', description: inv.invoiceNumber })}>
                                     <Download className="h-4 w-4" />
                                   </Button>
