@@ -172,12 +172,11 @@ export const SubscriptionsPage = () => {
                               </p>
                             </div>
                             <div className="flex gap-2">
-                              <Button variant="outline" size="sm" onClick={() => document.getElementById('renewal-options')?.scrollIntoView({ behavior: 'smooth' })}>
-                                <RefreshCw className="h-3 w-3 mr-1" />Renewal Options
-                              </Button>
-                              <Button variant="outline" size="sm" onClick={() => { setDraftBilling(billing); setEditBillingOpen(true); }}>
-                                <Building2 className="h-3 w-3 mr-1" />Billing Details
-                              </Button>
+                              {accountStatus === 'Payment Overdue' && (
+                                <Button size="sm" variant="destructive" onClick={() => setRenewalOpen(true)}>
+                                  <CreditCard className="h-3 w-3 mr-1" />Pay Now
+                                </Button>
+                              )}
                             </div>
                           </div>
                           <div className="grid gap-4 md:grid-cols-4 mt-4 pt-4 border-t">
