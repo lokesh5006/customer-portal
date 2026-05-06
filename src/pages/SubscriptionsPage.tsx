@@ -21,6 +21,7 @@ import {
   Building2, Mail, Phone, MapPin, FileText, Receipt, FileSignature, RefreshCw,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { RenewalFlyout } from '@/components/billing/RenewalFlyout';
 
 type PaymentMethod = 'Direct ACH' | 'Credit Card' | 'ACH e-Check' | 'Paper Check' | 'Invoice Only (Net 30)';
 
