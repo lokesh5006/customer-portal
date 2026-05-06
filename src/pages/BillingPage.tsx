@@ -16,9 +16,10 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { RenewalFlyout } from '@/components/billing/RenewalFlyout';
 
 export const BillingPage = () => {
-  const { getCompanyInvoices, currentCompany } = useApp();
+  const { getCompanyInvoices, getCompanySubscriptions, currentCompany } = useApp();
   const { toast } = useToast();
   const invoices = getCompanyInvoices();
+  const subs = getCompanySubscriptions();
 
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
