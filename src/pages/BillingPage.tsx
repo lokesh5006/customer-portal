@@ -31,6 +31,7 @@ export const BillingPage = () => {
   const [selectedInvoice, setSelectedInvoice] = useState<Invoice | null>(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [paymentOpen, setPaymentOpen] = useState(false);
+  const [renewalOpen, setRenewalOpen] = useState(false);
 
   const subscriptionNames = [...new Set(invoices.map(i => i.subscriptionName))];
 
