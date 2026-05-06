@@ -250,6 +250,12 @@ export const Dashboard = () => {
 
         <QuickActionsWidget />
       </div>
+      <RenewalFlyout
+        open={renewalOpen}
+        onOpenChange={setRenewalOpen}
+        subscription={subscriptions[0] || null}
+        renewalPeriod="Jan 1, 2027 → Dec 31, 2027"
+      />
     </MainLayout>
   );
 };
