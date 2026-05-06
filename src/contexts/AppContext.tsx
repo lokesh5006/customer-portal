@@ -37,10 +37,14 @@ export interface Subscription {
   name: string;
   planType: string;
   billingFrequency: 'annual' | 'monthly';
-  status: 'active' | 'cancelled' | 'pending' | 'expired';
+  status: 'active' | 'cancelled' | 'pending' | 'expired' | 'overdue' | 'suspended' | 'pending_payment';
   startDate: string;
   renewalDate: string;
+  baseFee?: number;          // Base subscription fee (e.g. $1,000)
+  perSeatCost?: number;      // Default per-seat cost (e.g. $10)
   products: SubscriptionProduct[];
+  /** Pending seat reductions scheduled for next renewal cycle: prodId -> new seat count */
+  pendingChanges?: Record<string, number>;
 }
 
 export interface License {
