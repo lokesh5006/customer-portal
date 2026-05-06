@@ -534,11 +534,20 @@ export const LicensesPage = () => {
                 </div>
               </div>
 
-              {newSeatCount < manageAssigned && (
-                <div className="bg-warning/10 border border-warning/20 rounded-lg p-3 flex items-start gap-2">
+              {manageSeatDelta < 0 && (
+                <div className="bg-info/10 border border-info/20 rounded-lg p-3 flex items-start gap-2 text-sm">
+                  <AlertTriangle className="h-4 w-4 text-info mt-0.5" />
+                  <p>
+                    Seat reduction to {newSeatCount} will apply on {new Date(manageSub.renewalDate).toLocaleDateString()}.
+                    No refund for the current paid period.
+                  </p>
+                </div>
+              )}
+              {manageSeatDelta > 0 && (
+                <div className="bg-warning/10 border border-warning/20 rounded-lg p-3 flex items-start gap-2 text-sm">
                   <AlertTriangle className="h-4 w-4 text-warning mt-0.5" />
-                  <p className="text-sm">
-                    Reducing to {newSeatCount} seats requires removing {manageAssigned - newSeatCount} assignment(s).
+                  <p>
+                    {manageSeatDelta} additional seats will be active immediately. An adjustment invoice for ${managePriceChange.toLocaleString()} will be generated and remain unpaid until payment.
                   </p>
                 </div>
               )}
@@ -547,7 +556,7 @@ export const LicensesPage = () => {
           <DialogFooter>
             <Button variant="outline" onClick={() => setManageOpen(false)}>Cancel</Button>
             <Button onClick={handleApplySeats} disabled={newSeatCount === manageProd?.licenseCount}>
-              {manageProd && newSeatCount < manageAssigned ? 'Select Removals' : 'Apply'}
+              {manageSeatDelta > 0 ? 'Apply & Generate Invoice' : manageSeatDelta < 0 ? 'Schedule Reduction' : 'Apply'}
             </Button>
           </DialogFooter>
         </DialogContent>
