@@ -33,6 +33,7 @@ import { SupportSnapshotWidget } from '@/components/dashboard/SupportSnapshotWid
 import { UserOverviewWidget } from '@/components/dashboard/UserOverviewWidget';
 import { QuickActionsWidget } from '@/components/dashboard/QuickActionsWidget';
 import { MyTicketsWidget } from '@/components/dashboard/MyTicketsWidget';
+import { RenewalFlyout } from '@/components/billing/RenewalFlyout';
 
 export const Dashboard = () => {
   const navigate = useNavigate();
