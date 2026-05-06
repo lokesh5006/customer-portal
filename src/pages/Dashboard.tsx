@@ -150,7 +150,7 @@ export const Dashboard = () => {
                 {totalOutstanding > 0 && canViewBilling && (
                   <Button
                     variant={accountStatus === 'overdue' ? 'destructive' : 'default'}
-                    onClick={() => navigate('/billing')}
+                    onClick={() => setRenewalOpen(true)}
                   >
                     <CreditCard className="h-4 w-4 mr-2" />Pay Now
                   </Button>
