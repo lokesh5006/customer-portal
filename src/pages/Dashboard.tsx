@@ -39,6 +39,7 @@ export const Dashboard = () => {
   const navigate = useNavigate();
   const { currentUser, currentCompany, hasAccess, demoRoles, getCompanySubscriptions, getCompanyInvoices, getAssignedLicenseCount } = useApp();
   const [dataNetOptOut, setDataNetOptOut] = useState(false);
+  const [renewalOpen, setRenewalOpen] = useState(false);
 
   const isOwner = hasAccess(['owner']);
   const isBilling = hasAccess(['billing']);
