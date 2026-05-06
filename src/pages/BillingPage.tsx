@@ -188,6 +188,12 @@ export const BillingPage = () => {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      <RenewalFlyout
+        open={renewalOpen}
+        onOpenChange={setRenewalOpen}
+        subscription={subs.find(s => s.id === selectedInvoice?.subscriptionId) || subs[0] || null}
+        renewalPeriod="Jan 1, 2027 → Dec 31, 2027"
+      />
     </MainLayout>
   );
 };
