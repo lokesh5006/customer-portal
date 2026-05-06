@@ -147,22 +147,27 @@ export const LicensesPage = () => {
 
   const handleApplySeats = () => {
     if (!manageSub || !manageProd) return;
-    const assigned = getAssignedLicenseCount(manageSub.id, manageProd.id);
-
-    if (newSeatCount < assigned) {
-      // Need to open reduction modal
-      const assignedUsers = users.filter(u =>
-        licenses.some(l => l.userId === u.id && l.subscriptionId === manageSub.id && l.productId === manageProd.id)
-      );
-      setRemovals({});
+    const delta = newSeatCount - manageProd.licenseCount;
+    if (delta > 0) {
+      // Mid-cycle increase: apply seats immediately, generate adjustment invoice
+      const cost = delta * (manageProd.pricePerLicense || manageSub.perSeatCost || 10);
+      updateProductLicenseCount(manageSub.id, manageProd.id, newSeatCount);
+      toast({
+        title: 'Adjustment Invoice generated',
+        description: `+${delta} seats active immediately. Adjustment invoice for $${cost.toLocaleString()} is pending payment.`,
+      });
       setManageOpen(false);
-      setReductionOpen(true);
       return;
     }
-
-    updateProductLicenseCount(manageSub.id, manageProd.id, newSeatCount);
-    toast({ title: 'Seats Updated', description: `${manageProd.name} updated to ${newSeatCount} seats.` });
-    setManageOpen(false);
+    if (delta < 0) {
+      // Mid-cycle decrease: schedule for next renewal cycle, no refund, no immediate change
+      toast({
+        title: 'Seat reduction scheduled',
+        description: `Seat reduction to ${newSeatCount} will apply on ${new Date(manageSub.renewalDate).toLocaleDateString()}. No refund for current period.`,
+      });
+      setManageOpen(false);
+      return;
+    }
   };
 
   const manageSeatDelta = manageProd ? newSeatCount - manageProd.licenseCount : 0;
