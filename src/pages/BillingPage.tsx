@@ -13,11 +13,13 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { RenewalFlyout } from '@/components/billing/RenewalFlyout';
 
 export const BillingPage = () => {
-  const { getCompanyInvoices, currentCompany } = useApp();
+  const { getCompanyInvoices, getCompanySubscriptions, currentCompany } = useApp();
   const { toast } = useToast();
   const invoices = getCompanyInvoices();
+  const subs = getCompanySubscriptions();
 
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
@@ -29,6 +31,7 @@ export const BillingPage = () => {
   const [selectedInvoice, setSelectedInvoice] = useState<Invoice | null>(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [paymentOpen, setPaymentOpen] = useState(false);
+  const [renewalOpen, setRenewalOpen] = useState(false);
 
   const subscriptionNames = [...new Set(invoices.map(i => i.subscriptionName))];
 
@@ -78,7 +81,13 @@ export const BillingPage = () => {
       render: (inv) => (
         <div className="flex justify-end gap-2">
           <Button variant="ghost" size="sm" onClick={() => { setSelectedInvoice(inv); setDetailsOpen(true); }}><Eye className="h-4 w-4" /></Button>
-          {inv.balance > 0 && <Button size="sm" variant="outline" onClick={() => { setSelectedInvoice(inv); setPaymentOpen(true); }}><CreditCard className="h-4 w-4 mr-1" />Pay</Button>}
+          {inv.balance > 0 && (
+            <Button size="sm" variant="outline" onClick={() => {
+              setSelectedInvoice(inv);
+              if (inv.invoiceType === 'Renewal Invoice' || inv.invoiceType === 'Initial Invoice') setRenewalOpen(true);
+              else setPaymentOpen(true);
+            }}><CreditCard className="h-4 w-4 mr-1" />Pay Now</Button>
+          )}
         </div>
       ),
     },
@@ -179,6 +188,12 @@ export const BillingPage = () => {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      <RenewalFlyout
+        open={renewalOpen}
+        onOpenChange={setRenewalOpen}
+        subscription={subs.find(s => s.id === selectedInvoice?.subscriptionId) || subs[0] || null}
+        renewalPeriod="Jan 1, 2027 → Dec 31, 2027"
+      />
     </MainLayout>
   );
 };

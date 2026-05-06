@@ -147,22 +147,27 @@ export const LicensesPage = () => {
 
   const handleApplySeats = () => {
     if (!manageSub || !manageProd) return;
-    const assigned = getAssignedLicenseCount(manageSub.id, manageProd.id);
-
-    if (newSeatCount < assigned) {
-      // Need to open reduction modal
-      const assignedUsers = users.filter(u =>
-        licenses.some(l => l.userId === u.id && l.subscriptionId === manageSub.id && l.productId === manageProd.id)
-      );
-      setRemovals({});
+    const delta = newSeatCount - manageProd.licenseCount;
+    if (delta > 0) {
+      // Mid-cycle increase: apply seats immediately, generate adjustment invoice
+      const cost = delta * (manageProd.pricePerLicense || manageSub.perSeatCost || 10);
+      updateProductLicenseCount(manageSub.id, manageProd.id, newSeatCount);
+      toast({
+        title: 'Adjustment Invoice generated',
+        description: `+${delta} seats active immediately. Adjustment invoice for $${cost.toLocaleString()} is pending payment.`,
+      });
       setManageOpen(false);
-      setReductionOpen(true);
       return;
     }
-
-    updateProductLicenseCount(manageSub.id, manageProd.id, newSeatCount);
-    toast({ title: 'Seats Updated', description: `${manageProd.name} updated to ${newSeatCount} seats.` });
-    setManageOpen(false);
+    if (delta < 0) {
+      // Mid-cycle decrease: schedule for next renewal cycle, no refund, no immediate change
+      toast({
+        title: 'Seat reduction scheduled',
+        description: `Seat reduction to ${newSeatCount} will apply on ${new Date(manageSub.renewalDate).toLocaleDateString()}. No refund for current period.`,
+      });
+      setManageOpen(false);
+      return;
+    }
   };
 
   const manageSeatDelta = manageProd ? newSeatCount - manageProd.licenseCount : 0;
@@ -529,11 +534,20 @@ export const LicensesPage = () => {
                 </div>
               </div>
 
-              {newSeatCount < manageAssigned && (
-                <div className="bg-warning/10 border border-warning/20 rounded-lg p-3 flex items-start gap-2">
+              {manageSeatDelta < 0 && (
+                <div className="bg-info/10 border border-info/20 rounded-lg p-3 flex items-start gap-2 text-sm">
+                  <AlertTriangle className="h-4 w-4 text-info mt-0.5" />
+                  <p>
+                    Seat reduction to {newSeatCount} will apply on {new Date(manageSub.renewalDate).toLocaleDateString()}.
+                    No refund for the current paid period.
+                  </p>
+                </div>
+              )}
+              {manageSeatDelta > 0 && (
+                <div className="bg-warning/10 border border-warning/20 rounded-lg p-3 flex items-start gap-2 text-sm">
                   <AlertTriangle className="h-4 w-4 text-warning mt-0.5" />
-                  <p className="text-sm">
-                    Reducing to {newSeatCount} seats requires removing {manageAssigned - newSeatCount} assignment(s).
+                  <p>
+                    {manageSeatDelta} additional seats will be active immediately. An adjustment invoice for ${managePriceChange.toLocaleString()} will be generated and remain unpaid until payment.
                   </p>
                 </div>
               )}
@@ -542,7 +556,7 @@ export const LicensesPage = () => {
           <DialogFooter>
             <Button variant="outline" onClick={() => setManageOpen(false)}>Cancel</Button>
             <Button onClick={handleApplySeats} disabled={newSeatCount === manageProd?.licenseCount}>
-              {manageProd && newSeatCount < manageAssigned ? 'Select Removals' : 'Apply'}
+              {manageSeatDelta > 0 ? 'Apply & Generate Invoice' : manageSeatDelta < 0 ? 'Schedule Reduction' : 'Apply'}
             </Button>
           </DialogFooter>
         </DialogContent>

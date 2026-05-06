@@ -21,6 +21,7 @@ import {
   Building2, Mail, Phone, MapPin, FileText, Receipt, FileSignature, RefreshCw,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { RenewalFlyout } from '@/components/billing/RenewalFlyout';
 
 type PaymentMethod = 'Direct ACH' | 'Credit Card' | 'ACH e-Check' | 'Paper Check' | 'Invoice Only (Net 30)';
 
@@ -42,6 +43,7 @@ export const SubscriptionsPage = () => {
   const [editBillingOpen, setEditBillingOpen] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('Credit Card');
   const [invoiceFilter, setInvoiceFilter] = useState<string>('all');
+  const [renewalOpen, setRenewalOpen] = useState(false);
 
   const currentSub = subscriptions[selectedSubIndex] || null;
   const subInvoices = invoices.filter(i => currentSub && i.subscriptionId === currentSub.id);
@@ -170,12 +172,11 @@ export const SubscriptionsPage = () => {
                               </p>
                             </div>
                             <div className="flex gap-2">
-                              <Button variant="outline" size="sm" onClick={() => document.getElementById('renewal-options')?.scrollIntoView({ behavior: 'smooth' })}>
-                                <RefreshCw className="h-3 w-3 mr-1" />Renewal Options
-                              </Button>
-                              <Button variant="outline" size="sm" onClick={() => { setDraftBilling(billing); setEditBillingOpen(true); }}>
-                                <Building2 className="h-3 w-3 mr-1" />Billing Details
-                              </Button>
+                              {accountStatus === 'Payment Overdue' && (
+                                <Button size="sm" variant="destructive" onClick={() => setRenewalOpen(true)}>
+                                  <CreditCard className="h-3 w-3 mr-1" />Pay Now
+                                </Button>
+                              )}
                             </div>
                           </div>
                           <div className="grid gap-4 md:grid-cols-4 mt-4 pt-4 border-t">
@@ -414,6 +415,17 @@ export const SubscriptionsPage = () => {
                                 </TableCell>
                                 <TableCell className="text-right font-medium">${inv.amount.toLocaleString()}</TableCell>
                                 <TableCell className="text-right">
+                                  {(inv.status === 'overdue' || inv.status === 'unpaid' || inv.status === 'pending') && (
+                                    <Button variant="default" size="sm" className="mr-1" onClick={() => {
+                                      if (inv.invoiceType === 'Renewal Invoice' || inv.invoiceType === 'Initial Invoice') {
+                                        setRenewalOpen(true);
+                                      } else {
+                                        toast({ title: 'Pay invoice', description: `Opening payment for ${inv.invoiceNumber}` });
+                                      }
+                                    }}>
+                                      <CreditCard className="h-3 w-3 mr-1" />Pay Now
+                                    </Button>
+                                  )}
                                   <Button variant="ghost" size="sm" onClick={() => toast({ title: 'Downloading PDF', description: inv.invoiceNumber })}>
                                     <Download className="h-4 w-4" />
                                   </Button>
@@ -506,6 +518,13 @@ export const SubscriptionsPage = () => {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <RenewalFlyout
+        open={renewalOpen}
+        onOpenChange={setRenewalOpen}
+        subscription={currentSub}
+        renewalPeriod="Jan 1, 2027 → Dec 31, 2027"
+      />
     </MainLayout>
   );
 };

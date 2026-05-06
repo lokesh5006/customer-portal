@@ -37,10 +37,14 @@ export interface Subscription {
   name: string;
   planType: string;
   billingFrequency: 'annual' | 'monthly';
-  status: 'active' | 'cancelled' | 'pending' | 'expired';
+  status: 'active' | 'cancelled' | 'pending' | 'expired' | 'overdue' | 'suspended' | 'pending_payment';
   startDate: string;
   renewalDate: string;
+  baseFee?: number;          // Base subscription fee (e.g. $1,000)
+  perSeatCost?: number;      // Default per-seat cost (e.g. $10)
   products: SubscriptionProduct[];
+  /** Pending seat reductions scheduled for next renewal cycle: prodId -> new seat count */
+  pendingChanges?: Record<string, number>;
 }
 
 export interface License {
@@ -58,17 +62,20 @@ export interface InvoiceLineItem {
   total: number;
 }
 
+export type InvoiceType = 'Initial Invoice' | 'Renewal Invoice' | 'Adjustment Invoice';
+
 export interface Invoice {
   id: string;
   companyId: string;
   invoiceNumber: string;
   date: string;
   dueDate: string;
-  status: 'paid' | 'pending' | 'overdue';
+  status: 'paid' | 'pending' | 'overdue' | 'unpaid';
   amount: number;
   balance: number;
   subscriptionId: string;
   subscriptionName: string;
+  invoiceType?: InvoiceType;
   lineItems: InvoiceLineItem[];
 }
 
@@ -185,136 +192,121 @@ const initialSubscriptions: Subscription[] = [
   {
     id: 'sub-1',
     companyId: 'company-1',
-    name: '2026 Annual Plan',
+    name: 'Annual Plan',
     planType: 'Annual',
     billingFrequency: 'annual',
-    status: 'active',
-    startDate: '2024-01-01',
-    renewalDate: '2026-12-01',
+    status: 'overdue', // Demo scenario: overdue renewal
+    startDate: '2026-01-01',
+    renewalDate: '2026-12-31',
+    baseFee: 1000,
+    perSeatCost: 10,
     products: [
-      { id: 'prod-1', name: 'NumberCruncher', licenseCount: 22, pricePerLicense: 349, status: 'active' },
-      { id: 'prod-2', name: 'DataNet', licenseCount: 30, pricePerLicense: 0, status: 'active' },
-    ],
-  },
-  {
-    id: 'sub-2',
-    companyId: 'company-1',
-    name: 'QuickView Quarterly',
-    planType: 'Quarterly',
-    billingFrequency: 'monthly',
-    status: 'active',
-    startDate: '2024-06-01',
-    renewalDate: '2026-12-01',
-    products: [
-      { id: 'prod-3', name: 'QuickView Desktop', licenseCount: 8, pricePerLicense: 199, status: 'active' },
+      { id: 'prod-web', name: 'NC Web', licenseCount: 20, pricePerLicense: 10, status: 'active' },
+      { id: 'prod-desktop', name: 'NC Desktop', licenseCount: 20, pricePerLicense: 10, status: 'active' },
     ],
   },
   {
     id: 'sub-3',
     companyId: 'company-2',
-    name: '2026 Annual Plan',
+    name: 'Annual Plan',
     planType: 'Annual',
     billingFrequency: 'annual',
     status: 'active',
-    startDate: '2024-01-01',
-    renewalDate: '2026-12-01',
+    startDate: '2026-01-01',
+    renewalDate: '2026-12-31',
+    baseFee: 1000,
+    perSeatCost: 10,
     products: [
-      { id: 'prod-4', name: 'NumberCruncher', licenseCount: 8, pricePerLicense: 349, status: 'active' },
+      { id: 'prod-web-2', name: 'NC Web', licenseCount: 8, pricePerLicense: 10, status: 'active' },
+      { id: 'prod-desktop-2', name: 'NC Desktop', licenseCount: 8, pricePerLicense: 10, status: 'active' },
     ],
   },
 ];
 
 const initialLicenses: License[] = [
-  // ABC Accounting - sub-1, NumberCruncher (prod-1) - 11 assigned of 22
-  { userId: 'user-1', subscriptionId: 'sub-1', productId: 'prod-1', assignedAt: '2023-01-15' },
-  { userId: 'user-2', subscriptionId: 'sub-1', productId: 'prod-1', assignedAt: '2023-02-10' },
-  { userId: 'user-3', subscriptionId: 'sub-1', productId: 'prod-1', assignedAt: '2023-03-05' },
-  { userId: 'user-4', subscriptionId: 'sub-1', productId: 'prod-1', assignedAt: '2023-04-12' },
-  { userId: 'user-5', subscriptionId: 'sub-1', productId: 'prod-1', assignedAt: '2023-05-20' },
-  { userId: 'user-6', subscriptionId: 'sub-1', productId: 'prod-1', assignedAt: '2023-06-01' },
-  { userId: 'user-8', subscriptionId: 'sub-1', productId: 'prod-1', assignedAt: '2023-07-15' },
-  { userId: 'user-10', subscriptionId: 'sub-1', productId: 'prod-1', assignedAt: '2023-09-10' },
-  { userId: 'user-11', subscriptionId: 'sub-1', productId: 'prod-1', assignedAt: '2023-10-05' },
-  { userId: 'user-12', subscriptionId: 'sub-1', productId: 'prod-1', assignedAt: '2023-11-20' },
-  { userId: 'user-13', subscriptionId: 'sub-1', productId: 'prod-1', assignedAt: '2023-12-01' },
-  // ABC Accounting - sub-1, DataNet (prod-2) - assigned to most users
-  { userId: 'user-1', subscriptionId: 'sub-1', productId: 'prod-2', assignedAt: '2023-01-15' },
-  { userId: 'user-2', subscriptionId: 'sub-1', productId: 'prod-2', assignedAt: '2023-02-10' },
-  { userId: 'user-3', subscriptionId: 'sub-1', productId: 'prod-2', assignedAt: '2023-03-05' },
-  { userId: 'user-5', subscriptionId: 'sub-1', productId: 'prod-2', assignedAt: '2023-05-20' },
-  { userId: 'user-6', subscriptionId: 'sub-1', productId: 'prod-2', assignedAt: '2023-06-01' },
-  // ABC Accounting - sub-2, QuickView Desktop (prod-3) - 5 assigned of 8
-  { userId: 'user-1', subscriptionId: 'sub-2', productId: 'prod-3', assignedAt: '2023-01-15' },
-  { userId: 'user-3', subscriptionId: 'sub-2', productId: 'prod-3', assignedAt: '2023-03-05' },
-  { userId: 'user-5', subscriptionId: 'sub-2', productId: 'prod-3', assignedAt: '2023-05-20' },
-  { userId: 'user-6', subscriptionId: 'sub-2', productId: 'prod-3', assignedAt: '2023-06-01' },
-  { userId: 'user-8', subscriptionId: 'sub-2', productId: 'prod-3', assignedAt: '2023-07-15' },
-  // XYZ Consulting - sub-3, NumberCruncher Web (prod-4) - 4 assigned of 8
-  { userId: 'user-20', subscriptionId: 'sub-3', productId: 'prod-4', assignedAt: '2023-06-20' },
-  { userId: 'user-21', subscriptionId: 'sub-3', productId: 'prod-4', assignedAt: '2023-07-01' },
-  { userId: 'user-22', subscriptionId: 'sub-3', productId: 'prod-4', assignedAt: '2023-07-15' },
-  { userId: 'user-23', subscriptionId: 'sub-3', productId: 'prod-4', assignedAt: '2023-08-01' },
+  // ABC - NC Web (prod-web): 11 assigned of 20
+  ...['user-1','user-2','user-3','user-4','user-5','user-6','user-8','user-10','user-11','user-12','user-13']
+    .map(uid => ({ userId: uid, subscriptionId: 'sub-1', productId: 'prod-web', assignedAt: '2026-01-15' })),
+  // ABC - NC Desktop (prod-desktop): 9 assigned of 20
+  ...['user-1','user-2','user-3','user-4','user-5','user-6','user-8','user-10','user-11']
+    .map(uid => ({ userId: uid, subscriptionId: 'sub-1', productId: 'prod-desktop', assignedAt: '2026-01-15' })),
+  // XYZ - NC Web/Desktop: 4 assigned of 8
+  ...['user-20','user-21','user-22','user-23']
+    .map(uid => ({ userId: uid, subscriptionId: 'sub-3', productId: 'prod-web-2', assignedAt: '2026-01-15' })),
+  ...['user-20','user-22','user-23']
+    .map(uid => ({ userId: uid, subscriptionId: 'sub-3', productId: 'prod-desktop-2', assignedAt: '2026-01-15' })),
 ];
 
 const initialInvoices: Invoice[] = [
+  // INV-1001 Initial Invoice — Paid
   {
-    id: 'inv-1',
+    id: 'inv-1001',
     companyId: 'company-1',
-    invoiceNumber: 'INV-2026-001',
+    invoiceNumber: 'INV-1001',
     date: '2026-01-01',
     dueDate: '2026-01-31',
     status: 'paid',
-    amount: 7678,
+    amount: 1200,
     balance: 0,
     subscriptionId: 'sub-1',
-    subscriptionName: '2026 Annual Plan',
+    subscriptionName: 'Annual Plan',
+    invoiceType: 'Initial Invoice',
     lineItems: [
-      { product: 'NumberCruncher', quantity: 22, unitPrice: 349, total: 7678 },
+      { product: 'Base Subscription Fee', quantity: 1, unitPrice: 1000, total: 1000 },
+      { product: 'NC Web + NC Desktop Seats', quantity: 20, unitPrice: 10, total: 200 },
     ],
   },
+  // INV-1002 Renewal Invoice — Overdue
   {
-    id: 'inv-2',
+    id: 'inv-1002',
     companyId: 'company-1',
-    invoiceNumber: 'INV-2026-002',
+    invoiceNumber: 'INV-1002',
+    date: '2026-12-01',
+    dueDate: '2026-12-31',
+    status: 'overdue',
+    amount: 1200,
+    balance: 1200,
+    subscriptionId: 'sub-1',
+    subscriptionName: 'Annual Plan',
+    invoiceType: 'Renewal Invoice',
+    lineItems: [
+      { product: 'Base Subscription Fee', quantity: 1, unitPrice: 1000, total: 1000 },
+      { product: 'NC Web + NC Desktop Seats', quantity: 20, unitPrice: 10, total: 200 },
+    ],
+  },
+  // INV-1003 Adjustment Invoice — Unpaid
+  {
+    id: 'inv-1003',
+    companyId: 'company-1',
+    invoiceNumber: 'INV-1003',
     date: '2026-06-01',
     dueDate: '2026-06-30',
-    status: 'paid',
-    amount: 1592,
-    balance: 0,
-    subscriptionId: 'sub-2',
-    subscriptionName: 'QuickView Quarterly',
-    lineItems: [
-      { product: 'QuickView Desktop', quantity: 8, unitPrice: 199, total: 1592 },
-    ],
-  },
-  {
-    id: 'inv-3',
-    companyId: 'company-1',
-    invoiceNumber: 'INV-2026-003',
-    date: '2026-03-15',
-    dueDate: '2026-04-15',
-    status: 'overdue',
-    amount: 500,
-    balance: 500,
+    status: 'unpaid',
+    amount: 50,
+    balance: 50,
     subscriptionId: 'sub-1',
-    subscriptionName: '2026 Annual Plan',
+    subscriptionName: 'Annual Plan',
+    invoiceType: 'Adjustment Invoice',
     lineItems: [
-      { product: 'Additional Support Services', quantity: 1, unitPrice: 500, total: 500 },
+      { product: 'Additional NC Web Seats', quantity: 5, unitPrice: 10, total: 50 },
     ],
   },
+  // XYZ Initial Invoice
   {
-    id: 'inv-4',
+    id: 'inv-2001',
     companyId: 'company-2',
-    invoiceNumber: 'INV-2026-004',
+    invoiceNumber: 'INV-2001',
     date: '2026-01-01',
     dueDate: '2026-01-31',
-    status: 'pending',
-    amount: 2792,
-    balance: 2792,
+    status: 'paid',
+    amount: 1080,
+    balance: 0,
     subscriptionId: 'sub-3',
-    subscriptionName: '2026 Annual Plan',
+    subscriptionName: 'Annual Plan',
+    invoiceType: 'Initial Invoice',
     lineItems: [
-      { product: 'NumberCruncher', quantity: 8, unitPrice: 349, total: 2792 },
+      { product: 'Base Subscription Fee', quantity: 1, unitPrice: 1000, total: 1000 },
+      { product: 'NC Web + NC Desktop Seats', quantity: 8, unitPrice: 10, total: 80 },
     ],
   },
 ];

@@ -1,88 +1,65 @@
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useApp } from '@/contexts/AppContext';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import {
-  ShoppingCart,
-  PackagePlus,
-  ArrowUpRight,
-  CreditCard,
-  Download,
-  LifeBuoy,
-  Settings
+  CreditCard, Key, Download, LifeBuoy, Settings, RefreshCw,
 } from 'lucide-react';
+import { RenewalFlyout } from '@/components/billing/RenewalFlyout';
 
 export const QuickActionsWidget = () => {
   const navigate = useNavigate();
-  const { hasAccess, getCompanyInvoices } = useApp();
+  const { hasAccess, getCompanyInvoices, getCompanySubscriptions } = useApp();
+  const [renewalOpen, setRenewalOpen] = useState(false);
 
   const invoices = getCompanyInvoices();
+  const subs = getCompanySubscriptions();
   const overdueInvoices = invoices.filter(i => i.status === 'overdue');
-  const hasOverdue = overdueInvoices.length > 0;
   const totalOverdue = overdueInvoices.reduce((a, i) => a + i.balance, 0);
+  const hasOverdue = overdueInvoices.length > 0;
 
   const isOwner = hasAccess(['owner']);
   const isBilling = hasAccess(['billing']);
-  const canManageSubscriptions = isOwner || isBilling;
+  const canManage = isOwner || isBilling;
 
   return (
     <Card>
-      <CardHeader className="pb-3">
-        <CardTitle className="text-lg">Quick Actions</CardTitle>
-      </CardHeader>
+      <CardHeader className="pb-3"><CardTitle className="text-lg">Quick Actions</CardTitle></CardHeader>
       <CardContent>
         <div className="flex flex-wrap gap-2">
-          {canManageSubscriptions && (
-            <Button variant="outline" onClick={() => navigate('/signup')}>
-              <ShoppingCart className="h-4 w-4 mr-2" />
-              Buy New Subscription
+          {hasOverdue && canManage && (
+            <Button variant="destructive" onClick={() => setRenewalOpen(true)}>
+              <CreditCard className="h-4 w-4 mr-2" />Pay Dues – ${totalOverdue.toLocaleString()}
             </Button>
           )}
-
-          {canManageSubscriptions && (
-            <Button variant="outline" onClick={() => navigate('/subscriptions')}>
-              <PackagePlus className="h-4 w-4 mr-2" />
-              Add Product to Subscription
+          {canManage && !hasOverdue && (
+            <Button variant="outline" onClick={() => setRenewalOpen(true)}>
+              <RefreshCw className="h-4 w-4 mr-2" />Renew Subscription
             </Button>
           )}
-
-          {canManageSubscriptions && (
-            <Button variant="outline" onClick={() => navigate('/subscriptions')}>
-              <ArrowUpRight className="h-4 w-4 mr-2" />
-              Increase Licenses
+          {canManage && (
+            <Button variant="outline" onClick={() => navigate('/licenses')}>
+              <Key className="h-4 w-4 mr-2" />Adjust Licenses
             </Button>
           )}
-
-          {hasOverdue && canManageSubscriptions && (
-            <Button variant="destructive" onClick={() => navigate('/billing')}>
-              <CreditCard className="h-4 w-4 mr-2" />
-              Pay Invoice – ${totalOverdue.toLocaleString()}
-            </Button>
-          )}
-
-          {!hasOverdue && canManageSubscriptions && (
-            <Button variant="outline" onClick={() => navigate('/billing')}>
-              <CreditCard className="h-4 w-4 mr-2" />
-              Pay Invoice
-            </Button>
-          )}
-
           <Button variant="outline" onClick={() => navigate('/downloads')}>
-            <Download className="h-4 w-4 mr-2" />
-            Downloads
+            <Download className="h-4 w-4 mr-2" />Downloads
           </Button>
-
           <Button variant="outline" onClick={() => navigate('/support')}>
-            <LifeBuoy className="h-4 w-4 mr-2" />
-            Support
+            <LifeBuoy className="h-4 w-4 mr-2" />Support
           </Button>
-
           <Button variant="outline" onClick={() => navigate('/profile')}>
-            <Settings className="h-4 w-4 mr-2" />
-            Profile
+            <Settings className="h-4 w-4 mr-2" />Profile
           </Button>
         </div>
       </CardContent>
+      <RenewalFlyout
+        open={renewalOpen}
+        onOpenChange={setRenewalOpen}
+        subscription={subs[0] || null}
+        renewalPeriod="Jan 1, 2027 → Dec 31, 2027"
+      />
     </Card>
   );
 };

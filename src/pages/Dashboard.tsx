@@ -33,11 +33,13 @@ import { SupportSnapshotWidget } from '@/components/dashboard/SupportSnapshotWid
 import { UserOverviewWidget } from '@/components/dashboard/UserOverviewWidget';
 import { QuickActionsWidget } from '@/components/dashboard/QuickActionsWidget';
 import { MyTicketsWidget } from '@/components/dashboard/MyTicketsWidget';
+import { RenewalFlyout } from '@/components/billing/RenewalFlyout';
 
 export const Dashboard = () => {
   const navigate = useNavigate();
   const { currentUser, currentCompany, hasAccess, demoRoles, getCompanySubscriptions, getCompanyInvoices, getAssignedLicenseCount } = useApp();
   const [dataNetOptOut, setDataNetOptOut] = useState(false);
+  const [renewalOpen, setRenewalOpen] = useState(false);
 
   const isOwner = hasAccess(['owner']);
   const isBilling = hasAccess(['billing']);
@@ -148,7 +150,7 @@ export const Dashboard = () => {
                 {totalOutstanding > 0 && canViewBilling && (
                   <Button
                     variant={accountStatus === 'overdue' ? 'destructive' : 'default'}
-                    onClick={() => navigate('/billing')}
+                    onClick={() => setRenewalOpen(true)}
                   >
                     <CreditCard className="h-4 w-4 mr-2" />Pay Now
                   </Button>
@@ -248,6 +250,12 @@ export const Dashboard = () => {
 
         <QuickActionsWidget />
       </div>
+      <RenewalFlyout
+        open={renewalOpen}
+        onOpenChange={setRenewalOpen}
+        subscription={subscriptions[0] || null}
+        renewalPeriod="Jan 1, 2027 → Dec 31, 2027"
+      />
     </MainLayout>
   );
 };
