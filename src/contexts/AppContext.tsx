@@ -62,17 +62,20 @@ export interface InvoiceLineItem {
   total: number;
 }
 
+export type InvoiceType = 'Initial Invoice' | 'Renewal Invoice' | 'Adjustment Invoice';
+
 export interface Invoice {
   id: string;
   companyId: string;
   invoiceNumber: string;
   date: string;
   dueDate: string;
-  status: 'paid' | 'pending' | 'overdue';
+  status: 'paid' | 'pending' | 'overdue' | 'unpaid';
   amount: number;
   balance: number;
   subscriptionId: string;
   subscriptionName: string;
+  invoiceType?: InvoiceType;
   lineItems: InvoiceLineItem[];
 }
 
