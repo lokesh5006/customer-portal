@@ -619,6 +619,17 @@ export const SubscriptionsPage = () => {
         subscription={currentSub}
         renewalPeriod="Jan 1, 2027 → Dec 31, 2027"
       />
+
+      <ManageLicensesDrawer
+        open={manageOpen}
+        onOpenChange={setManageOpen}
+        subscription={manageSub}
+        product={manageProd}
+      />
+      <AcceptQuoteDialog open={!!acceptQuote} onOpenChange={(v) => !v && setAcceptQuote(null)} quote={acceptQuote} />
+      <DeclineQuoteDialog open={!!declineQuote} onOpenChange={(v) => !v && setDeclineQuote(null)} quote={declineQuote} />
+      <ViewNoteDialog open={!!noteQuote} onOpenChange={(v) => !v && setNoteQuote(null)} quote={noteQuote} />
+      <RequestQuoteDialog open={requestQuoteOpen} onOpenChange={setRequestQuoteOpen} />
     </MainLayout>
   );
 };
