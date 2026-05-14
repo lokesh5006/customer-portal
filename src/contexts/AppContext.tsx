@@ -902,6 +902,12 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       getCompanySubscriptions,
       getCompanyInvoices,
       getCompanyTickets,
+      getCompanyQuotes,
+      getCompanyQuoteRequests,
+      createQuote,
+      acceptQuote,
+      declineQuote,
+      addQuoteRequest,
     }}>
       {children}
     </AppContext.Provider>
