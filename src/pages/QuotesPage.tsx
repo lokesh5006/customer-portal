@@ -1,56 +1,39 @@
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { MainLayout } from '@/components/layout/MainLayout';
-import { Card, CardContent } from '@/components/ui/card';
+import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import {
   ListingPageHeader, SearchFilterCard, FilterField, DataTable, DataTableColumn, PaginationControls,
 } from '@/components/listing';
-import { useApp } from '@/contexts/AppContext';
-import { useToast } from '@/hooks/use-toast';
-import { FileSignature, Eye, Download, Check } from 'lucide-react';
-
-interface Quote {
-  id: string;
-  product: string;
-  createdDate: string;
-  expirationDate: string;
-  amount: number;
-  status: 'pending' | 'accepted' | 'expired' | 'declined';
-  subscriptionName: string;
-}
+import { useApp, Quote } from '@/contexts/AppContext';
+import { FileSignature, Eye, Check, X, RefreshCw, Plus, MessageSquare } from 'lucide-react';
+import {
+  AcceptQuoteDialog, DeclineQuoteDialog, ViewNoteDialog, RequestQuoteDialog,
+} from '@/components/subscriptions/QuoteDialogs';
 
 export const QuotesPage = () => {
-  const { currentCompany, getCompanySubscriptions, hasAccess } = useApp();
-  const { toast } = useToast();
-  const subs = getCompanySubscriptions();
+  const navigate = useNavigate();
+  const { currentCompany, getCompanyQuotes, getCompanyQuoteRequests, getCompanySubscriptions, hasAccess } = useApp();
+  const quotes = getCompanyQuotes();
+  const quoteRequests = getCompanyQuoteRequests();
   const canAccept = hasAccess(['owner', 'billing']);
+  const hasActiveSubscription = getCompanySubscriptions().some(s => ['active', 'overdue', 'pending_payment'].includes(s.status));
 
-  // Build realistic sample quotes from real subscriptions
-  const initialQuotes: Quote[] = subs.flatMap((s, i) => s.products.map((p, j) => ({
-    id: `Q-2026-${String(i * 10 + j + 1).padStart(3, '0')}`,
-    product: p.name,
-    createdDate: '2026-03-20',
-    expirationDate: '2026-05-20',
-    amount: p.licenseCount * (p.pricePerLicense || 199),
-    status: (j === 0 ? 'pending' : 'accepted') as Quote['status'],
-    subscriptionName: s.name,
-  })));
-
-  // Add a couple of extra demo quotes
-  const sampleExtras: Quote[] = [
-    { id: 'Q-2026-100', product: 'NumberCruncher', createdDate: '2026-02-10', expirationDate: '2026-04-10', amount: 8725, status: 'expired', subscriptionName: '2026 Annual Plan' },
-    { id: 'Q-2026-101', product: 'QuickView Desktop', createdDate: '2026-04-01', expirationDate: '2026-06-01', amount: 1990, status: 'pending', subscriptionName: 'QuickView Quarterly' },
-  ];
-
-  const [quotes, setQuotes] = useState<Quote[]>([...initialQuotes, ...sampleExtras]);
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
 
+  const [acceptQuote, setAcceptQuote] = useState<Quote | null>(null);
+  const [declineQuote, setDeclineQuote] = useState<Quote | null>(null);
+  const [noteQuote, setNoteQuote] = useState<Quote | null>(null);
+  const [requestOpen, setRequestOpen] = useState(false);
+
   const filtered = quotes.filter(q => {
-    const matchesSearch = q.id.toLowerCase().includes(searchQuery.toLowerCase()) || q.product.toLowerCase().includes(searchQuery.toLowerCase());
+    const matchesSearch = q.quoteNumber.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      q.lineItems.some(l => l.productName.toLowerCase().includes(searchQuery.toLowerCase()));
     const matchesStatus = statusFilter === 'all' || q.status === statusFilter;
     return matchesSearch && matchesStatus;
   });
@@ -60,33 +43,49 @@ export const QuotesPage = () => {
 
   const statusColor = (s: Quote['status']) => {
     switch (s) {
-      case 'pending': return 'status-invited';
+      case 'active': return 'status-active';
       case 'accepted': return 'status-active';
-      case 'expired': return 'status-inactive';
       case 'declined': return 'status-overdue';
+      case 'expired': return 'status-inactive';
     }
   };
 
-  const handleAccept = (q: Quote) => {
-    setQuotes(prev => prev.map(x => x.id === q.id ? { ...x, status: 'accepted' } : x));
-    toast({ title: 'Quote accepted', description: `${q.id} has been accepted. An invoice will be generated shortly.` });
-  };
-
   const columns: DataTableColumn<Quote>[] = [
-    { key: 'id', header: 'Quote #', render: q => <span className="font-medium">{q.id}</span> },
-    { key: 'product', header: 'Product', render: q => <div><div className="text-sm">{q.product}</div><div className="text-xs text-muted-foreground">{q.subscriptionName}</div></div> },
+    { key: 'id', header: 'Quote #', render: q => <span className="font-medium">{q.quoteNumber}</span> },
+    { key: 'product', header: 'Product(s)', render: q => <div className="text-sm">{q.lineItems.map(l => l.productName).join(', ')}</div> },
+    { key: 'lic', header: 'Licenses', className: 'text-center', render: q => q.lineItems.reduce((a, l) => a + l.licenseCount, 0) },
     { key: 'created', header: 'Created', render: q => new Date(q.createdDate).toLocaleDateString() },
-    { key: 'expires', header: 'Expires', render: q => new Date(q.expirationDate).toLocaleDateString() },
-    { key: 'amount', header: 'Amount', render: q => <span className="font-medium">${q.amount.toLocaleString()}</span> },
+    { key: 'expires', header: 'Expires', render: q => new Date(q.expiryDate).toLocaleDateString() },
+    { key: 'amount', header: 'Amount', className: 'text-right', render: q => <span className="font-medium">${q.amount.toLocaleString()}</span> },
     { key: 'status', header: 'Status', render: q => <Badge variant="outline" className={statusColor(q.status)}>{q.status}</Badge> },
+    {
+      key: 'note', header: 'Note',
+      render: q => q.note ? (
+        <button className="text-xs text-primary hover:underline text-left" onClick={() => setNoteQuote(q)}>
+          {q.note.length > 30 ? q.note.slice(0, 30) + '…' : q.note}
+        </button>
+      ) : <span className="text-xs text-muted-foreground">—</span>,
+    },
     {
       key: 'actions', header: 'Actions', className: 'text-right',
       render: q => (
-        <div className="flex justify-end gap-1">
-          <Button variant="ghost" size="sm" onClick={() => toast({ title: 'Quote viewed', description: q.id })}><Eye className="h-4 w-4" /></Button>
-          <Button variant="ghost" size="sm" onClick={() => toast({ title: 'Downloading PDF', description: q.id })}><Download className="h-4 w-4" /></Button>
-          {q.status === 'pending' && canAccept && (
-            <Button size="sm" variant="outline" onClick={() => handleAccept(q)}><Check className="h-4 w-4 mr-1" />Accept</Button>
+        <div className="flex justify-end gap-1 items-center">
+          {q.status === 'active' && canAccept && (
+            <>
+              <Button size="sm" variant="outline" onClick={() => setAcceptQuote(q)}><Check className="h-3 w-3 mr-1" />Accept</Button>
+              <Button size="sm" variant="ghost" onClick={() => setDeclineQuote(q)}><X className="h-3 w-3 mr-1" />Decline</Button>
+            </>
+          )}
+          {q.status === 'expired' && (
+            <span className="text-xs text-muted-foreground" title="This quote has expired. Please generate a new quote.">Expired</span>
+          )}
+          {q.status === 'declined' && (
+            <Button size="sm" variant="outline" onClick={() => navigate(`/checkout?fromQuote=${q.quoteNumber}&product=${encodeURIComponent(q.lineItems[0]?.productName || '')}&licenses=${q.lineItems[0]?.licenseCount || 1}&note=${encodeURIComponent(q.note || '')}`)}>
+              <RefreshCw className="h-3 w-3 mr-1" />Regenerate Quote
+            </Button>
+          )}
+          {q.status === 'accepted' && (
+            <Button size="sm" variant="ghost" onClick={() => navigate('/invoices')}><Eye className="h-3 w-3 mr-1" />View Invoice</Button>
           )}
         </div>
       ),
@@ -98,8 +97,25 @@ export const QuotesPage = () => {
       <div className="space-y-6">
         <ListingPageHeader
           title="Quotes"
-          description={`Review and accept renewal and add-on quotes for ${currentCompany?.name}`}
+          description={`Review, accept, or decline quotes for ${currentCompany?.name}`}
+          actions={
+            hasActiveSubscription ? (
+              <Button onClick={() => setRequestOpen(true)}>
+                <MessageSquare className="h-4 w-4 mr-1" />Request a Quote
+              </Button>
+            ) : (
+              <Button onClick={() => navigate('/checkout')}>
+                <Plus className="h-4 w-4 mr-1" />New Quote
+              </Button>
+            )
+          }
         />
+
+        {hasActiveSubscription && (
+          <div className="rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
+            You already have an active subscription. To modify or add products/licenses, please request a quote.
+          </div>
+        )}
 
         <SearchFilterCard
           searchValue={searchQuery}
@@ -110,10 +126,10 @@ export const QuotesPage = () => {
             <FilterField label="Status" value={statusFilter} onChange={(v) => { setStatusFilter(v); setCurrentPage(1); }}
               options={[
                 { value: 'all', label: 'All' },
-                { value: 'pending', label: 'Pending' },
+                { value: 'active', label: 'Active' },
                 { value: 'accepted', label: 'Accepted' },
-                { value: 'expired', label: 'Expired' },
                 { value: 'declined', label: 'Declined' },
+                { value: 'expired', label: 'Expired' },
               ]}
             />
           }
@@ -132,7 +148,30 @@ export const QuotesPage = () => {
             />
           </Card>
         </div>
+
+        {quoteRequests.length > 0 && (
+          <Card className="p-4 space-y-2">
+            <h4 className="text-sm font-semibold flex items-center gap-2"><MessageSquare className="h-4 w-4" />Quote Requests</h4>
+            <div className="space-y-2">
+              {quoteRequests.map(r => (
+                <div key={r.id} className="border rounded-md p-3 text-sm">
+                  <div className="flex items-center justify-between">
+                    <div className="font-medium">{r.products.map(p => `${p.productName} (${p.desiredLicenseCount})`).join(', ')}</div>
+                    <Badge variant="outline" className="status-invited">{r.status.replace('_', ' ')}</Badge>
+                  </div>
+                  <div className="text-xs text-muted-foreground mt-1">{new Date(r.createdDate).toLocaleDateString()}</div>
+                  <div className="text-xs mt-1">{r.note}</div>
+                </div>
+              ))}
+            </div>
+          </Card>
+        )}
       </div>
+
+      <AcceptQuoteDialog open={!!acceptQuote} onOpenChange={(v) => !v && setAcceptQuote(null)} quote={acceptQuote} />
+      <DeclineQuoteDialog open={!!declineQuote} onOpenChange={(v) => !v && setDeclineQuote(null)} quote={declineQuote} />
+      <ViewNoteDialog open={!!noteQuote} onOpenChange={(v) => !v && setNoteQuote(null)} quote={noteQuote} />
+      <RequestQuoteDialog open={requestOpen} onOpenChange={setRequestOpen} />
     </MainLayout>
   );
 };
