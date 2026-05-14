@@ -780,6 +780,95 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     return state.supportTickets.filter(t => t.companyId === state.currentCompany?.id);
   }, [state.supportTickets, state.currentCompany]);
 
+  // Auto-expire active quotes whose expiryDate is in the past
+  const getCompanyQuotes = useCallback((): Quote[] => {
+    const today = new Date();
+    return state.quotes
+      .filter(q => q.companyId === state.currentCompany?.id)
+      .map(q => (q.status === 'active' && new Date(q.expiryDate) < today ? { ...q, status: 'expired' as const } : q));
+  }, [state.quotes, state.currentCompany]);
+
+  const getCompanyQuoteRequests = useCallback((): QuoteRequest[] => {
+    return state.quoteRequests.filter(r => r.companyId === state.currentCompany?.id);
+  }, [state.quoteRequests, state.currentCompany]);
+
+  const createQuote = useCallback((input: { lineItems: QuoteLineItem[]; note: string }): Quote => {
+    const created = new Date();
+    const expires = new Date(created.getTime() + 30 * 86400000);
+    const amount = input.lineItems.reduce((a, li) => a + li.total, 0);
+    const newQuote: Quote = {
+      id: `quote-${Date.now()}`,
+      companyId: state.currentCompany?.id || 'company-1',
+      quoteNumber: `Q-${String(1000 + Math.floor(Math.random() * 9000))}`,
+      createdDate: created.toISOString().split('T')[0],
+      expiryDate: expires.toISOString().split('T')[0],
+      status: 'active',
+      amount,
+      note: input.note || '',
+      lineItems: input.lineItems,
+    };
+    setState(prev => ({ ...prev, quotes: [newQuote, ...prev.quotes] }));
+    return newQuote;
+  }, [state.currentCompany]);
+
+  const acceptQuote = useCallback((quoteId: string, input: { poNumber?: string; paymentMethod: 'pay_on_receipt' | 'pay_on_terms' }) => {
+    const quote = state.quotes.find(q => q.id === quoteId);
+    if (!quote) return null;
+    if (new Date(quote.expiryDate) < new Date()) return null;
+
+    const today = new Date();
+    const due = new Date(today.getTime() + 30 * 86400000);
+    const sub = state.subscriptions.find(s => s.companyId === quote.companyId);
+    const invoice: Invoice = {
+      id: `inv-${Date.now()}`,
+      companyId: quote.companyId,
+      invoiceNumber: `INV-${String(2000 + Math.floor(Math.random() * 9000))}`,
+      date: today.toISOString().split('T')[0],
+      dueDate: due.toISOString().split('T')[0],
+      status: input.paymentMethod === 'pay_on_receipt' ? 'awaiting_payment' : 'payment_terms_applied',
+      amount: quote.amount,
+      balance: quote.amount,
+      subscriptionId: sub?.id || '',
+      subscriptionName: sub?.name || 'Annual Plan',
+      invoiceType: 'Adjustment Invoice',
+      poNumber: input.poNumber,
+      paymentMethod: input.paymentMethod,
+      lineItems: quote.lineItems.map(l => ({
+        product: l.productName,
+        quantity: l.licenseCount,
+        unitPrice: l.unitPrice,
+        total: l.total,
+      })),
+    };
+    const updatedQuote: Quote = { ...quote, status: 'accepted', poNumber: input.poNumber, paymentMethod: input.paymentMethod, invoiceId: invoice.id };
+    setState(prev => ({
+      ...prev,
+      quotes: prev.quotes.map(q => q.id === quoteId ? updatedQuote : q),
+      invoices: [invoice, ...prev.invoices],
+    }));
+    return { quote: updatedQuote, invoice };
+  }, [state.quotes, state.subscriptions]);
+
+  const declineQuote = useCallback((quoteId: string, reason?: string) => {
+    setState(prev => ({
+      ...prev,
+      quotes: prev.quotes.map(q => q.id === quoteId ? { ...q, status: 'declined', declineReason: reason } : q),
+    }));
+  }, []);
+
+  const addQuoteRequest = useCallback((input: { products: { productName: string; desiredLicenseCount: number }[]; note: string }): QuoteRequest => {
+    const req: QuoteRequest = {
+      id: `qreq-${Date.now()}`,
+      companyId: state.currentCompany?.id || 'company-1',
+      createdDate: new Date().toISOString().split('T')[0],
+      status: 'submitted',
+      products: input.products,
+      note: input.note,
+    };
+    setState(prev => ({ ...prev, quoteRequests: [req, ...prev.quoteRequests] }));
+    return req;
+  }, [state.currentCompany]);
+
   return (
     <AppContext.Provider value={{
       ...state,
