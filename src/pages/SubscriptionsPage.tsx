@@ -168,7 +168,7 @@ export const SubscriptionsPage = () => {
             {currentSub && (
               <Card>
                 <CardContent className="p-0">
-                  <Tabs value={activeTab} onValueChange={setActiveTab}>
+                  <Tabs value={activeTab} onValueChange={handleTabChange}>
                     <div className="border-b px-4 pt-4">
                       <TabsList>
                         <TabsTrigger value="overview">Overview</TabsTrigger>
