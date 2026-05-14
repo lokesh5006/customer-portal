@@ -27,6 +27,8 @@ export interface SubscriptionProduct {
   id: string;
   name: string;
   licenseCount: number;
+  /** Original purchased license count — current seat count cannot go below this */
+  purchasedLicenseCount?: number;
   pricePerLicense: number;
   status: 'active' | 'pending' | 'expired';
 }
