@@ -245,8 +245,8 @@ const initialSubscriptions: Subscription[] = [
     baseFee: 1000,
     perSeatCost: 10,
     products: [
-      { id: 'prod-web', name: 'NC Web', licenseCount: 20, pricePerLicense: 10, status: 'active' },
-      { id: 'prod-desktop', name: 'NC Desktop', licenseCount: 20, pricePerLicense: 10, status: 'active' },
+      { id: 'prod-web', name: 'NumberCruncher Web', licenseCount: 20, purchasedLicenseCount: 20, pricePerLicense: 10, status: 'active' },
+      { id: 'prod-desktop', name: 'NumberCruncher Desktop', licenseCount: 12, purchasedLicenseCount: 10, pricePerLicense: 10, status: 'active' },
     ],
   },
   {
