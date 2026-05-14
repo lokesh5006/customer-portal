@@ -187,6 +187,12 @@ interface AppContextType extends AppState {
   getCompanySubscriptions: () => Subscription[];
   getCompanyInvoices: () => Invoice[];
   getCompanyTickets: () => SupportTicket[];
+  getCompanyQuotes: () => Quote[];
+  getCompanyQuoteRequests: () => QuoteRequest[];
+  createQuote: (input: { lineItems: QuoteLineItem[]; note: string }) => Quote;
+  acceptQuote: (quoteId: string, input: { poNumber?: string; paymentMethod: 'pay_on_receipt' | 'pay_on_terms' }) => { quote: Quote; invoice: Invoice } | null;
+  declineQuote: (quoteId: string, reason?: string) => void;
+  addQuoteRequest: (input: { products: { productName: string; desiredLicenseCount: number }[]; note: string }) => QuoteRequest;
 }
 
 // Product catalog for reference
