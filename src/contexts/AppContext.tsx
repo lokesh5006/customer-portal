@@ -72,13 +72,47 @@ export interface Invoice {
   invoiceNumber: string;
   date: string;
   dueDate: string;
-  status: 'paid' | 'pending' | 'overdue' | 'unpaid';
+  status: 'paid' | 'pending' | 'overdue' | 'unpaid' | 'awaiting_payment' | 'payment_terms_applied';
   amount: number;
   balance: number;
   subscriptionId: string;
   subscriptionName: string;
   invoiceType?: InvoiceType;
   lineItems: InvoiceLineItem[];
+  poNumber?: string;
+  paymentMethod?: 'pay_on_receipt' | 'pay_on_terms';
+}
+
+export interface QuoteLineItem {
+  productName: string;
+  licenseCount: number;
+  unitPrice: number;
+  total: number;
+}
+
+export interface Quote {
+  id: string;
+  companyId: string;
+  quoteNumber: string;
+  createdDate: string;
+  expiryDate: string;
+  status: 'active' | 'accepted' | 'declined' | 'expired';
+  amount: number;
+  note: string;
+  lineItems: QuoteLineItem[];
+  poNumber?: string;
+  paymentMethod?: 'pay_on_receipt' | 'pay_on_terms';
+  declineReason?: string;
+  invoiceId?: string;
+}
+
+export interface QuoteRequest {
+  id: string;
+  companyId: string;
+  createdDate: string;
+  status: 'submitted' | 'in_review' | 'closed';
+  products: { productName: string; desiredLicenseCount: number }[];
+  note: string;
 }
 
 export interface SupportTicket {
