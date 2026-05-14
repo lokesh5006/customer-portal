@@ -247,8 +247,8 @@ export const SubscriptionsPage = () => {
                                     <span className="text-muted-foreground text-xs">Available</span>
                                     <span className={cn('font-semibold', avail === 0 ? 'text-destructive' : 'text-success')}>{avail}</span>
                                   </div>
-                                  <Button variant="outline" size="sm" className="w-full" onClick={() => navigate('/licenses')}>
-                                    View License Assignments<ArrowRight className="h-3 w-3 ml-1" />
+                                  <Button variant="outline" size="sm" className="w-full" onClick={() => openManageDrawer(currentSub, prod)}>
+                                    <Settings className="h-3 w-3 mr-1" />Manage Licenses
                                   </Button>
                                 </CardContent>
                               </Card>
