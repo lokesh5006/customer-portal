@@ -141,6 +141,8 @@ interface AppState {
   subscriptions: Subscription[];
   licenses: License[];
   invoices: Invoice[];
+  quotes: Quote[];
+  quoteRequests: QuoteRequest[];
   supportTickets: SupportTicket[];
   wizardData: {
     companyName: string;
