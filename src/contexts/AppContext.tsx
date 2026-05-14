@@ -365,6 +365,34 @@ const initialTickets: SupportTicket[] = [
   { id: 'ticket-6', companyId: 'company-2', userId: 'user-23', category: 'Feature Request', subject: 'Dark mode support', description: 'Would like dark mode option', status: 'closed', createdAt: '2024-01-08' },
 ];
 
+const todayISO = () => new Date().toISOString().split('T')[0];
+const addDays = (days: number) => new Date(Date.now() + days * 86400000).toISOString().split('T')[0];
+
+const initialQuotes: Quote[] = [
+  {
+    id: 'quote-1', companyId: 'company-1', quoteNumber: 'Q-1001',
+    createdDate: todayISO(), expiryDate: addDays(30), status: 'active', amount: 500,
+    note: 'Need quote for additional reporting users.',
+    lineItems: [{ productName: 'QuickView Desktop', licenseCount: 5, unitPrice: 100, total: 500 }],
+  },
+  {
+    id: 'quote-2', companyId: 'company-1', quoteNumber: 'Q-1002',
+    createdDate: addDays(-10), expiryDate: addDays(20), status: 'declined', amount: 87,
+    note: 'Customer wanted to review pricing.',
+    lineItems: [{ productName: 'DataNet', licenseCount: 3, unitPrice: 29, total: 87 }],
+    declineReason: 'Pricing review pending.',
+  },
+  {
+    id: 'quote-3', companyId: 'company-1', quoteNumber: 'Q-1003',
+    createdDate: addDays(-40), expiryDate: addDays(-10), status: 'expired', amount: 100,
+    note: 'Old quote request.',
+    lineItems: [{ productName: 'NumberCruncher Web', licenseCount: 10, unitPrice: 10, total: 100 }],
+  },
+];
+
+const initialQuoteRequests: QuoteRequest[] = [];
+
+
 const AppContext = createContext<AppContextType | null>(null);
 
 export const useApp = () => {
