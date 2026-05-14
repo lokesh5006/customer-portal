@@ -98,7 +98,7 @@ export const QuotesPage = () => {
         <ListingPageHeader
           title="Quotes"
           description={`Review, accept, or decline quotes for ${currentCompany?.name}`}
-          actions={
+          primaryAction={
             hasActiveSubscription ? (
               <Button onClick={() => setRequestOpen(true)}>
                 <MessageSquare className="h-4 w-4 mr-1" />Request a Quote
