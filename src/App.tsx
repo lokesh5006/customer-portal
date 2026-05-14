@@ -2,7 +2,7 @@ import { Toaster } from "@/components/ui/toaster";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AppProvider } from "./contexts/AppContext";
 
 // Pages
@@ -14,7 +14,7 @@ import { Dashboard } from "./pages/Dashboard";
 import { UsersPage } from "./pages/UsersPage";
 import { UsersContactsPage } from "./pages/UsersContactsPage";
 import { SubscriptionsPage } from "./pages/SubscriptionsPage";
-import { LicensesPage } from "./pages/LicensesPage";
+import { CheckoutPage } from "./pages/CheckoutPage";
 import { LicenseReductionPage } from "./pages/LicenseReductionPage";
 import { BillingPage } from "./pages/BillingPage";
 import { DownloadsPage } from "./pages/DownloadsPage";
@@ -43,8 +43,9 @@ const App = () => (
             <Route path="/users" element={<UsersContactsPage />} />
             <Route path="/users-contacts" element={<UsersContactsPage />} />
             <Route path="/subscriptions" element={<SubscriptionsPage />} />
-            <Route path="/licenses" element={<LicensesPage />} />
+            <Route path="/licenses" element={<Navigate to="/subscriptions" replace />} />
             <Route path="/licenses/reduce" element={<LicenseReductionPage />} />
+            <Route path="/checkout" element={<CheckoutPage />} />
             <Route path="/billing" element={<BillingPage />} />
             <Route path="/invoices" element={<BillingPage />} />
             <Route path="/quotes" element={<QuotesPage />} />

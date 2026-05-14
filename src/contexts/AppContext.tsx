@@ -27,6 +27,8 @@ export interface SubscriptionProduct {
   id: string;
   name: string;
   licenseCount: number;
+  /** Original purchased license count — current seat count cannot go below this */
+  purchasedLicenseCount?: number;
   pricePerLicense: number;
   status: 'active' | 'pending' | 'expired';
 }
@@ -70,13 +72,47 @@ export interface Invoice {
   invoiceNumber: string;
   date: string;
   dueDate: string;
-  status: 'paid' | 'pending' | 'overdue' | 'unpaid';
+  status: 'paid' | 'pending' | 'overdue' | 'unpaid' | 'awaiting_payment' | 'payment_terms_applied';
   amount: number;
   balance: number;
   subscriptionId: string;
   subscriptionName: string;
   invoiceType?: InvoiceType;
   lineItems: InvoiceLineItem[];
+  poNumber?: string;
+  paymentMethod?: 'pay_on_receipt' | 'pay_on_terms';
+}
+
+export interface QuoteLineItem {
+  productName: string;
+  licenseCount: number;
+  unitPrice: number;
+  total: number;
+}
+
+export interface Quote {
+  id: string;
+  companyId: string;
+  quoteNumber: string;
+  createdDate: string;
+  expiryDate: string;
+  status: 'active' | 'accepted' | 'declined' | 'expired';
+  amount: number;
+  note: string;
+  lineItems: QuoteLineItem[];
+  poNumber?: string;
+  paymentMethod?: 'pay_on_receipt' | 'pay_on_terms';
+  declineReason?: string;
+  invoiceId?: string;
+}
+
+export interface QuoteRequest {
+  id: string;
+  companyId: string;
+  createdDate: string;
+  status: 'submitted' | 'in_review' | 'closed';
+  products: { productName: string; desiredLicenseCount: number }[];
+  note: string;
 }
 
 export interface SupportTicket {
@@ -105,6 +141,8 @@ interface AppState {
   subscriptions: Subscription[];
   licenses: License[];
   invoices: Invoice[];
+  quotes: Quote[];
+  quoteRequests: QuoteRequest[];
   supportTickets: SupportTicket[];
   wizardData: {
     companyName: string;
@@ -149,6 +187,12 @@ interface AppContextType extends AppState {
   getCompanySubscriptions: () => Subscription[];
   getCompanyInvoices: () => Invoice[];
   getCompanyTickets: () => SupportTicket[];
+  getCompanyQuotes: () => Quote[];
+  getCompanyQuoteRequests: () => QuoteRequest[];
+  createQuote: (input: { lineItems: QuoteLineItem[]; note: string }) => Quote;
+  acceptQuote: (quoteId: string, input: { poNumber?: string; paymentMethod: 'pay_on_receipt' | 'pay_on_terms' }) => { quote: Quote; invoice: Invoice } | null;
+  declineQuote: (quoteId: string, reason?: string) => void;
+  addQuoteRequest: (input: { products: { productName: string; desiredLicenseCount: number }[]; note: string }) => QuoteRequest;
 }
 
 // Product catalog for reference
@@ -201,8 +245,8 @@ const initialSubscriptions: Subscription[] = [
     baseFee: 1000,
     perSeatCost: 10,
     products: [
-      { id: 'prod-web', name: 'NC Web', licenseCount: 20, pricePerLicense: 10, status: 'active' },
-      { id: 'prod-desktop', name: 'NC Desktop', licenseCount: 20, pricePerLicense: 10, status: 'active' },
+      { id: 'prod-web', name: 'NumberCruncher Web', licenseCount: 20, purchasedLicenseCount: 20, pricePerLicense: 10, status: 'active' },
+      { id: 'prod-desktop', name: 'NumberCruncher Desktop', licenseCount: 12, purchasedLicenseCount: 10, pricePerLicense: 10, status: 'active' },
     ],
   },
   {
@@ -217,20 +261,21 @@ const initialSubscriptions: Subscription[] = [
     baseFee: 1000,
     perSeatCost: 10,
     products: [
-      { id: 'prod-web-2', name: 'NC Web', licenseCount: 8, pricePerLicense: 10, status: 'active' },
-      { id: 'prod-desktop-2', name: 'NC Desktop', licenseCount: 8, pricePerLicense: 10, status: 'active' },
+      { id: 'prod-web-2', name: 'NumberCruncher Web', licenseCount: 8, purchasedLicenseCount: 8, pricePerLicense: 10, status: 'active' },
+      { id: 'prod-desktop-2', name: 'NumberCruncher Desktop', licenseCount: 8, purchasedLicenseCount: 8, pricePerLicense: 10, status: 'active' },
     ],
   },
 ];
 
 const initialLicenses: License[] = [
-  // ABC - NC Web (prod-web): 11 assigned of 20
-  ...['user-1','user-2','user-3','user-4','user-5','user-6','user-8','user-10','user-11','user-12','user-13']
+  // ABC - NumberCruncher Web (prod-web): 14 assigned of 20
+  ...['user-1','user-2','user-3','user-4','user-5','user-6','user-8','user-10','user-11','user-12','user-13','user-7','user-9','user-20']
+    .filter((_,i) => i < 14)
     .map(uid => ({ userId: uid, subscriptionId: 'sub-1', productId: 'prod-web', assignedAt: '2026-01-15' })),
-  // ABC - NC Desktop (prod-desktop): 9 assigned of 20
-  ...['user-1','user-2','user-3','user-4','user-5','user-6','user-8','user-10','user-11']
+  // ABC - NumberCruncher Desktop (prod-desktop): 8 assigned of 12
+  ...['user-1','user-2','user-3','user-4','user-5','user-6','user-8','user-10']
     .map(uid => ({ userId: uid, subscriptionId: 'sub-1', productId: 'prod-desktop', assignedAt: '2026-01-15' })),
-  // XYZ - NC Web/Desktop: 4 assigned of 8
+  // XYZ - 4 assigned of 8
   ...['user-20','user-21','user-22','user-23']
     .map(uid => ({ userId: uid, subscriptionId: 'sub-3', productId: 'prod-web-2', assignedAt: '2026-01-15' })),
   ...['user-20','user-22','user-23']
@@ -320,6 +365,34 @@ const initialTickets: SupportTicket[] = [
   { id: 'ticket-6', companyId: 'company-2', userId: 'user-23', category: 'Feature Request', subject: 'Dark mode support', description: 'Would like dark mode option', status: 'closed', createdAt: '2024-01-08' },
 ];
 
+const todayISO = () => new Date().toISOString().split('T')[0];
+const addDays = (days: number) => new Date(Date.now() + days * 86400000).toISOString().split('T')[0];
+
+const initialQuotes: Quote[] = [
+  {
+    id: 'quote-1', companyId: 'company-1', quoteNumber: 'Q-1001',
+    createdDate: todayISO(), expiryDate: addDays(30), status: 'active', amount: 500,
+    note: 'Need quote for additional reporting users.',
+    lineItems: [{ productName: 'QuickView Desktop', licenseCount: 5, unitPrice: 100, total: 500 }],
+  },
+  {
+    id: 'quote-2', companyId: 'company-1', quoteNumber: 'Q-1002',
+    createdDate: addDays(-10), expiryDate: addDays(20), status: 'declined', amount: 87,
+    note: 'Customer wanted to review pricing.',
+    lineItems: [{ productName: 'DataNet', licenseCount: 3, unitPrice: 29, total: 87 }],
+    declineReason: 'Pricing review pending.',
+  },
+  {
+    id: 'quote-3', companyId: 'company-1', quoteNumber: 'Q-1003',
+    createdDate: addDays(-40), expiryDate: addDays(-10), status: 'expired', amount: 100,
+    note: 'Old quote request.',
+    lineItems: [{ productName: 'NumberCruncher Web', licenseCount: 10, unitPrice: 10, total: 100 }],
+  },
+];
+
+const initialQuoteRequests: QuoteRequest[] = [];
+
+
 const AppContext = createContext<AppContextType | null>(null);
 
 export const useApp = () => {
@@ -345,6 +418,8 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     subscriptions: initialSubscriptions,
     licenses: initialLicenses,
     invoices: initialInvoices,
+    quotes: initialQuotes,
+    quoteRequests: initialQuoteRequests,
     supportTickets: initialTickets,
     wizardData: {
       companyName: '',
@@ -705,6 +780,95 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     return state.supportTickets.filter(t => t.companyId === state.currentCompany?.id);
   }, [state.supportTickets, state.currentCompany]);
 
+  // Auto-expire active quotes whose expiryDate is in the past
+  const getCompanyQuotes = useCallback((): Quote[] => {
+    const today = new Date();
+    return state.quotes
+      .filter(q => q.companyId === state.currentCompany?.id)
+      .map(q => (q.status === 'active' && new Date(q.expiryDate) < today ? { ...q, status: 'expired' as const } : q));
+  }, [state.quotes, state.currentCompany]);
+
+  const getCompanyQuoteRequests = useCallback((): QuoteRequest[] => {
+    return state.quoteRequests.filter(r => r.companyId === state.currentCompany?.id);
+  }, [state.quoteRequests, state.currentCompany]);
+
+  const createQuote = useCallback((input: { lineItems: QuoteLineItem[]; note: string }): Quote => {
+    const created = new Date();
+    const expires = new Date(created.getTime() + 30 * 86400000);
+    const amount = input.lineItems.reduce((a, li) => a + li.total, 0);
+    const newQuote: Quote = {
+      id: `quote-${Date.now()}`,
+      companyId: state.currentCompany?.id || 'company-1',
+      quoteNumber: `Q-${String(1000 + Math.floor(Math.random() * 9000))}`,
+      createdDate: created.toISOString().split('T')[0],
+      expiryDate: expires.toISOString().split('T')[0],
+      status: 'active',
+      amount,
+      note: input.note || '',
+      lineItems: input.lineItems,
+    };
+    setState(prev => ({ ...prev, quotes: [newQuote, ...prev.quotes] }));
+    return newQuote;
+  }, [state.currentCompany]);
+
+  const acceptQuote = useCallback((quoteId: string, input: { poNumber?: string; paymentMethod: 'pay_on_receipt' | 'pay_on_terms' }) => {
+    const quote = state.quotes.find(q => q.id === quoteId);
+    if (!quote) return null;
+    if (new Date(quote.expiryDate) < new Date()) return null;
+
+    const today = new Date();
+    const due = new Date(today.getTime() + 30 * 86400000);
+    const sub = state.subscriptions.find(s => s.companyId === quote.companyId);
+    const invoice: Invoice = {
+      id: `inv-${Date.now()}`,
+      companyId: quote.companyId,
+      invoiceNumber: `INV-${String(2000 + Math.floor(Math.random() * 9000))}`,
+      date: today.toISOString().split('T')[0],
+      dueDate: due.toISOString().split('T')[0],
+      status: input.paymentMethod === 'pay_on_receipt' ? 'awaiting_payment' : 'payment_terms_applied',
+      amount: quote.amount,
+      balance: quote.amount,
+      subscriptionId: sub?.id || '',
+      subscriptionName: sub?.name || 'Annual Plan',
+      invoiceType: 'Adjustment Invoice',
+      poNumber: input.poNumber,
+      paymentMethod: input.paymentMethod,
+      lineItems: quote.lineItems.map(l => ({
+        product: l.productName,
+        quantity: l.licenseCount,
+        unitPrice: l.unitPrice,
+        total: l.total,
+      })),
+    };
+    const updatedQuote: Quote = { ...quote, status: 'accepted', poNumber: input.poNumber, paymentMethod: input.paymentMethod, invoiceId: invoice.id };
+    setState(prev => ({
+      ...prev,
+      quotes: prev.quotes.map(q => q.id === quoteId ? updatedQuote : q),
+      invoices: [invoice, ...prev.invoices],
+    }));
+    return { quote: updatedQuote, invoice };
+  }, [state.quotes, state.subscriptions]);
+
+  const declineQuote = useCallback((quoteId: string, reason?: string) => {
+    setState(prev => ({
+      ...prev,
+      quotes: prev.quotes.map(q => q.id === quoteId ? { ...q, status: 'declined', declineReason: reason } : q),
+    }));
+  }, []);
+
+  const addQuoteRequest = useCallback((input: { products: { productName: string; desiredLicenseCount: number }[]; note: string }): QuoteRequest => {
+    const req: QuoteRequest = {
+      id: `qreq-${Date.now()}`,
+      companyId: state.currentCompany?.id || 'company-1',
+      createdDate: new Date().toISOString().split('T')[0],
+      status: 'submitted',
+      products: input.products,
+      note: input.note,
+    };
+    setState(prev => ({ ...prev, quoteRequests: [req, ...prev.quoteRequests] }));
+    return req;
+  }, [state.currentCompany]);
+
   return (
     <AppContext.Provider value={{
       ...state,
@@ -738,6 +902,12 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       getCompanySubscriptions,
       getCompanyInvoices,
       getCompanyTickets,
+      getCompanyQuotes,
+      getCompanyQuoteRequests,
+      createQuote,
+      acceptQuote,
+      declineQuote,
+      addQuoteRequest,
     }}>
       {children}
     </AppContext.Provider>

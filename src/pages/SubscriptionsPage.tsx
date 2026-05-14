@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { useApp } from '@/contexts/AppContext';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useApp, Quote, SubscriptionProduct, Subscription } from '@/contexts/AppContext';
 import { MainLayout } from '@/components/layout/MainLayout';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -17,36 +17,55 @@ import {
 import { ListingPageHeader } from '@/components/listing';
 import { useToast } from '@/hooks/use-toast';
 import {
-  CreditCard, Eye, Calendar, Edit, CheckCircle2, AlertTriangle, ArrowRight, Download, Check,
-  Building2, Mail, Phone, MapPin, FileText, Receipt, FileSignature, RefreshCw,
+  CreditCard, Eye, Edit, CheckCircle2, AlertTriangle, ArrowRight, Download, Check,
+  Building2, Mail, Phone, MapPin, FileText, Receipt, FileSignature, RefreshCw, Settings, X, MessageSquare,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { RenewalFlyout } from '@/components/billing/RenewalFlyout';
+import {
+  ManageLicensesDrawer, AcceptQuoteDialog, DeclineQuoteDialog, ViewNoteDialog, RequestQuoteDialog,
+} from '@/components/subscriptions/QuoteDialogs';
 
 type PaymentMethod = 'Direct ACH' | 'Credit Card' | 'ACH e-Check' | 'Paper Check' | 'Invoice Only (Net 30)';
 
 export const SubscriptionsPage = () => {
   const navigate = useNavigate();
+  const [params, setParams] = useSearchParams();
   const {
     currentCompany,
     getCompanySubscriptions,
     getCompanyInvoices,
+    getCompanyQuotes,
+    getCompanyQuoteRequests,
     getAssignedLicenseCount,
   } = useApp();
   const { toast } = useToast();
 
   const subscriptions = getCompanySubscriptions();
   const invoices = getCompanyInvoices();
+  const quotes = getCompanyQuotes();
+  const quoteRequests = getCompanyQuoteRequests();
 
   const [selectedSubIndex, setSelectedSubIndex] = useState(0);
-  const [activeTab, setActiveTab] = useState('overview');
+  const initialTab = params.get('tab') || 'overview';
+  const [activeTab, setActiveTab] = useState(initialTab);
   const [editBillingOpen, setEditBillingOpen] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('Credit Card');
   const [invoiceFilter, setInvoiceFilter] = useState<string>('all');
   const [renewalOpen, setRenewalOpen] = useState(false);
 
+  // Drawer + dialogs state
+  const [manageOpen, setManageOpen] = useState(false);
+  const [manageSub, setManageSub] = useState<Subscription | null>(null);
+  const [manageProd, setManageProd] = useState<SubscriptionProduct | null>(null);
+  const [acceptQuote, setAcceptQuote] = useState<Quote | null>(null);
+  const [declineQuote, setDeclineQuote] = useState<Quote | null>(null);
+  const [noteQuote, setNoteQuote] = useState<Quote | null>(null);
+  const [requestQuoteOpen, setRequestQuoteOpen] = useState(false);
+
   const currentSub = subscriptions[selectedSubIndex] || null;
   const subInvoices = invoices.filter(i => currentSub && i.subscriptionId === currentSub.id);
+  const hasActiveSubscription = subscriptions.some(s => ['active', 'overdue', 'pending_payment'].includes(s.status));
 
   // Realistic billing details (state-managed for the edit modal)
   const [billing, setBilling] = useState({
@@ -64,15 +83,17 @@ export const SubscriptionsPage = () => {
   const subTotal = (sub: typeof subscriptions[number]) =>
     sub.products.reduce((a, p) => a + p.licenseCount * p.pricePerLicense, 0);
 
-  // Realistic quotes
-  const quotes = currentSub ? [
-    { id: 'Q-2026-001', date: '2026-03-20', expires: '2026-05-20',
-      description: `Renewal Quote — ${currentSub.name}`,
-      amount: subTotal(currentSub), status: 'pending' as const },
-    { id: 'Q-2026-002', date: '2026-02-10', expires: '2026-04-10',
-      description: `Add-on Seats — ${currentSub.name}`,
-      amount: 1495, status: 'expired' as const },
-  ] : [];
+  const handleTabChange = (v: string) => {
+    setActiveTab(v);
+    setParams({ tab: v }, { replace: true });
+  };
+
+  const openManageDrawer = (sub: Subscription, prod: SubscriptionProduct) => {
+    setManageSub(sub);
+    setManageProd(prod);
+    setManageOpen(true);
+  };
+
 
   const accountStatus: 'Current' | 'Renewal Due' | 'Payment Overdue' = (() => {
     const overdue = subInvoices.some(i => i.status === 'overdue');
@@ -147,7 +168,7 @@ export const SubscriptionsPage = () => {
             {currentSub && (
               <Card>
                 <CardContent className="p-0">
-                  <Tabs value={activeTab} onValueChange={setActiveTab}>
+                  <Tabs value={activeTab} onValueChange={handleTabChange}>
                     <div className="border-b px-4 pt-4">
                       <TabsList>
                         <TabsTrigger value="overview">Overview</TabsTrigger>
@@ -226,8 +247,8 @@ export const SubscriptionsPage = () => {
                                     <span className="text-muted-foreground text-xs">Available</span>
                                     <span className={cn('font-semibold', avail === 0 ? 'text-destructive' : 'text-success')}>{avail}</span>
                                   </div>
-                                  <Button variant="outline" size="sm" className="w-full" onClick={() => navigate('/licenses')}>
-                                    View License Assignments<ArrowRight className="h-3 w-3 ml-1" />
+                                  <Button variant="outline" size="sm" className="w-full" onClick={() => openManageDrawer(currentSub, prod)}>
+                                    <Settings className="h-3 w-3 mr-1" />Manage Licenses
                                   </Button>
                                 </CardContent>
                               </Card>
@@ -441,7 +462,29 @@ export const SubscriptionsPage = () => {
                     </TabsContent>
 
                     {/* QUOTES TAB */}
-                    <TabsContent value="quotes" className="p-6">
+                    <TabsContent value="quotes" className="p-6 space-y-4">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <h3 className="text-sm font-semibold">Quotes</h3>
+                          <p className="text-xs text-muted-foreground">Active quotes expire 30 days after creation.</p>
+                        </div>
+                        {hasActiveSubscription ? (
+                          <Button onClick={() => setRequestQuoteOpen(true)}>
+                            <FileSignature className="h-4 w-4 mr-1" />Request a Quote
+                          </Button>
+                        ) : (
+                          <Button onClick={() => navigate('/checkout')}>
+                            <FileSignature className="h-4 w-4 mr-1" />New Quote
+                          </Button>
+                        )}
+                      </div>
+
+                      {hasActiveSubscription && (
+                        <div className="rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
+                          You already have an active subscription. To modify or add products/licenses, please request a quote.
+                        </div>
+                      )}
+
                       {quotes.length === 0 ? (
                         <div className="text-center py-12 text-muted-foreground">No quotes available.</div>
                       ) : (
@@ -449,38 +492,89 @@ export const SubscriptionsPage = () => {
                           <TableHeader>
                             <TableRow>
                               <TableHead>Quote #</TableHead>
-                              <TableHead>Product</TableHead>
+                              <TableHead>Product(s)</TableHead>
+                              <TableHead className="text-center">Licenses</TableHead>
                               <TableHead>Created</TableHead>
                               <TableHead>Expires</TableHead>
                               <TableHead className="text-right">Amount</TableHead>
                               <TableHead>Status</TableHead>
+                              <TableHead>Note</TableHead>
                               <TableHead className="text-right">Actions</TableHead>
                             </TableRow>
                           </TableHeader>
                           <TableBody>
-                            {quotes.map(q => (
-                              <TableRow key={q.id}>
-                                <TableCell className="font-medium">{q.id}</TableCell>
-                                <TableCell className="text-sm">{q.description}</TableCell>
-                                <TableCell>{new Date(q.date).toLocaleDateString()}</TableCell>
-                                <TableCell>{new Date(q.expires).toLocaleDateString()}</TableCell>
-                                <TableCell className="text-right font-medium">${q.amount.toLocaleString()}</TableCell>
-                                <TableCell>
-                                  <Badge variant="outline" className={q.status === 'pending' ? 'status-invited' : 'status-inactive'}>{q.status}</Badge>
-                                </TableCell>
-                                <TableCell className="text-right">
-                                  <Button variant="ghost" size="sm" onClick={() => toast({ title: 'Quote viewed', description: q.id })}><Eye className="h-4 w-4" /></Button>
-                                  <Button variant="ghost" size="sm" onClick={() => toast({ title: 'Downloading quote PDF', description: q.id })}><Download className="h-4 w-4" /></Button>
-                                  {q.status === 'pending' && (
-                                    <Button variant="outline" size="sm" className="ml-1" onClick={() => toast({ title: 'Quote accepted', description: q.id })}>
-                                      <Check className="h-4 w-4 mr-1" />Accept
-                                    </Button>
-                                  )}
-                                </TableCell>
-                              </TableRow>
-                            ))}
+                            {quotes.map(q => {
+                              const isExpired = q.status === 'expired';
+                              const totalLicenses = q.lineItems.reduce((a, l) => a + l.licenseCount, 0);
+                              const noteShort = q.note ? (q.note.length > 30 ? q.note.slice(0, 30) + '…' : q.note) : '—';
+                              const statusClass =
+                                q.status === 'active' ? 'status-active' :
+                                q.status === 'accepted' ? 'status-active' :
+                                q.status === 'declined' ? 'status-overdue' :
+                                'status-inactive';
+                              return (
+                                <TableRow key={q.id}>
+                                  <TableCell className="font-medium">{q.quoteNumber}</TableCell>
+                                  <TableCell className="text-sm">{q.lineItems.map(l => l.productName).join(', ')}</TableCell>
+                                  <TableCell className="text-center">{totalLicenses}</TableCell>
+                                  <TableCell>{new Date(q.createdDate).toLocaleDateString()}</TableCell>
+                                  <TableCell>{new Date(q.expiryDate).toLocaleDateString()}</TableCell>
+                                  <TableCell className="text-right font-medium">${q.amount.toLocaleString()}</TableCell>
+                                  <TableCell><Badge variant="outline" className={statusClass}>{q.status}</Badge></TableCell>
+                                  <TableCell>
+                                    {q.note ? (
+                                      <button className="text-xs text-primary hover:underline text-left" onClick={() => setNoteQuote(q)}>
+                                        {noteShort}
+                                      </button>
+                                    ) : <span className="text-xs text-muted-foreground">—</span>}
+                                  </TableCell>
+                                  <TableCell className="text-right">
+                                    <div className="flex justify-end gap-1 items-center">
+                                      {q.status === 'active' && (
+                                        <>
+                                          <Button size="sm" variant="outline" onClick={() => setAcceptQuote(q)}>
+                                            <Check className="h-3 w-3 mr-1" />Accept
+                                          </Button>
+                                          <Button size="sm" variant="ghost" onClick={() => setDeclineQuote(q)}>
+                                            <X className="h-3 w-3 mr-1" />Decline
+                                          </Button>
+                                        </>
+                                      )}
+                                      {isExpired && (
+                                        <span className="text-xs text-muted-foreground" title="This quote has expired. Please generate a new quote.">
+                                          Expired
+                                        </span>
+                                      )}
+                                      {q.status === 'declined' && (
+                                        <Button size="sm" variant="outline" onClick={() => navigate(`/checkout?fromQuote=${q.quoteNumber}&product=${encodeURIComponent(q.lineItems[0]?.productName || '')}&licenses=${q.lineItems[0]?.licenseCount || 1}&note=${encodeURIComponent(q.note || '')}`)}>
+                                          <RefreshCw className="h-3 w-3 mr-1" />Regenerate
+                                        </Button>
+                                      )}
+                                    </div>
+                                  </TableCell>
+                                </TableRow>
+                              );
+                            })}
                           </TableBody>
                         </Table>
+                      )}
+
+                      {quoteRequests.length > 0 && (
+                        <div className="space-y-2 pt-4 border-t">
+                          <h4 className="text-sm font-semibold flex items-center gap-2"><MessageSquare className="h-4 w-4" />Quote Requests</h4>
+                          <div className="space-y-2">
+                            {quoteRequests.map(r => (
+                              <div key={r.id} className="border rounded-md p-3 text-sm">
+                                <div className="flex items-center justify-between">
+                                  <div className="font-medium">{r.products.map(p => `${p.productName} (${p.desiredLicenseCount})`).join(', ')}</div>
+                                  <Badge variant="outline" className="status-invited">{r.status.replace('_', ' ')}</Badge>
+                                </div>
+                                <div className="text-xs text-muted-foreground mt-1">{new Date(r.createdDate).toLocaleDateString()}</div>
+                                <div className="text-xs mt-1">{r.note}</div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
                       )}
                     </TabsContent>
                   </Tabs>
@@ -525,6 +619,17 @@ export const SubscriptionsPage = () => {
         subscription={currentSub}
         renewalPeriod="Jan 1, 2027 → Dec 31, 2027"
       />
+
+      <ManageLicensesDrawer
+        open={manageOpen}
+        onOpenChange={setManageOpen}
+        subscription={manageSub}
+        product={manageProd}
+      />
+      <AcceptQuoteDialog open={!!acceptQuote} onOpenChange={(v) => !v && setAcceptQuote(null)} quote={acceptQuote} />
+      <DeclineQuoteDialog open={!!declineQuote} onOpenChange={(v) => !v && setDeclineQuote(null)} quote={declineQuote} />
+      <ViewNoteDialog open={!!noteQuote} onOpenChange={(v) => !v && setNoteQuote(null)} quote={noteQuote} />
+      <RequestQuoteDialog open={requestQuoteOpen} onOpenChange={setRequestQuoteOpen} />
     </MainLayout>
   );
 };

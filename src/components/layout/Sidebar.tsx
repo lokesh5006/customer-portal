@@ -27,7 +27,6 @@ interface NavItem {
 const navItems: NavItem[] = [
   { label: 'Dashboard', icon: LayoutDashboard, path: '/dashboard', requiredRoles: ['owner', 'billing', 'admin', 'standard'] },
   { label: 'Subscriptions', icon: CreditCard, path: '/subscriptions', requiredRoles: ['owner', 'billing', 'admin'] },
-  { label: 'License Assignments', icon: Key, path: '/licenses', requiredRoles: ['owner', 'admin'] },
   { label: 'Users & Contacts', icon: Users, path: '/users-contacts', requiredRoles: ['owner', 'billing', 'admin'] },
   { label: 'Product Downloads & Links', icon: Download, path: '/downloads', requiredRoles: ['owner', 'billing', 'admin', 'standard'] },
   { label: 'Invoices', icon: FileText, path: '/invoices', requiredRoles: ['owner', 'billing'] },
