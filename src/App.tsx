@@ -14,7 +14,7 @@ import { Dashboard } from "./pages/Dashboard";
 import { UsersPage } from "./pages/UsersPage";
 import { UsersContactsPage } from "./pages/UsersContactsPage";
 import { SubscriptionsPage } from "./pages/SubscriptionsPage";
-import { LicensesPage } from "./pages/LicensesPage";
+import { CheckoutPage } from "./pages/CheckoutPage";
 import { LicenseReductionPage } from "./pages/LicenseReductionPage";
 import { BillingPage } from "./pages/BillingPage";
 import { DownloadsPage } from "./pages/DownloadsPage";
