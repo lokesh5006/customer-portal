@@ -418,6 +418,8 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     subscriptions: initialSubscriptions,
     licenses: initialLicenses,
     invoices: initialInvoices,
+    quotes: initialQuotes,
+    quoteRequests: initialQuoteRequests,
     supportTickets: initialTickets,
     wizardData: {
       companyName: '',
