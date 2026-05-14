@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { useApp } from '@/contexts/AppContext';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useApp, Quote, SubscriptionProduct, Subscription } from '@/contexts/AppContext';
 import { MainLayout } from '@/components/layout/MainLayout';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -17,36 +17,55 @@ import {
 import { ListingPageHeader } from '@/components/listing';
 import { useToast } from '@/hooks/use-toast';
 import {
-  CreditCard, Eye, Calendar, Edit, CheckCircle2, AlertTriangle, ArrowRight, Download, Check,
-  Building2, Mail, Phone, MapPin, FileText, Receipt, FileSignature, RefreshCw,
+  CreditCard, Eye, Edit, CheckCircle2, AlertTriangle, ArrowRight, Download, Check,
+  Building2, Mail, Phone, MapPin, FileText, Receipt, FileSignature, RefreshCw, Settings, X, MessageSquare,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { RenewalFlyout } from '@/components/billing/RenewalFlyout';
+import {
+  ManageLicensesDrawer, AcceptQuoteDialog, DeclineQuoteDialog, ViewNoteDialog, RequestQuoteDialog,
+} from '@/components/subscriptions/QuoteDialogs';
 
 type PaymentMethod = 'Direct ACH' | 'Credit Card' | 'ACH e-Check' | 'Paper Check' | 'Invoice Only (Net 30)';
 
 export const SubscriptionsPage = () => {
   const navigate = useNavigate();
+  const [params, setParams] = useSearchParams();
   const {
     currentCompany,
     getCompanySubscriptions,
     getCompanyInvoices,
+    getCompanyQuotes,
+    getCompanyQuoteRequests,
     getAssignedLicenseCount,
   } = useApp();
   const { toast } = useToast();
 
   const subscriptions = getCompanySubscriptions();
   const invoices = getCompanyInvoices();
+  const quotes = getCompanyQuotes();
+  const quoteRequests = getCompanyQuoteRequests();
 
   const [selectedSubIndex, setSelectedSubIndex] = useState(0);
-  const [activeTab, setActiveTab] = useState('overview');
+  const initialTab = params.get('tab') || 'overview';
+  const [activeTab, setActiveTab] = useState(initialTab);
   const [editBillingOpen, setEditBillingOpen] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('Credit Card');
   const [invoiceFilter, setInvoiceFilter] = useState<string>('all');
   const [renewalOpen, setRenewalOpen] = useState(false);
 
+  // Drawer + dialogs state
+  const [manageOpen, setManageOpen] = useState(false);
+  const [manageSub, setManageSub] = useState<Subscription | null>(null);
+  const [manageProd, setManageProd] = useState<SubscriptionProduct | null>(null);
+  const [acceptQuote, setAcceptQuote] = useState<Quote | null>(null);
+  const [declineQuote, setDeclineQuote] = useState<Quote | null>(null);
+  const [noteQuote, setNoteQuote] = useState<Quote | null>(null);
+  const [requestQuoteOpen, setRequestQuoteOpen] = useState(false);
+
   const currentSub = subscriptions[selectedSubIndex] || null;
   const subInvoices = invoices.filter(i => currentSub && i.subscriptionId === currentSub.id);
+  const hasActiveSubscription = subscriptions.some(s => ['active', 'overdue', 'pending_payment'].includes(s.status));
 
   // Realistic billing details (state-managed for the edit modal)
   const [billing, setBilling] = useState({
@@ -64,15 +83,17 @@ export const SubscriptionsPage = () => {
   const subTotal = (sub: typeof subscriptions[number]) =>
     sub.products.reduce((a, p) => a + p.licenseCount * p.pricePerLicense, 0);
 
-  // Realistic quotes
-  const quotes = currentSub ? [
-    { id: 'Q-2026-001', date: '2026-03-20', expires: '2026-05-20',
-      description: `Renewal Quote — ${currentSub.name}`,
-      amount: subTotal(currentSub), status: 'pending' as const },
-    { id: 'Q-2026-002', date: '2026-02-10', expires: '2026-04-10',
-      description: `Add-on Seats — ${currentSub.name}`,
-      amount: 1495, status: 'expired' as const },
-  ] : [];
+  const handleTabChange = (v: string) => {
+    setActiveTab(v);
+    setParams({ tab: v }, { replace: true });
+  };
+
+  const openManageDrawer = (sub: Subscription, prod: SubscriptionProduct) => {
+    setManageSub(sub);
+    setManageProd(prod);
+    setManageOpen(true);
+  };
+
 
   const accountStatus: 'Current' | 'Renewal Due' | 'Payment Overdue' = (() => {
     const overdue = subInvoices.some(i => i.status === 'overdue');
