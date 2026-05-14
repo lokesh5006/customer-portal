@@ -462,7 +462,29 @@ export const SubscriptionsPage = () => {
                     </TabsContent>
 
                     {/* QUOTES TAB */}
-                    <TabsContent value="quotes" className="p-6">
+                    <TabsContent value="quotes" className="p-6 space-y-4">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <h3 className="text-sm font-semibold">Quotes</h3>
+                          <p className="text-xs text-muted-foreground">Active quotes expire 30 days after creation.</p>
+                        </div>
+                        {hasActiveSubscription ? (
+                          <Button onClick={() => setRequestQuoteOpen(true)}>
+                            <FileSignature className="h-4 w-4 mr-1" />Request a Quote
+                          </Button>
+                        ) : (
+                          <Button onClick={() => navigate('/checkout')}>
+                            <FileSignature className="h-4 w-4 mr-1" />New Quote
+                          </Button>
+                        )}
+                      </div>
+
+                      {hasActiveSubscription && (
+                        <div className="rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
+                          You already have an active subscription. To modify or add products/licenses, please request a quote.
+                        </div>
+                      )}
+
                       {quotes.length === 0 ? (
                         <div className="text-center py-12 text-muted-foreground">No quotes available.</div>
                       ) : (
@@ -470,38 +492,89 @@ export const SubscriptionsPage = () => {
                           <TableHeader>
                             <TableRow>
                               <TableHead>Quote #</TableHead>
-                              <TableHead>Product</TableHead>
+                              <TableHead>Product(s)</TableHead>
+                              <TableHead className="text-center">Licenses</TableHead>
                               <TableHead>Created</TableHead>
                               <TableHead>Expires</TableHead>
                               <TableHead className="text-right">Amount</TableHead>
                               <TableHead>Status</TableHead>
+                              <TableHead>Note</TableHead>
                               <TableHead className="text-right">Actions</TableHead>
                             </TableRow>
                           </TableHeader>
                           <TableBody>
-                            {quotes.map(q => (
-                              <TableRow key={q.id}>
-                                <TableCell className="font-medium">{q.id}</TableCell>
-                                <TableCell className="text-sm">{q.description}</TableCell>
-                                <TableCell>{new Date(q.date).toLocaleDateString()}</TableCell>
-                                <TableCell>{new Date(q.expires).toLocaleDateString()}</TableCell>
-                                <TableCell className="text-right font-medium">${q.amount.toLocaleString()}</TableCell>
-                                <TableCell>
-                                  <Badge variant="outline" className={q.status === 'pending' ? 'status-invited' : 'status-inactive'}>{q.status}</Badge>
-                                </TableCell>
-                                <TableCell className="text-right">
-                                  <Button variant="ghost" size="sm" onClick={() => toast({ title: 'Quote viewed', description: q.id })}><Eye className="h-4 w-4" /></Button>
-                                  <Button variant="ghost" size="sm" onClick={() => toast({ title: 'Downloading quote PDF', description: q.id })}><Download className="h-4 w-4" /></Button>
-                                  {q.status === 'pending' && (
-                                    <Button variant="outline" size="sm" className="ml-1" onClick={() => toast({ title: 'Quote accepted', description: q.id })}>
-                                      <Check className="h-4 w-4 mr-1" />Accept
-                                    </Button>
-                                  )}
-                                </TableCell>
-                              </TableRow>
-                            ))}
+                            {quotes.map(q => {
+                              const isExpired = q.status === 'expired';
+                              const totalLicenses = q.lineItems.reduce((a, l) => a + l.licenseCount, 0);
+                              const noteShort = q.note ? (q.note.length > 30 ? q.note.slice(0, 30) + '…' : q.note) : '—';
+                              const statusClass =
+                                q.status === 'active' ? 'status-active' :
+                                q.status === 'accepted' ? 'status-active' :
+                                q.status === 'declined' ? 'status-overdue' :
+                                'status-inactive';
+                              return (
+                                <TableRow key={q.id}>
+                                  <TableCell className="font-medium">{q.quoteNumber}</TableCell>
+                                  <TableCell className="text-sm">{q.lineItems.map(l => l.productName).join(', ')}</TableCell>
+                                  <TableCell className="text-center">{totalLicenses}</TableCell>
+                                  <TableCell>{new Date(q.createdDate).toLocaleDateString()}</TableCell>
+                                  <TableCell>{new Date(q.expiryDate).toLocaleDateString()}</TableCell>
+                                  <TableCell className="text-right font-medium">${q.amount.toLocaleString()}</TableCell>
+                                  <TableCell><Badge variant="outline" className={statusClass}>{q.status}</Badge></TableCell>
+                                  <TableCell>
+                                    {q.note ? (
+                                      <button className="text-xs text-primary hover:underline text-left" onClick={() => setNoteQuote(q)}>
+                                        {noteShort}
+                                      </button>
+                                    ) : <span className="text-xs text-muted-foreground">—</span>}
+                                  </TableCell>
+                                  <TableCell className="text-right">
+                                    <div className="flex justify-end gap-1 items-center">
+                                      {q.status === 'active' && (
+                                        <>
+                                          <Button size="sm" variant="outline" onClick={() => setAcceptQuote(q)}>
+                                            <Check className="h-3 w-3 mr-1" />Accept
+                                          </Button>
+                                          <Button size="sm" variant="ghost" onClick={() => setDeclineQuote(q)}>
+                                            <X className="h-3 w-3 mr-1" />Decline
+                                          </Button>
+                                        </>
+                                      )}
+                                      {isExpired && (
+                                        <span className="text-xs text-muted-foreground" title="This quote has expired. Please generate a new quote.">
+                                          Expired
+                                        </span>
+                                      )}
+                                      {q.status === 'declined' && (
+                                        <Button size="sm" variant="outline" onClick={() => navigate(`/checkout?fromQuote=${q.quoteNumber}&product=${encodeURIComponent(q.lineItems[0]?.productName || '')}&licenses=${q.lineItems[0]?.licenseCount || 1}&note=${encodeURIComponent(q.note || '')}`)}>
+                                          <RefreshCw className="h-3 w-3 mr-1" />Regenerate
+                                        </Button>
+                                      )}
+                                    </div>
+                                  </TableCell>
+                                </TableRow>
+                              );
+                            })}
                           </TableBody>
                         </Table>
+                      )}
+
+                      {quoteRequests.length > 0 && (
+                        <div className="space-y-2 pt-4 border-t">
+                          <h4 className="text-sm font-semibold flex items-center gap-2"><MessageSquare className="h-4 w-4" />Quote Requests</h4>
+                          <div className="space-y-2">
+                            {quoteRequests.map(r => (
+                              <div key={r.id} className="border rounded-md p-3 text-sm">
+                                <div className="flex items-center justify-between">
+                                  <div className="font-medium">{r.products.map(p => `${p.productName} (${p.desiredLicenseCount})`).join(', ')}</div>
+                                  <Badge variant="outline" className="status-invited">{r.status.replace('_', ' ')}</Badge>
+                                </div>
+                                <div className="text-xs text-muted-foreground mt-1">{new Date(r.createdDate).toLocaleDateString()}</div>
+                                <div className="text-xs mt-1">{r.note}</div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
                       )}
                     </TabsContent>
                   </Tabs>
