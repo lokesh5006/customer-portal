@@ -261,20 +261,21 @@ const initialSubscriptions: Subscription[] = [
     baseFee: 1000,
     perSeatCost: 10,
     products: [
-      { id: 'prod-web-2', name: 'NC Web', licenseCount: 8, pricePerLicense: 10, status: 'active' },
-      { id: 'prod-desktop-2', name: 'NC Desktop', licenseCount: 8, pricePerLicense: 10, status: 'active' },
+      { id: 'prod-web-2', name: 'NumberCruncher Web', licenseCount: 8, purchasedLicenseCount: 8, pricePerLicense: 10, status: 'active' },
+      { id: 'prod-desktop-2', name: 'NumberCruncher Desktop', licenseCount: 8, purchasedLicenseCount: 8, pricePerLicense: 10, status: 'active' },
     ],
   },
 ];
 
 const initialLicenses: License[] = [
-  // ABC - NC Web (prod-web): 11 assigned of 20
-  ...['user-1','user-2','user-3','user-4','user-5','user-6','user-8','user-10','user-11','user-12','user-13']
+  // ABC - NumberCruncher Web (prod-web): 14 assigned of 20
+  ...['user-1','user-2','user-3','user-4','user-5','user-6','user-8','user-10','user-11','user-12','user-13','user-7','user-9','user-20']
+    .filter((_,i) => i < 14)
     .map(uid => ({ userId: uid, subscriptionId: 'sub-1', productId: 'prod-web', assignedAt: '2026-01-15' })),
-  // ABC - NC Desktop (prod-desktop): 9 assigned of 20
-  ...['user-1','user-2','user-3','user-4','user-5','user-6','user-8','user-10','user-11']
+  // ABC - NumberCruncher Desktop (prod-desktop): 8 assigned of 12
+  ...['user-1','user-2','user-3','user-4','user-5','user-6','user-8','user-10']
     .map(uid => ({ userId: uid, subscriptionId: 'sub-1', productId: 'prod-desktop', assignedAt: '2026-01-15' })),
-  // XYZ - NC Web/Desktop: 4 assigned of 8
+  // XYZ - 4 assigned of 8
   ...['user-20','user-21','user-22','user-23']
     .map(uid => ({ userId: uid, subscriptionId: 'sub-3', productId: 'prod-web-2', assignedAt: '2026-01-15' })),
   ...['user-20','user-22','user-23']
