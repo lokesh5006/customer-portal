@@ -38,8 +38,11 @@ export const SubscriptionsPage = () => {
     getCompanyQuotes,
     getCompanyQuoteRequests,
     getAssignedLicenseCount,
+    getCompanyConfig,
+    markInvoicePaid,
   } = useApp();
   const { toast } = useToast();
+  const cfg = getCompanyConfig();
 
   const subscriptions = getCompanySubscriptions();
   const invoices = getCompanyInvoices();
@@ -107,17 +110,22 @@ export const SubscriptionsPage = () => {
     switch (s) {
       case 'paid':
       case 'active':
+      case 'payment_terms_applied':
       case 'Current':
         return 'status-active';
       case 'pending':
+      case 'awaiting_payment':
+      case 'pending_payment':
       case 'Renewal Due':
         return 'status-invited';
       case 'overdue':
+      case 'unpaid':
       case 'Payment Overdue':
         return 'status-overdue';
       default: return '';
     }
   };
+  const formatStatus = (s: string) => s.replace(/_/g, ' ');
 
   const filteredInvoices = subInvoices.filter(i => invoiceFilter === 'all' || i.status === invoiceFilter);
 
@@ -247,6 +255,9 @@ export const SubscriptionsPage = () => {
                                     <span className="text-muted-foreground text-xs">Available</span>
                                     <span className={cn('font-semibold', avail === 0 ? 'text-destructive' : 'text-success')}>{avail}</span>
                                   </div>
+                                  {(prod.pendingLicenseCount || 0) > 0 && (
+                                    <div className="text-xs text-warning">{prod.pendingLicenseCount} additional seats pending payment.</div>
+                                  )}
                                   <Button variant="outline" size="sm" className="w-full" onClick={() => openManageDrawer(currentSub, prod)}>
                                     <Settings className="h-3 w-3 mr-1" />Manage Licenses
                                   </Button>
@@ -380,6 +391,31 @@ export const SubscriptionsPage = () => {
                               </div>
                             </div>
                           </div>
+                          <div className="mt-4 pt-4 border-t grid gap-3 md:grid-cols-4 text-sm">
+                            <div>
+                              <p className="text-xs text-muted-foreground">Payment Eligibility</p>
+                              <Badge variant="outline" className={statusBadgeClass(cfg.payOnTermsEnabled ? 'active' : 'pending')}>
+                                {cfg.payOnTermsEnabled ? 'Pay on Terms' : 'Pay on Receipt'}
+                              </Badge>
+                            </div>
+                            <div>
+                              <p className="text-xs text-muted-foreground">Default Billing Method</p>
+                              <p className="font-medium capitalize">{cfg.defaultBillingMethod.replace(/_/g, ' ')}</p>
+                            </div>
+                            {cfg.terms && (
+                              <div>
+                                <p className="text-xs text-muted-foreground">Terms</p>
+                                <p className="font-medium">{cfg.terms}</p>
+                              </div>
+                            )}
+                            <div>
+                              <p className="text-xs text-muted-foreground">Subscription Status</p>
+                              <Badge variant="outline" className={statusBadgeClass(currentSub.status)}>{formatStatus(currentSub.status)}</Badge>
+                            </div>
+                          </div>
+                          <p className="text-xs text-muted-foreground mt-3">
+                            Payment eligibility is managed by Admin. Contact support if you need payment terms enabled.
+                          </p>
                         </CardContent>
                       </Card>
                     </TabsContent>
@@ -388,7 +424,7 @@ export const SubscriptionsPage = () => {
                     <TabsContent value="invoices" className="p-6 space-y-4">
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <div className="flex gap-1">
-                          {(['all', 'paid', 'pending', 'overdue'] as const).map(f => (
+                          {(['all', 'paid', 'awaiting_payment', 'payment_terms_applied', 'overdue'] as const).map(f => (
                             <Button
                               key={f}
                               variant={invoiceFilter === f ? 'default' : 'outline'}
@@ -396,7 +432,7 @@ export const SubscriptionsPage = () => {
                               onClick={() => setInvoiceFilter(f)}
                               className="capitalize"
                             >
-                              {f}
+                              {formatStatus(f)}
                             </Button>
                           ))}
                         </div>
@@ -432,10 +468,18 @@ export const SubscriptionsPage = () => {
                                 <TableCell>{new Date(inv.date).toLocaleDateString()}</TableCell>
                                 <TableCell>{new Date(inv.dueDate).toLocaleDateString()}</TableCell>
                                 <TableCell>
-                                  <Badge variant="outline" className={statusBadgeClass(inv.status)}>{inv.status}</Badge>
+                                  <Badge variant="outline" className={statusBadgeClass(inv.status)}>{formatStatus(inv.status)}</Badge>
                                 </TableCell>
                                 <TableCell className="text-right font-medium">${inv.amount.toLocaleString()}</TableCell>
                                 <TableCell className="text-right">
+                                  {inv.status === 'awaiting_payment' && (
+                                    <Button variant="default" size="sm" className="mr-1" onClick={() => {
+                                      markInvoicePaid(inv.id);
+                                      toast({ title: 'Payment received.', description: 'Subscription / license changes activated.' });
+                                    }}>
+                                      <CheckCircle2 className="h-3 w-3 mr-1" />Mark as Paid
+                                    </Button>
+                                  )}
                                   {(inv.status === 'overdue' || inv.status === 'unpaid' || inv.status === 'pending') && (
                                     <Button variant="default" size="sm" className="mr-1" onClick={() => {
                                       if (inv.invoiceType === 'Renewal Invoice' || inv.invoiceType === 'Initial Invoice') {
