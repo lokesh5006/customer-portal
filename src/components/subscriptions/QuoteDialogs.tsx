@@ -1,5 +1,4 @@
-import { useState, useMemo, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useState, useEffect } from 'react';
 import {
   Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription, SheetFooter,
 } from '@/components/ui/sheet';
@@ -13,12 +12,59 @@ import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Checkbox } from '@/components/ui/checkbox';
-import { useApp, Subscription, SubscriptionProduct, Quote, PRODUCT_CATALOG } from '@/contexts/AppContext';
+import { useApp, Subscription, SubscriptionProduct, Quote, PaymentMethod } from '@/contexts/AppContext';
 import { useToast } from '@/hooks/use-toast';
-import { Plus, Minus, CheckCircle2, AlertTriangle, FileSignature, X } from 'lucide-react';
+import { Plus, Minus, CheckCircle2, Lock } from 'lucide-react';
 
 /* ============================================================
- * Manage Licenses Drawer (Sheet, right-side)
+ * Payment Method Picker (radio cards)
+ * ========================================================== */
+const PaymentMethodPicker = ({
+  value, onChange, available, payOnTermsEnabled, terms,
+}: {
+  value: PaymentMethod | '';
+  onChange: (v: PaymentMethod) => void;
+  available: PaymentMethod[];
+  payOnTermsEnabled: boolean;
+  terms?: string;
+}) => {
+  const cards: { id: PaymentMethod; title: string; desc: string }[] = [
+    { id: 'pay_immediately', title: 'Pay Immediately', desc: 'Pay now and activate your subscription after successful payment.' },
+    { id: 'pay_on_receipt', title: 'Pay on Receipt', desc: 'An invoice will be generated. Subscription will be activated after payment is received.' },
+    { id: 'pay_on_terms', title: 'Pay on Terms', desc: terms ? `Invoice will be generated under approved payment terms (${terms}).` : 'Invoice will be generated under approved payment terms.' },
+  ];
+  return (
+    <RadioGroup value={value} onValueChange={(v) => onChange(v as PaymentMethod)} className="space-y-2">
+      {cards.map(c => {
+        const isAvail = available.includes(c.id);
+        const isTerms = c.id === 'pay_on_terms';
+        if (isTerms && !payOnTermsEnabled) {
+          return (
+            <label key={c.id} className="flex items-start gap-2 border rounded-md p-3 opacity-60 cursor-not-allowed bg-muted/30">
+              <Lock className="h-4 w-4 mt-0.5 text-muted-foreground" />
+              <div>
+                <div className="text-sm font-medium">{c.title}</div>
+                <div className="text-xs text-muted-foreground">Pay on Terms is not enabled for this company.</div>
+              </div>
+            </label>
+          );
+        }
+        return (
+          <label key={c.id} className={`flex items-start gap-2 border rounded-md p-3 cursor-pointer hover:bg-muted/40 ${value === c.id ? 'border-primary bg-primary/5' : ''}`}>
+            <RadioGroupItem value={c.id} className="mt-0.5" disabled={!isAvail} />
+            <div>
+              <div className="text-sm font-medium">{c.title}</div>
+              <div className="text-xs text-muted-foreground">{c.desc}</div>
+            </div>
+          </label>
+        );
+      })}
+    </RadioGroup>
+  );
+};
+
+/* ============================================================
+ * Manage Licenses Drawer
  * ========================================================== */
 export const ManageLicensesDrawer = ({
   open, onOpenChange, subscription, product,
@@ -28,22 +74,29 @@ export const ManageLicensesDrawer = ({
   subscription: Subscription | null;
   product: SubscriptionProduct | null;
 }) => {
-  const { getAssignedLicenseCount, updateProductLicenseCount } = useApp();
+  const { getAssignedLicenseCount, requestLicenseChange, getCompanyConfig, getAvailablePaymentMethods } = useApp();
   const { toast } = useToast();
   const purchased = product?.purchasedLicenseCount ?? product?.licenseCount ?? 0;
   const current = product?.licenseCount ?? 0;
+  const pending = product?.pendingLicenseCount ?? 0;
   const assigned = subscription && product ? getAssignedLicenseCount(subscription.id, product.id) : 0;
+  const cfg = getCompanyConfig(subscription?.companyId);
+  const available = getAvailablePaymentMethods(subscription?.companyId);
 
   const [seatCount, setSeatCount] = useState(current);
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod | ''>('');
   const [savedMessage, setSavedMessage] = useState<string | null>(null);
 
   useEffect(() => {
     setSeatCount(current);
+    setPaymentMethod('');
     setSavedMessage(null);
   }, [current, product?.id, open]);
 
   const minusDisabled = seatCount <= purchased;
   const delta = seatCount - current;
+  const cost = delta > 0 ? delta * (product?.pricePerLicense || 0) : 0;
+  const requiresPayment = delta > 0;
 
   const handleSave = () => {
     if (!subscription || !product) return;
@@ -51,9 +104,24 @@ export const ManageLicensesDrawer = ({
       setSavedMessage('No license changes to save.');
       return;
     }
-    updateProductLicenseCount(subscription.id, product.id, seatCount);
-    setSavedMessage(`License changes saved successfully. Seat count is now ${seatCount}.`);
-    toast({ title: 'License changes saved', description: `${product.name}: ${seatCount} seats` });
+    if (requiresPayment && !paymentMethod) {
+      toast({ title: 'Please select a payment method to continue.', variant: 'destructive' });
+      return;
+    }
+    const result = requestLicenseChange(subscription.id, product.id, seatCount, requiresPayment ? (paymentMethod as PaymentMethod) : 'pay_on_receipt');
+    if (delta < 0) {
+      setSavedMessage('License count updated successfully.');
+      toast({ title: 'License count updated successfully.' });
+    } else if (paymentMethod === 'pay_immediately') {
+      setSavedMessage('Payment successful. License count updated.');
+      toast({ title: 'Payment successful', description: 'License count updated.' });
+    } else if (paymentMethod === 'pay_on_terms') {
+      setSavedMessage('License count updated under approved payment terms.');
+      toast({ title: 'License count updated under approved payment terms.' });
+    } else {
+      setSavedMessage('Invoice generated. Additional licenses will be activated after payment is received.');
+      toast({ title: 'Invoice generated', description: `${delta} additional seats pending payment.` });
+    }
   };
 
   return (
@@ -61,9 +129,7 @@ export const ManageLicensesDrawer = ({
       <SheetContent side="right" className="w-full sm:max-w-md overflow-y-auto">
         <SheetHeader>
           <SheetTitle>Manage Licenses</SheetTitle>
-          <SheetDescription>
-            Adjust seats for this product. Seat count cannot go below the originally purchased count.
-          </SheetDescription>
+          <SheetDescription>Adjust seats. Cannot go below the originally purchased count.</SheetDescription>
         </SheetHeader>
 
         {subscription && product && (
@@ -78,16 +144,15 @@ export const ManageLicensesDrawer = ({
                 <div><div className="text-muted-foreground">Current Seats</div><div className="font-semibold text-sm">{current}</div></div>
                 <div><div className="text-muted-foreground">Assigned</div><div className="font-semibold text-sm">{assigned}</div></div>
               </div>
+              {pending > 0 && (
+                <div className="text-xs text-warning pt-1">{pending} additional seats pending payment.</div>
+              )}
             </div>
 
             <div>
               <Label className="text-sm">New Seat Count</Label>
               <div className="flex items-center justify-center gap-3 mt-2">
-                <Button
-                  variant="outline" size="icon"
-                  onClick={() => setSeatCount(s => Math.max(purchased, s - 1))}
-                  disabled={minusDisabled}
-                >
+                <Button variant="outline" size="icon" disabled={minusDisabled} onClick={() => setSeatCount(s => Math.max(purchased, s - 1))}>
                   <Minus className="h-4 w-4" />
                 </Button>
                 <Input
@@ -100,18 +165,36 @@ export const ManageLicensesDrawer = ({
                 </Button>
               </div>
               {minusDisabled && (
-                <p className="text-xs text-muted-foreground mt-2 text-center">
-                  License count cannot be lower than the purchased license count.
-                </p>
-              )}
-              {delta !== 0 && (
-                <p className="text-xs text-center mt-2">
-                  <span className={delta > 0 ? 'text-success' : 'text-destructive'}>
-                    {delta > 0 ? `+${delta}` : delta} seats
-                  </span>
-                </p>
+                <p className="text-xs text-muted-foreground mt-2 text-center">License count cannot be lower than the purchased license count.</p>
               )}
             </div>
+
+            {delta !== 0 && (
+              <div className="rounded-md border bg-muted/30 p-3 text-xs space-y-1">
+                <div className="flex justify-between"><span className="text-muted-foreground">Product</span><span>{product.name}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">Current seats</span><span>{current}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">New requested seats</span><span>{seatCount}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">{delta > 0 ? 'Added seats' : 'Removed seats'}</span><span>{Math.abs(delta)}</span></div>
+                {requiresPayment && (
+                  <div className="flex justify-between font-semibold pt-1 border-t"><span>Estimated charge</span><span>${cost.toLocaleString()}</span></div>
+                )}
+              </div>
+            )}
+
+            {requiresPayment && (
+              <div>
+                <Label className="text-sm">Payment Method</Label>
+                <div className="mt-2">
+                  <PaymentMethodPicker
+                    value={paymentMethod}
+                    onChange={setPaymentMethod}
+                    available={available}
+                    payOnTermsEnabled={cfg.payOnTermsEnabled}
+                    terms={cfg.terms}
+                  />
+                </div>
+              </div>
+            )}
 
             {savedMessage && (
               <div className="rounded-md border border-success/30 bg-success/10 text-sm p-3 flex items-start gap-2">
@@ -143,10 +226,12 @@ export const ManageLicensesDrawer = ({
 export const AcceptQuoteDialog = ({
   open, onOpenChange, quote,
 }: { open: boolean; onOpenChange: (v: boolean) => void; quote: Quote | null }) => {
-  const { acceptQuote } = useApp();
+  const { acceptQuote, getCompanyConfig, getAvailablePaymentMethods } = useApp();
   const { toast } = useToast();
   const [poNumber, setPoNumber] = useState('');
-  const [paymentMethod, setPaymentMethod] = useState<'pay_on_receipt' | 'pay_on_terms' | ''>('');
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod | ''>('');
+  const cfg = getCompanyConfig(quote?.companyId);
+  const available = getAvailablePaymentMethods(quote?.companyId);
 
   useEffect(() => {
     if (open) {
@@ -159,7 +244,7 @@ export const AcceptQuoteDialog = ({
 
   const handleConfirm = () => {
     if (!paymentMethod) {
-      toast({ title: 'Please select a payment method', variant: 'destructive' });
+      toast({ title: 'Please select a payment method to continue.', variant: 'destructive' });
       return;
     }
     const result = acceptQuote(quote.id, { poNumber: poNumber || undefined, paymentMethod });
@@ -167,16 +252,19 @@ export const AcceptQuoteDialog = ({
       toast({ title: 'Unable to accept quote', description: 'This quote has expired.', variant: 'destructive' });
       return;
     }
-    toast({
-      title: 'Quote accepted successfully',
-      description: `Invoice ${result.invoice.invoiceNumber} has been generated.`,
-    });
+    if (paymentMethod === 'pay_immediately') {
+      toast({ title: 'Quote accepted and payment completed.', description: `Subscription activated. Invoice ${result.invoice.invoiceNumber}.` });
+    } else if (paymentMethod === 'pay_on_terms') {
+      toast({ title: 'Quote accepted under approved payment terms.', description: `Subscription activated. Invoice ${result.invoice.invoiceNumber}.` });
+    } else {
+      toast({ title: 'Quote accepted.', description: `Invoice ${result.invoice.invoiceNumber} generated. Subscription activates after payment.` });
+    }
     onOpenChange(false);
   };
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg">
+      <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Accept Quote</DialogTitle>
           <DialogDescription>Review and confirm acceptance of this quote.</DialogDescription>
@@ -187,7 +275,9 @@ export const AcceptQuoteDialog = ({
             <div className="flex justify-between"><span className="text-muted-foreground">Quote #</span><span className="font-medium">{quote.quoteNumber}</span></div>
             <div className="flex justify-between"><span className="text-muted-foreground">Products</span><span className="font-medium text-right">{quote.lineItems.map(l => `${l.productName} (${l.licenseCount})`).join(', ')}</span></div>
             <div className="flex justify-between"><span className="text-muted-foreground">Amount</span><span className="font-medium">${quote.amount.toLocaleString()}</span></div>
-            <div className="flex justify-between"><span className="text-muted-foreground">Expiry</span><span className="font-medium">{new Date(quote.expiryDate).toLocaleDateString()}</span></div>
+            <div className="flex justify-between"><span className="text-muted-foreground">Created</span><span className="font-medium">{new Date(quote.createdDate).toLocaleDateString()}</span></div>
+            <div className="flex justify-between"><span className="text-muted-foreground">Expires</span><span className="font-medium">{new Date(quote.expiryDate).toLocaleDateString()}</span></div>
+            {quote.note && <div className="pt-1 text-xs text-muted-foreground">Note: {quote.note}</div>}
           </div>
 
           <div>
@@ -197,28 +287,15 @@ export const AcceptQuoteDialog = ({
 
           <div>
             <Label>Payment Method</Label>
-            <RadioGroup value={paymentMethod} onValueChange={(v) => setPaymentMethod(v as 'pay_on_receipt' | 'pay_on_terms')} className="mt-2 space-y-2">
-              <label className="flex items-start gap-2 border rounded-md p-3 cursor-pointer hover:bg-muted/40">
-                <RadioGroupItem value="pay_on_receipt" id="por" className="mt-0.5" />
-                <div>
-                  <div className="text-sm font-medium">Pay on Receipt</div>
-                  <div className="text-xs text-muted-foreground">Subscription will be activated only after payment is received.</div>
-                </div>
-              </label>
-              <label className="flex items-start gap-2 border rounded-md p-3 cursor-pointer hover:bg-muted/40">
-                <RadioGroupItem value="pay_on_terms" id="pot" className="mt-0.5" />
-                <div>
-                  <div className="text-sm font-medium">Pay on Terms</div>
-                  <div className="text-xs text-muted-foreground">Subscription activation will follow the approved payment terms.</div>
-                </div>
-              </label>
-            </RadioGroup>
-            {paymentMethod === 'pay_on_receipt' && (
-              <p className="text-xs text-muted-foreground mt-2">Invoice will be generated after acceptance. Subscription will be activated only after payment is received.</p>
-            )}
-            {paymentMethod === 'pay_on_terms' && (
-              <p className="text-xs text-muted-foreground mt-2">Invoice will be generated after acceptance. Subscription activation will follow the approved payment terms.</p>
-            )}
+            <div className="mt-2">
+              <PaymentMethodPicker
+                value={paymentMethod}
+                onChange={setPaymentMethod}
+                available={available}
+                payOnTermsEnabled={cfg.payOnTermsEnabled}
+                terms={cfg.terms}
+              />
+            </div>
           </div>
         </div>
 
@@ -337,7 +414,7 @@ export const RequestQuoteDialog = ({
       return;
     }
     addQuoteRequest({ products, note });
-    toast({ title: 'Quote request submitted successfully', description: 'Email notification sent to admin.' });
+    toast({ title: 'Quote request submitted successfully.', description: 'Email notification sent to admin.' });
     onOpenChange(false);
   };
 
