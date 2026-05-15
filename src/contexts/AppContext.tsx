@@ -165,6 +165,7 @@ interface AppState {
   quotes: Quote[];
   quoteRequests: QuoteRequest[];
   supportTickets: SupportTicket[];
+  companyConfigs: CompanyBillingConfig[];
   wizardData: {
     companyName: string;
     firstName: string;
