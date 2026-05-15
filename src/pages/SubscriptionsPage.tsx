@@ -421,7 +421,7 @@ export const SubscriptionsPage = () => {
                     <TabsContent value="invoices" className="p-6 space-y-4">
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <div className="flex gap-1">
-                          {(['all', 'paid', 'pending', 'overdue'] as const).map(f => (
+                          {(['all', 'paid', 'awaiting_payment', 'payment_terms_applied', 'overdue'] as const).map(f => (
                             <Button
                               key={f}
                               variant={invoiceFilter === f ? 'default' : 'outline'}
@@ -429,7 +429,7 @@ export const SubscriptionsPage = () => {
                               onClick={() => setInvoiceFilter(f)}
                               className="capitalize"
                             >
-                              {f}
+                              {formatStatus(f)}
                             </Button>
                           ))}
                         </div>
