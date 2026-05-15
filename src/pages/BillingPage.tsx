@@ -115,7 +115,14 @@ export const BillingPage = () => {
           filters={
             <>
               <FilterField label="Status" value={statusFilter} onChange={(v) => { setStatusFilter(v); setCurrentPage(1); }}
-                options={[{ value: 'all', label: 'All Status' }, { value: 'paid', label: 'Paid' }, { value: 'pending', label: 'Pending' }, { value: 'overdue', label: 'Overdue' }]} />
+                options={[
+                  { value: 'all', label: 'All Status' },
+                  { value: 'paid', label: 'Paid' },
+                  { value: 'awaiting_payment', label: 'Awaiting Payment' },
+                  { value: 'payment_terms_applied', label: 'Payment Terms Applied' },
+                  { value: 'overdue', label: 'Overdue' },
+                  { value: 'unpaid', label: 'Unpaid' },
+                ]} />
               <FilterField label="Subscription" value={subscriptionFilter} onChange={(v) => { setSubscriptionFilter(v); setCurrentPage(1); }}
                 options={[{ value: 'all', label: 'All Subscriptions' }, ...subscriptionNames.map(n => ({ value: n, label: n }))]} />
               <FilterField label="Invoice Date" type="dateRange" dateFromValue={invoiceDateFrom} dateToValue={invoiceDateTo}
