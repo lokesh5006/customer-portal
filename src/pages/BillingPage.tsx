@@ -16,7 +16,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { RenewalFlyout } from '@/components/billing/RenewalFlyout';
 
 export const BillingPage = () => {
-  const { getCompanyInvoices, getCompanySubscriptions, currentCompany } = useApp();
+  const { getCompanyInvoices, getCompanySubscriptions, currentCompany, markInvoicePaid } = useApp();
   const { toast } = useToast();
   const invoices = getCompanyInvoices();
   const subs = getCompanySubscriptions();
@@ -54,34 +54,44 @@ export const BillingPage = () => {
   const getStatusColor = (status: string) => {
     switch (status.toLowerCase()) {
       case 'paid': return 'status-active';
-      case 'pending': return 'status-invited';
-      case 'overdue': return 'status-inactive';
+      case 'pending':
+      case 'awaiting_payment': return 'status-invited';
+      case 'payment_terms_applied': return 'status-active';
+      case 'overdue':
+      case 'unpaid': return 'status-inactive';
       default: return '';
     }
   };
 
+  const formatStatus = (s: string) => s.replace(/_/g, ' ');
+  const formatMethod = (m?: string) => m ? m.replace(/_/g, ' ') : '—';
+
+  const handleMarkPaid = (inv: Invoice) => {
+    markInvoicePaid(inv.id);
+    toast({ title: 'Payment received.', description: 'Subscription / license changes activated.' });
+  };
+
   const columns: DataTableColumn<Invoice>[] = [
     { key: 'invoiceNumber', header: 'Invoice #', render: (inv) => <span className="font-medium">{inv.invoiceNumber}</span> },
-    { key: 'subscriptionName', header: 'Subscription', render: (inv) => <span className="text-sm">{inv.subscriptionName}</span> },
-    {
-      key: 'products', header: 'Products',
-      render: (inv) => (
-        <div className="text-xs text-muted-foreground">
-          {inv.lineItems.map(li => li.product).join(', ')}
-        </div>
-      ),
-    },
+    { key: 'source', header: 'Source', render: (inv) => <span className="text-xs">{inv.source || (inv.invoiceType === 'Renewal Invoice' ? 'Renewal' : inv.invoiceType === 'Initial Invoice' ? 'Checkout' : '—')}</span> },
+    { key: 'quoteNumber', header: 'Quote #', render: (inv) => <span className="text-xs">{inv.quoteNumber || '—'}</span> },
+    { key: 'products', header: 'Products', render: (inv) => <div className="text-xs text-muted-foreground">{inv.lineItems.map(li => li.product).join(', ')}</div> },
+    { key: 'po', header: 'PO #', render: (inv) => <span className="text-xs">{inv.poNumber || '—'}</span> },
+    { key: 'method', header: 'Method', render: (inv) => <span className="text-xs capitalize">{formatMethod(inv.paymentMethod)}</span> },
     { key: 'date', header: 'Date', render: (inv) => new Date(inv.date).toLocaleDateString() },
-    { key: 'dueDate', header: 'Due Date', render: (inv) => new Date(inv.dueDate).toLocaleDateString() },
-    { key: 'status', header: 'Status', render: (inv) => <Badge variant="outline" className={getStatusColor(inv.status)}>{inv.status}</Badge> },
+    { key: 'status', header: 'Status', render: (inv) => <Badge variant="outline" className={getStatusColor(inv.status)}>{formatStatus(inv.status)}</Badge> },
     { key: 'amount', header: 'Amount', render: (inv) => `$${inv.amount.toLocaleString()}` },
-    { key: 'balance', header: 'Balance', render: (inv) => `$${inv.balance.toLocaleString()}` },
     {
       key: 'actions', header: 'Actions', className: 'text-right',
       render: (inv) => (
-        <div className="flex justify-end gap-2">
+        <div className="flex justify-end gap-1">
           <Button variant="ghost" size="sm" onClick={() => { setSelectedInvoice(inv); setDetailsOpen(true); }}><Eye className="h-4 w-4" /></Button>
-          {inv.balance > 0 && (
+          {inv.status === 'awaiting_payment' && (
+            <Button size="sm" variant="outline" onClick={() => handleMarkPaid(inv)}>
+              <CreditCard className="h-3 w-3 mr-1" />Mark as Paid
+            </Button>
+          )}
+          {(inv.status === 'overdue' || inv.status === 'unpaid' || inv.status === 'pending') && (
             <Button size="sm" variant="outline" onClick={() => {
               setSelectedInvoice(inv);
               if (inv.invoiceType === 'Renewal Invoice' || inv.invoiceType === 'Initial Invoice') setRenewalOpen(true);
