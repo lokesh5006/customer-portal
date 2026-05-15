@@ -847,7 +847,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     return newQuote;
   }, [state.currentCompany]);
 
-  const acceptQuote = useCallback((quoteId: string, input: { poNumber?: string; paymentMethod: 'pay_on_receipt' | 'pay_on_terms' }) => {
+  const acceptQuote = useCallback((quoteId: string, input: { poNumber?: string; paymentMethod: PaymentMethod }) => {
     const quote = state.quotes.find(q => q.id === quoteId);
     if (!quote) return null;
     if (new Date(quote.expiryDate) < new Date()) return null;
@@ -855,18 +855,23 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     const today = new Date();
     const due = new Date(today.getTime() + 30 * 86400000);
     const sub = state.subscriptions.find(s => s.companyId === quote.companyId);
+    const status: Invoice['status'] =
+      input.paymentMethod === 'pay_immediately' ? 'paid' :
+      input.paymentMethod === 'pay_on_terms' ? 'payment_terms_applied' : 'awaiting_payment';
     const invoice: Invoice = {
       id: `inv-${Date.now()}`,
       companyId: quote.companyId,
       invoiceNumber: `INV-${String(2000 + Math.floor(Math.random() * 9000))}`,
       date: today.toISOString().split('T')[0],
       dueDate: due.toISOString().split('T')[0],
-      status: input.paymentMethod === 'pay_on_receipt' ? 'awaiting_payment' : 'payment_terms_applied',
+      status,
       amount: quote.amount,
-      balance: quote.amount,
+      balance: input.paymentMethod === 'pay_immediately' ? 0 : quote.amount,
       subscriptionId: sub?.id || '',
       subscriptionName: sub?.name || 'Annual Plan',
       invoiceType: 'Adjustment Invoice',
+      source: 'Quote Acceptance',
+      quoteNumber: quote.quoteNumber,
       poNumber: input.poNumber,
       paymentMethod: input.paymentMethod,
       lineItems: quote.lineItems.map(l => ({
