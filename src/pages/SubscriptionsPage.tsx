@@ -110,17 +110,22 @@ export const SubscriptionsPage = () => {
     switch (s) {
       case 'paid':
       case 'active':
+      case 'payment_terms_applied':
       case 'Current':
         return 'status-active';
       case 'pending':
+      case 'awaiting_payment':
+      case 'pending_payment':
       case 'Renewal Due':
         return 'status-invited';
       case 'overdue':
+      case 'unpaid':
       case 'Payment Overdue':
         return 'status-overdue';
       default: return '';
     }
   };
+  const formatStatus = (s: string) => s.replace(/_/g, ' ');
 
   const filteredInvoices = subInvoices.filter(i => invoiceFilter === 'all' || i.status === invoiceFilter);
 
