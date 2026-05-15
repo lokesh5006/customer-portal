@@ -456,6 +456,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     quotes: initialQuotes,
     quoteRequests: initialQuoteRequests,
     supportTickets: initialTickets,
+    companyConfigs: initialCompanyConfigs,
     wizardData: {
       companyName: '',
       firstName: '',
