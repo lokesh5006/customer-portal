@@ -23,6 +23,7 @@ import { SupportPage } from "./pages/SupportPage";
 import { ProfilePage } from "./pages/ProfilePage";
 import { ContactsPage } from "./pages/ContactsPage";
 import { QuotesPage } from "./pages/QuotesPage";
+import { AdminPage } from "./pages/AdminPage";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
