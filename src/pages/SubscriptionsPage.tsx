@@ -38,8 +38,11 @@ export const SubscriptionsPage = () => {
     getCompanyQuotes,
     getCompanyQuoteRequests,
     getAssignedLicenseCount,
+    getCompanyConfig,
+    markInvoicePaid,
   } = useApp();
   const { toast } = useToast();
+  const cfg = getCompanyConfig();
 
   const subscriptions = getCompanySubscriptions();
   const invoices = getCompanyInvoices();
