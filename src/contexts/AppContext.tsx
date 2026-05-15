@@ -122,7 +122,7 @@ export interface Quote {
   note: string;
   lineItems: QuoteLineItem[];
   poNumber?: string;
-  paymentMethod?: 'pay_on_receipt' | 'pay_on_terms';
+  paymentMethod?: PaymentMethod;
   declineReason?: string;
   invoiceId?: string;
 }
