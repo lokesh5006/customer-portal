@@ -79,6 +79,8 @@ export interface InvoiceLineItem {
 
 export type InvoiceType = 'Initial Invoice' | 'Renewal Invoice' | 'Adjustment Invoice';
 
+export type InvoiceSource = 'Checkout' | 'Quote Acceptance' | 'License Change' | 'Renewal';
+
 export interface Invoice {
   id: string;
   companyId: string;
@@ -93,7 +95,13 @@ export interface Invoice {
   invoiceType?: InvoiceType;
   lineItems: InvoiceLineItem[];
   poNumber?: string;
-  paymentMethod?: 'pay_on_receipt' | 'pay_on_terms';
+  paymentMethod?: PaymentMethod;
+  source?: InvoiceSource;
+  quoteNumber?: string;
+  /** Pending product license change to be applied when invoice is paid */
+  pendingLicenseChange?: { subscriptionId: string; productId: string; newCount: number };
+  /** Activates subscription from pending_payment when invoice is paid */
+  activatesSubscription?: boolean;
 }
 
 export interface QuoteLineItem {
