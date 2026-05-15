@@ -388,6 +388,31 @@ export const SubscriptionsPage = () => {
                               </div>
                             </div>
                           </div>
+                          <div className="mt-4 pt-4 border-t grid gap-3 md:grid-cols-4 text-sm">
+                            <div>
+                              <p className="text-xs text-muted-foreground">Payment Eligibility</p>
+                              <Badge variant="outline" className={statusBadgeClass(cfg.payOnTermsEnabled ? 'active' : 'pending')}>
+                                {cfg.payOnTermsEnabled ? 'Pay on Terms' : 'Pay on Receipt'}
+                              </Badge>
+                            </div>
+                            <div>
+                              <p className="text-xs text-muted-foreground">Default Billing Method</p>
+                              <p className="font-medium capitalize">{cfg.defaultBillingMethod.replace(/_/g, ' ')}</p>
+                            </div>
+                            {cfg.terms && (
+                              <div>
+                                <p className="text-xs text-muted-foreground">Terms</p>
+                                <p className="font-medium">{cfg.terms}</p>
+                              </div>
+                            )}
+                            <div>
+                              <p className="text-xs text-muted-foreground">Subscription Status</p>
+                              <Badge variant="outline" className={statusBadgeClass(currentSub.status)}>{formatStatus(currentSub.status)}</Badge>
+                            </div>
+                          </div>
+                          <p className="text-xs text-muted-foreground mt-3">
+                            Payment eligibility is managed by Admin. Contact support if you need payment terms enabled.
+                          </p>
                         </CardContent>
                       </Card>
                     </TabsContent>
