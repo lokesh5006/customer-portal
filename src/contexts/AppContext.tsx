@@ -31,6 +31,19 @@ export interface SubscriptionProduct {
   purchasedLicenseCount?: number;
   pricePerLicense: number;
   status: 'active' | 'pending' | 'expired';
+  /** Additional seats waiting on payment (Pay on Receipt) */
+  pendingLicenseCount?: number;
+}
+
+export type PaymentMethod = 'pay_immediately' | 'pay_on_receipt' | 'pay_on_terms';
+export type PaymentTerms = 'Net 15' | 'Net 30' | 'Net 45';
+
+export interface CompanyBillingConfig {
+  companyId: string;
+  paymentEligibility: 'pay_on_receipt' | 'pay_on_terms';
+  payOnTermsEnabled: boolean;
+  terms?: PaymentTerms;
+  defaultBillingMethod: PaymentMethod;
 }
 
 export interface Subscription {
