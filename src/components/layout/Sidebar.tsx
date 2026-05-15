@@ -35,6 +35,7 @@ const navItems: NavItem[] = [
   { label: 'Support', icon: HelpCircle, path: '/support', requiredRoles: ['owner', 'billing', 'admin', 'standard'] },
   { label: 'News', icon: Newspaper, path: '/news', requiredRoles: ['owner', 'billing', 'admin', 'standard'] },
   { label: 'Profile', icon: User, path: '/profile', requiredRoles: ['owner', 'billing', 'admin', 'standard'] },
+  { label: 'Admin Tool', icon: ShieldCheck, path: '/admin', requiredRoles: ['owner', 'admin'] },
 ];
 
 export const Sidebar = () => {
