@@ -910,6 +910,146 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     return req;
   }, [state.currentCompany]);
 
+  const getCompanyConfig = useCallback((companyId?: string): CompanyBillingConfig => {
+    const cid = companyId || state.currentCompany?.id || 'company-1';
+    return state.companyConfigs.find(c => c.companyId === cid) || {
+      companyId: cid, paymentEligibility: 'pay_on_receipt', payOnTermsEnabled: false, defaultBillingMethod: 'pay_on_receipt',
+    };
+  }, [state.companyConfigs, state.currentCompany]);
+
+  const updateCompanyConfig = useCallback((companyId: string, updates: Partial<CompanyBillingConfig>) => {
+    setState(prev => {
+      const exists = prev.companyConfigs.some(c => c.companyId === companyId);
+      const next = exists
+        ? prev.companyConfigs.map(c => c.companyId === companyId ? { ...c, ...updates } : c)
+        : [...prev.companyConfigs, { companyId, paymentEligibility: 'pay_on_receipt', payOnTermsEnabled: false, defaultBillingMethod: 'pay_on_receipt', ...updates } as CompanyBillingConfig];
+      return { ...prev, companyConfigs: next };
+    });
+  }, []);
+
+  const getAvailablePaymentMethods = useCallback((companyId?: string): PaymentMethod[] => {
+    const cfg = getCompanyConfig(companyId);
+    const methods: PaymentMethod[] = ['pay_immediately', 'pay_on_receipt'];
+    if (cfg.payOnTermsEnabled) methods.push('pay_on_terms');
+    return methods;
+  }, [getCompanyConfig]);
+
+  const requestLicenseChange = useCallback((subscriptionId: string, productId: string, newCount: number, paymentMethod: PaymentMethod) => {
+    const sub = state.subscriptions.find(s => s.id === subscriptionId);
+    const prod = sub?.products.find(p => p.id === productId);
+    if (!sub || !prod) return { applied: false, pending: false };
+    const currentCount = prod.licenseCount;
+    const delta = newCount - currentCount;
+
+    // Decrease — no payment, just save
+    if (delta <= 0) {
+      setState(prev => ({
+        ...prev,
+        subscriptions: prev.subscriptions.map(s => s.id === subscriptionId ? {
+          ...s, products: s.products.map(p => p.id === productId ? { ...p, licenseCount: newCount } : p),
+        } : s),
+      }));
+      return { applied: true, pending: false };
+    }
+
+    // Increase — generate invoice
+    const cost = delta * prod.pricePerLicense;
+    const today = new Date();
+    const status: Invoice['status'] =
+      paymentMethod === 'pay_immediately' ? 'paid' :
+      paymentMethod === 'pay_on_terms' ? 'payment_terms_applied' : 'awaiting_payment';
+    const applyImmediately = paymentMethod === 'pay_immediately' || paymentMethod === 'pay_on_terms';
+
+    const invoice: Invoice = {
+      id: `inv-${Date.now()}`,
+      companyId: sub.companyId,
+      invoiceNumber: `INV-${String(3000 + Math.floor(Math.random() * 9000))}`,
+      date: today.toISOString().split('T')[0],
+      dueDate: new Date(today.getTime() + 30 * 86400000).toISOString().split('T')[0],
+      status,
+      amount: cost,
+      balance: paymentMethod === 'pay_immediately' ? 0 : cost,
+      subscriptionId: sub.id,
+      subscriptionName: sub.name,
+      invoiceType: 'Adjustment Invoice',
+      source: 'License Change',
+      paymentMethod,
+      lineItems: [{ product: `Additional ${prod.name} Seats`, quantity: delta, unitPrice: prod.pricePerLicense, total: cost }],
+      pendingLicenseChange: applyImmediately ? undefined : { subscriptionId, productId, newCount },
+    };
+
+    setState(prev => ({
+      ...prev,
+      invoices: [invoice, ...prev.invoices],
+      subscriptions: prev.subscriptions.map(s => s.id === subscriptionId ? {
+        ...s,
+        products: s.products.map(p => p.id === productId ? {
+          ...p,
+          licenseCount: applyImmediately ? newCount : p.licenseCount,
+          pendingLicenseCount: applyImmediately ? p.pendingLicenseCount : (p.pendingLicenseCount || 0) + delta,
+        } : p),
+      } : s),
+    }));
+    return { invoice, applied: applyImmediately, pending: !applyImmediately };
+  }, [state.subscriptions]);
+
+  const markInvoicePaid = useCallback((invoiceId: string) => {
+    setState(prev => {
+      const inv = prev.invoices.find(i => i.id === invoiceId);
+      if (!inv) return prev;
+      let subscriptions = prev.subscriptions;
+      // Apply pending license change if any
+      if (inv.pendingLicenseChange) {
+        const { subscriptionId, productId, newCount } = inv.pendingLicenseChange;
+        subscriptions = subscriptions.map(s => s.id === subscriptionId ? {
+          ...s, products: s.products.map(p => {
+            if (p.id !== productId) return p;
+            const delta = newCount - p.licenseCount;
+            const remainingPending = Math.max(0, (p.pendingLicenseCount || 0) - delta);
+            return { ...p, licenseCount: newCount, pendingLicenseCount: remainingPending };
+          }),
+        } : s);
+      }
+      // Activate pending_payment subscription if linked
+      if (inv.activatesSubscription) {
+        subscriptions = subscriptions.map(s => s.id === inv.subscriptionId && s.status === 'pending_payment' ? { ...s, status: 'active' } : s);
+      }
+      return {
+        ...prev,
+        invoices: prev.invoices.map(i => i.id === invoiceId ? { ...i, status: 'paid', balance: 0 } : i),
+        subscriptions,
+      };
+    });
+  }, []);
+
+  const checkoutPurchase = useCallback((input: { lineItems: QuoteLineItem[]; paymentMethod: PaymentMethod; poNumber?: string }): Invoice => {
+    const today = new Date();
+    const amount = input.lineItems.reduce((a, l) => a + l.total, 0);
+    const status: Invoice['status'] =
+      input.paymentMethod === 'pay_immediately' ? 'paid' :
+      input.paymentMethod === 'pay_on_terms' ? 'payment_terms_applied' : 'awaiting_payment';
+    const invoice: Invoice = {
+      id: `inv-${Date.now()}`,
+      companyId: state.currentCompany?.id || 'company-1',
+      invoiceNumber: `INV-${String(4000 + Math.floor(Math.random() * 9000))}`,
+      date: today.toISOString().split('T')[0],
+      dueDate: new Date(today.getTime() + 30 * 86400000).toISOString().split('T')[0],
+      status,
+      amount,
+      balance: input.paymentMethod === 'pay_immediately' ? 0 : amount,
+      subscriptionId: '',
+      subscriptionName: 'New Subscription',
+      invoiceType: 'Initial Invoice',
+      source: 'Checkout',
+      paymentMethod: input.paymentMethod,
+      poNumber: input.poNumber,
+      activatesSubscription: input.paymentMethod === 'pay_on_receipt',
+      lineItems: input.lineItems.map(l => ({ product: l.productName, quantity: l.licenseCount, unitPrice: l.unitPrice, total: l.total })),
+    };
+    setState(prev => ({ ...prev, invoices: [invoice, ...prev.invoices] }));
+    return invoice;
+  }, [state.currentCompany]);
+
   return (
     <AppContext.Provider value={{
       ...state,
