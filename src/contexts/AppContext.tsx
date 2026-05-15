@@ -212,9 +212,15 @@ interface AppContextType extends AppState {
   getCompanyQuotes: () => Quote[];
   getCompanyQuoteRequests: () => QuoteRequest[];
   createQuote: (input: { lineItems: QuoteLineItem[]; note: string }) => Quote;
-  acceptQuote: (quoteId: string, input: { poNumber?: string; paymentMethod: 'pay_on_receipt' | 'pay_on_terms' }) => { quote: Quote; invoice: Invoice } | null;
+  acceptQuote: (quoteId: string, input: { poNumber?: string; paymentMethod: PaymentMethod }) => { quote: Quote; invoice: Invoice } | null;
   declineQuote: (quoteId: string, reason?: string) => void;
   addQuoteRequest: (input: { products: { productName: string; desiredLicenseCount: number }[]; note: string }) => QuoteRequest;
+  getCompanyConfig: (companyId?: string) => CompanyBillingConfig;
+  updateCompanyConfig: (companyId: string, updates: Partial<CompanyBillingConfig>) => void;
+  getAvailablePaymentMethods: (companyId?: string) => PaymentMethod[];
+  requestLicenseChange: (subscriptionId: string, productId: string, newCount: number, paymentMethod: PaymentMethod) => { invoice?: Invoice; applied: boolean; pending: boolean };
+  markInvoicePaid: (invoiceId: string) => void;
+  checkoutPurchase: (input: { lineItems: QuoteLineItem[]; paymentMethod: PaymentMethod; poNumber?: string }) => Invoice;
 }
 
 // Product catalog for reference
