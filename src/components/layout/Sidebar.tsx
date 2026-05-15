@@ -12,6 +12,7 @@ import {
   Contact,
   FileText,
   FileSignature,
+  ShieldCheck,
 } from 'lucide-react';
 import { useApp, UserRole } from '@/contexts/AppContext';
 import { cn } from '@/lib/utils';
