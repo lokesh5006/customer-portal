@@ -465,10 +465,18 @@ export const SubscriptionsPage = () => {
                                 <TableCell>{new Date(inv.date).toLocaleDateString()}</TableCell>
                                 <TableCell>{new Date(inv.dueDate).toLocaleDateString()}</TableCell>
                                 <TableCell>
-                                  <Badge variant="outline" className={statusBadgeClass(inv.status)}>{inv.status}</Badge>
+                                  <Badge variant="outline" className={statusBadgeClass(inv.status)}>{formatStatus(inv.status)}</Badge>
                                 </TableCell>
                                 <TableCell className="text-right font-medium">${inv.amount.toLocaleString()}</TableCell>
                                 <TableCell className="text-right">
+                                  {inv.status === 'awaiting_payment' && (
+                                    <Button variant="default" size="sm" className="mr-1" onClick={() => {
+                                      markInvoicePaid(inv.id);
+                                      toast({ title: 'Payment received.', description: 'Subscription / license changes activated.' });
+                                    }}>
+                                      <CheckCircle2 className="h-3 w-3 mr-1" />Mark as Paid
+                                    </Button>
+                                  )}
                                   {(inv.status === 'overdue' || inv.status === 'unpaid' || inv.status === 'pending') && (
                                     <Button variant="default" size="sm" className="mr-1" onClick={() => {
                                       if (inv.invoiceType === 'Renewal Invoice' || inv.invoiceType === 'Initial Invoice') {
