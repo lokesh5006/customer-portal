@@ -420,6 +420,13 @@ const initialQuotes: Quote[] = [
 
 const initialQuoteRequests: QuoteRequest[] = [];
 
+const initialCompanyConfigs: CompanyBillingConfig[] = [
+  // ABC — Pay on Receipt only
+  { companyId: 'company-1', paymentEligibility: 'pay_on_receipt', payOnTermsEnabled: false, defaultBillingMethod: 'pay_on_receipt' },
+  // XYZ — Pay on Terms enabled (Net 30)
+  { companyId: 'company-2', paymentEligibility: 'pay_on_terms', payOnTermsEnabled: true, terms: 'Net 30', defaultBillingMethod: 'pay_on_terms' },
+];
+
 
 const AppContext = createContext<AppContextType | null>(null);
 
