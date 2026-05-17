@@ -6,6 +6,7 @@ import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
+import { Switch } from '@/components/ui/switch';
 import {
   Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription,
 } from '@/components/ui/sheet';
@@ -16,12 +17,17 @@ import {
   Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogDescription,
 } from '@/components/ui/dialog';
 import {
+  Tooltip, TooltipContent, TooltipTrigger,
+} from '@/components/ui/tooltip';
+import {
   ListingPageHeader, SearchFilterCard, FilterField, DataTable, DataTableColumn, PaginationControls,
 } from '@/components/listing';
 import { useApp } from '@/contexts/AppContext';
 import { useToast } from '@/hooks/use-toast';
+import { ToastAction } from '@/components/ui/toast';
+import { useReadOnlyGuard, READ_ONLY_TOOLTIP } from '@/hooks/useReadOnlyGuard';
 import {
-  Contact as ContactIcon, Plus, MoreHorizontal, Eye, Edit, Star, UserX, Users as UsersIcon,
+  Contact as ContactIcon, Plus, MoreVertical, Edit, Star, UserX, Users as UsersIcon,
   Briefcase, Wrench, Phone, Mail, MapPin, FileText, CreditCard, Receipt,
 } from 'lucide-react';
 
@@ -31,6 +37,7 @@ type ContactStatus = 'active' | 'inactive';
 interface PortalContact {
   id: string;
   name: string;
+  username: string;
   title: string;
   email: string;
   phone: string;
@@ -38,6 +45,8 @@ interface PortalContact {
   companyRole: string;
   contactType: ContactType;
   status: ContactStatus;
+  createdAt: string;
+  dataNetEmailOptIn: boolean;
   isPrimaryBilling?: boolean;
   notes?: string;
   linkedSubscriptions: string[];
@@ -45,28 +54,40 @@ interface PortalContact {
   preferences: { email: boolean; sms: boolean; phone: boolean };
 }
 
+const usernameFromName = (name: string): string =>
+  name.split(' ').join('').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+const formatDate = (iso: string): string => {
+  try {
+    return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  } catch {
+    return iso;
+  }
+};
+
 const seedContacts: PortalContact[] = [
-  { id: 'c-1', name: 'Sarah Johnson', title: 'Chief Financial Officer', email: 'sarah.johnson@abcaccounting.com', phone: '(212) 555-0101', address: '123 Main St, Suite 400, New York, NY 10001', companyRole: 'Finance Leadership', contactType: 'Billing', status: 'active', isPrimaryBilling: true, notes: 'Primary billing contact for all renewals.', linkedSubscriptions: ['2026 Annual Plan', 'QuickView Quarterly'], linkedInvoices: ['INV-2026-001', 'INV-2026-002'], preferences: { email: true, sms: false, phone: true } },
-  { id: 'c-2', name: 'John Smith', title: 'Chief Executive Officer', email: 'john.smith@abcaccounting.com', phone: '(212) 555-0102', address: '123 Main St, Suite 400, New York, NY 10001', companyRole: 'Executive Leadership', contactType: 'Executive', status: 'active', notes: 'Account owner. Copy on all major changes.', linkedSubscriptions: ['2026 Annual Plan'], linkedInvoices: [], preferences: { email: true, sms: false, phone: false } },
-  { id: 'c-3', name: 'Mike Williams', title: 'IT Manager', email: 'mike.williams@abcaccounting.com', phone: '(212) 555-0103', address: '123 Main St, Suite 400, New York, NY 10001', companyRole: 'Technology', contactType: 'Technical Contact', status: 'active', notes: 'Handles installations and DataNet routing.', linkedSubscriptions: ['2026 Annual Plan', 'QuickView Quarterly'], linkedInvoices: [], preferences: { email: true, sms: true, phone: true } },
-  { id: 'c-4', name: 'Emily Brown', title: 'Operations Manager', email: 'emily.brown@abcaccounting.com', phone: '(212) 555-0104', address: '123 Main St, Suite 400, New York, NY 10001', companyRole: 'Operations', contactType: 'Renewal Contact', status: 'active', notes: 'Reviews renewal quotes prior to approval.', linkedSubscriptions: ['QuickView Quarterly'], linkedInvoices: ['INV-2026-002'], preferences: { email: true, sms: false, phone: false } },
-  { id: 'c-5', name: 'Robert Anderson', title: 'Support Liaison', email: 'robert.anderson@abcaccounting.com', phone: '(212) 555-0105', address: '123 Main St, Suite 400, New York, NY 10001', companyRole: 'Customer Success', contactType: 'Support', status: 'active', notes: 'Coordinates internal escalations to NumberCruncher support.', linkedSubscriptions: ['2026 Annual Plan'], linkedInvoices: [], preferences: { email: true, sms: true, phone: true } },
-  { id: 'c-6', name: 'Lisa Miller', title: 'Senior Accountant', email: 'lisa.miller@abcaccounting.com', phone: '(212) 555-0106', address: '123 Main St, Suite 400, New York, NY 10001', companyRole: 'Accounting', contactType: 'Support', status: 'inactive', notes: 'On extended leave through Q1 2026.', linkedSubscriptions: [], linkedInvoices: [], preferences: { email: false, sms: false, phone: false } },
-  { id: 'c-7', name: 'Daniel Kim', title: 'Procurement Specialist', email: 'daniel.kim@abcaccounting.com', phone: '(212) 555-0107', address: '123 Main St, Suite 400, New York, NY 10001', companyRole: 'Procurement', contactType: 'Billing', status: 'active', notes: 'Receives invoice copies for AP routing.', linkedSubscriptions: ['2026 Annual Plan'], linkedInvoices: ['INV-2026-003'], preferences: { email: true, sms: false, phone: false } },
+  { id: 'c-1', name: 'Sarah Johnson', username: 'sarahjohnson', title: 'Chief Financial Officer', email: 'sarah.johnson@abcaccounting.com', phone: '(212) 555-0101', address: '123 Main St, Suite 400, New York, NY 10001', companyRole: 'Finance Leadership', contactType: 'Billing', status: 'active', createdAt: '2023-02-10', dataNetEmailOptIn: true, isPrimaryBilling: true, notes: 'Primary billing contact for all renewals.', linkedSubscriptions: ['2026 Annual Plan', 'QuickView Quarterly'], linkedInvoices: ['INV-2026-001', 'INV-2026-002'], preferences: { email: true, sms: false, phone: true } },
+  { id: 'c-2', name: 'John Smith', username: 'johnsmith', title: 'Chief Executive Officer', email: 'john.smith@abcaccounting.com', phone: '(212) 555-0102', address: '123 Main St, Suite 400, New York, NY 10001', companyRole: 'Executive Leadership', contactType: 'Executive', status: 'active', createdAt: '2023-01-15', dataNetEmailOptIn: true, notes: 'Account owner. Copy on all major changes.', linkedSubscriptions: ['2026 Annual Plan'], linkedInvoices: [], preferences: { email: true, sms: false, phone: false } },
+  { id: 'c-3', name: 'Mike Williams', username: 'mikewilliams', title: 'IT Manager', email: 'mike.williams@abcaccounting.com', phone: '(212) 555-0103', address: '123 Main St, Suite 400, New York, NY 10001', companyRole: 'Technology', contactType: 'Technical Contact', status: 'active', createdAt: '2023-03-05', dataNetEmailOptIn: true, notes: 'Handles installations and DataNet routing.', linkedSubscriptions: ['2026 Annual Plan', 'QuickView Quarterly'], linkedInvoices: [], preferences: { email: true, sms: true, phone: true } },
+  { id: 'c-4', name: 'Emily Brown', username: 'emilybrown', title: 'Operations Manager', email: 'emily.brown@abcaccounting.com', phone: '(212) 555-0104', address: '123 Main St, Suite 400, New York, NY 10001', companyRole: 'Operations', contactType: 'Renewal Contact', status: 'active', createdAt: '2023-04-12', dataNetEmailOptIn: true, notes: 'Reviews renewal quotes prior to approval.', linkedSubscriptions: ['QuickView Quarterly'], linkedInvoices: ['INV-2026-002'], preferences: { email: true, sms: false, phone: false } },
+  { id: 'c-5', name: 'Robert Anderson', username: 'robertanderson', title: 'Support Liaison', email: 'robert.anderson@abcaccounting.com', phone: '(212) 555-0105', address: '123 Main St, Suite 400, New York, NY 10001', companyRole: 'Customer Success', contactType: 'Support', status: 'active', createdAt: '2023-05-22', dataNetEmailOptIn: true, notes: 'Coordinates internal escalations to Leimberg support.', linkedSubscriptions: ['2026 Annual Plan'], linkedInvoices: [], preferences: { email: true, sms: true, phone: true } },
+  { id: 'c-6', name: 'Lisa Miller', username: 'lisamiller', title: 'Senior Accountant', email: 'lisa.miller@abcaccounting.com', phone: '(212) 555-0106', address: '123 Main St, Suite 400, New York, NY 10001', companyRole: 'Accounting', contactType: 'Support', status: 'inactive', createdAt: '2023-06-01', dataNetEmailOptIn: false, notes: 'On extended leave through Q1 2026.', linkedSubscriptions: [], linkedInvoices: [], preferences: { email: false, sms: false, phone: false } },
+  { id: 'c-7', name: 'Daniel Kim', username: 'danielkim', title: 'Procurement Specialist', email: 'daniel.kim@abcaccounting.com', phone: '(212) 555-0107', address: '123 Main St, Suite 400, New York, NY 10001', companyRole: 'Procurement', contactType: 'Billing', status: 'active', createdAt: '2023-07-15', dataNetEmailOptIn: true, notes: 'Receives invoice copies for AP routing.', linkedSubscriptions: ['2026 Annual Plan'], linkedInvoices: ['INV-2026-003'], preferences: { email: true, sms: false, phone: false } },
 ];
 
 const contactTypeColor: Record<ContactType, string> = {
   'Billing': 'bg-primary/10 text-primary border-primary/20',
   'Support': 'bg-info/10 text-info border-info/20',
-  'Executive': 'bg-purple-100 text-purple-700 border-purple-200',
+  'Executive': 'bg-purple-100 text-purple-700 border-purple-200 dark:bg-purple-500/15 dark:text-purple-300 dark:border-purple-500/30',
   'Renewal Contact': 'bg-warning/10 text-warning border-warning/20',
   'Technical Contact': 'bg-success/10 text-success border-success/20',
 };
 
 export const ContactsPage = () => {
-  const { currentCompany, hasAccess } = useApp();
+  const { hasAccess } = useApp();
   const { toast } = useToast();
-  const canModify = hasAccess(['owner', 'billing', 'admin']);
+  const { readOnly } = useReadOnlyGuard();
+  const canModify = hasAccess(['account_owner', 'billing_admin', 'license_admin']) && !readOnly;
 
   const [contacts, setContacts] = useState<PortalContact[]>(seedContacts);
   const [searchQuery, setSearchQuery] = useState('');
@@ -89,7 +110,8 @@ export const ContactsPage = () => {
   };
 
   const filtered = contacts.filter(c => {
-    const matchesSearch = [c.name, c.email, c.title].some(v => v.toLowerCase().includes(searchQuery.toLowerCase()));
+    const q = searchQuery.toLowerCase();
+    const matchesSearch = !q || [c.name, c.email, c.title, c.username].some(v => v.toLowerCase().includes(q));
     const matchesType = typeFilter === 'all' || c.contactType === typeFilter;
     const matchesStatus = statusFilter === 'all' || c.status === statusFilter;
     return matchesSearch && matchesType && matchesStatus;
@@ -114,6 +136,7 @@ export const ContactsPage = () => {
     const newContact: PortalContact = {
       id: `c-${Date.now()}`,
       name: draft.name!,
+      username: draft.username?.trim() || usernameFromName(draft.name!),
       title: draft.title || '',
       email: draft.email!,
       phone: draft.phone || '',
@@ -121,6 +144,8 @@ export const ContactsPage = () => {
       companyRole: draft.companyRole || '',
       contactType: (draft.contactType as ContactType) || 'Support',
       status: 'active',
+      createdAt: new Date().toISOString().split('T')[0],
+      dataNetEmailOptIn: draft.dataNetEmailOptIn !== false,
       notes: draft.notes,
       linkedSubscriptions: [],
       linkedInvoices: [],
@@ -139,34 +164,89 @@ export const ContactsPage = () => {
     setContacts(prev => prev.map(x => x.id === c.id ? { ...x, status: x.status === 'active' ? 'inactive' : 'active' } : x));
     toast({ title: c.status === 'active' ? 'Contact disabled' : 'Contact enabled' });
   };
+  // Inline DataNet toggle — optimistic update with Undo action in the toast.
+  const toggleDataNet = (c: PortalContact, newValue: boolean) => {
+    const oldValue = c.dataNetEmailOptIn;
+    setContacts(prev => prev.map(x => x.id === c.id ? { ...x, dataNetEmailOptIn: newValue } : x));
+    toast({
+      title: newValue ? 'DataNet email enabled' : 'DataNet email disabled',
+      description: `For ${c.name}.`,
+      action: (
+        <ToastAction
+          altText="Undo DataNet change"
+          onClick={() => setContacts(prev => prev.map(x => x.id === c.id ? { ...x, dataNetEmailOptIn: oldValue } : x))}
+        >
+          Undo
+        </ToastAction>
+      ),
+    });
+  };
 
   const columns: DataTableColumn<PortalContact>[] = [
     {
       key: 'name', header: 'Name',
       render: (c) => (
-        <div className="flex items-center gap-3">
-          <div className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center">
-            <span className="text-xs font-medium text-primary">{c.name.split(' ').map(n => n[0]).join('').slice(0,2)}</span>
-          </div>
-          <div className="min-w-0">
-            <button
-              className="font-medium hover:text-primary text-left truncate"
-              onClick={() => openPanel(c)}
-            >
+        <button
+          onClick={() => openEdit(c)}
+          className="text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
+          aria-label={`Edit ${c.name}`}
+        >
+          <div className="flex flex-col leading-tight">
+            <span className="text-sm font-medium text-foreground hover:underline">
               {c.name}
               {c.isPrimaryBilling && <Star className="inline-block h-3 w-3 ml-1 text-warning fill-warning" />}
-            </button>
-            <p className="text-xs text-muted-foreground truncate">{c.companyRole}</p>
+            </span>
+            <span className="text-xs text-muted-foreground">@{c.username}</span>
+            <span className="text-xs text-muted-foreground">{c.email}</span>
           </div>
-        </div>
+        </button>
       ),
     },
-    { key: 'title', header: 'Title', render: (c) => <span className="text-sm">{c.title}</span> },
-    { key: 'email', header: 'Email', render: (c) => <span className="text-muted-foreground text-sm">{c.email}</span> },
-    { key: 'phone', header: 'Phone', render: (c) => <span className="text-sm">{c.phone}</span> },
     {
-      key: 'type', header: 'Contact Type',
+      key: 'products', header: 'Product Access', className: 'min-w-[200px]',
+      render: (c) => {
+        if (c.linkedSubscriptions.length === 0) return <span className="text-muted-foreground text-xs">—</span>;
+        return (
+          <div className="flex flex-wrap gap-1">
+            {c.linkedSubscriptions.map(s => (
+              <Badge key={s} variant="outline" className="text-xs">{s}</Badge>
+            ))}
+          </div>
+        );
+      },
+    },
+    {
+      key: 'type', header: 'Type',
       render: (c) => <Badge variant="outline" className={contactTypeColor[c.contactType]}>{c.contactType}</Badge>,
+    },
+    {
+      key: 'datanet', header: 'DataNet Email', className: 'w-[140px]',
+      render: (c) => {
+        const switchEl = (
+          <Switch
+            checked={c.dataNetEmailOptIn}
+            onCheckedChange={(checked) => toggleDataNet(c, checked)}
+            aria-label={`DataNet email ${c.dataNetEmailOptIn ? 'enabled' : 'disabled'} for ${c.name}`}
+            disabled={readOnly}
+          />
+        );
+        return (
+          <div className="flex items-center justify-center">
+            {readOnly ? (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span>{switchEl}</span>
+                </TooltipTrigger>
+                <TooltipContent>{READ_ONLY_TOOLTIP}</TooltipContent>
+              </Tooltip>
+            ) : switchEl}
+          </div>
+        );
+      },
+    },
+    {
+      key: 'createdAt', header: 'Created On', className: 'w-[140px]',
+      render: (c) => <span className="text-sm">{formatDate(c.createdAt)}</span>,
     },
     {
       key: 'status', header: 'Status',
@@ -176,14 +256,15 @@ export const ContactsPage = () => {
       key: 'actions', header: '', className: 'w-[50px] text-right',
       render: (c) => (
         <DropdownMenu>
-          <DropdownMenuTrigger asChild><Button variant="ghost" size="icon"><MoreHorizontal className="h-4 w-4" /></Button></DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <DropdownMenuItem onClick={() => openPanel(c)}><Eye className="h-4 w-4 mr-2" />View Contact</DropdownMenuItem>
+          <DropdownMenuTrigger asChild>
+            <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="Open menu"><MoreVertical className="h-4 w-4" /></Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-48">
             {canModify && <DropdownMenuItem onClick={() => openEdit(c)}><Edit className="h-4 w-4 mr-2" />Edit Contact</DropdownMenuItem>}
             {canModify && !c.isPrimaryBilling && <DropdownMenuItem onClick={() => setPrimaryBilling(c)}><Star className="h-4 w-4 mr-2" />Set as Primary Billing</DropdownMenuItem>}
-            <DropdownMenuSeparator />
+            {canModify && <DropdownMenuSeparator />}
             {canModify && (
-              <DropdownMenuItem className="text-destructive" onClick={() => disableContact(c)}>
+              <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => disableContact(c)}>
                 <UserX className="h-4 w-4 mr-2" />{c.status === 'active' ? 'Disable Contact' : 'Enable Contact'}
               </DropdownMenuItem>
             )}
@@ -197,20 +278,30 @@ export const ContactsPage = () => {
     { label: 'Total Contacts', value: summary.total, icon: UsersIcon, color: 'text-primary', bg: 'bg-primary/10' },
     { label: 'Billing Contacts', value: summary.billing, icon: CreditCard, color: 'text-success', bg: 'bg-success/10' },
     { label: 'Support Contacts', value: summary.support, icon: Wrench, color: 'text-info', bg: 'bg-info/10' },
-    { label: 'Executive Contacts', value: summary.executive, icon: Briefcase, color: 'text-purple-700', bg: 'bg-purple-100' },
+    { label: 'Executive Contacts', value: summary.executive, icon: Briefcase, color: 'text-purple-700 dark:text-purple-300', bg: 'bg-purple-100 dark:bg-purple-500/15' },
   ];
+
+  const addContactButton = (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span tabIndex={0}>
+          <Button onClick={() => { setDraft({ contactType: 'Support', dataNetEmailOptIn: true }); setAddOpen(true); }} disabled={readOnly}>
+            <Plus className="h-4 w-4 mr-2" />Add Contact
+          </Button>
+        </span>
+      </TooltipTrigger>
+      {readOnly && <TooltipContent>{READ_ONLY_TOOLTIP}</TooltipContent>}
+    </Tooltip>
+  );
 
   return (
     <MainLayout>
       <div className="space-y-6">
         <ListingPageHeader
-          title="Contacts"
-          description="Manage billing, support, and company contacts."
-          primaryAction={canModify && (
-            <Button onClick={() => { setDraft({ contactType: 'Support' }); setAddOpen(true); }}>
-              <Plus className="h-4 w-4 mr-2" />Add Contact
-            </Button>
-          )}
+          title="Users & Contacts"
+          description="Manage users and contacts for your company."
+          showCompanyContext={false}
+          primaryAction={hasAccess(['account_owner', 'billing_admin', 'license_admin']) && addContactButton}
         />
 
         <div className="grid gap-4 md:grid-cols-4">
@@ -232,7 +323,7 @@ export const ContactsPage = () => {
         <SearchFilterCard
           searchValue={searchQuery}
           onSearchChange={(v) => { setSearchQuery(v); setCurrentPage(1); }}
-          searchPlaceholder="Search by name, email, or title..."
+          searchPlaceholder="Search by name, username, email, or title..."
           onReset={() => { setSearchQuery(''); setTypeFilter('all'); setStatusFilter('all'); setCurrentPage(1); }}
           filters={
             <>
@@ -357,9 +448,14 @@ export const ContactsPage = () => {
           </DialogHeader>
           <div className="space-y-3">
             <div className="space-y-1.5"><Label>Name</Label><Input value={draft.name || ''} onChange={e => setDraft({ ...draft, name: e.target.value })} /></div>
+            <div className="space-y-1.5"><Label>Username</Label><Input value={draft.username || ''} onChange={e => setDraft({ ...draft, username: e.target.value })} /></div>
             <div className="space-y-1.5"><Label>Title</Label><Input value={draft.title || ''} onChange={e => setDraft({ ...draft, title: e.target.value })} /></div>
             <div className="space-y-1.5"><Label>Email</Label><Input value={draft.email || ''} onChange={e => setDraft({ ...draft, email: e.target.value })} /></div>
             <div className="space-y-1.5"><Label>Phone</Label><Input value={draft.phone || ''} onChange={e => setDraft({ ...draft, phone: e.target.value })} /></div>
+            <div className="flex items-center justify-between gap-3">
+              <Label htmlFor="edit-dn" className="text-sm">DataNet Email</Label>
+              <Switch id="edit-dn" checked={draft.dataNetEmailOptIn !== false} onCheckedChange={(v) => setDraft({ ...draft, dataNetEmailOptIn: v })} />
+            </div>
             <div className="space-y-1.5"><Label>Notes</Label><Textarea rows={3} value={draft.notes || ''} onChange={e => setDraft({ ...draft, notes: e.target.value })} /></div>
           </div>
           <DialogFooter>
@@ -378,6 +474,7 @@ export const ContactsPage = () => {
           </DialogHeader>
           <div className="space-y-3">
             <div className="space-y-1.5"><Label>Name *</Label><Input value={draft.name || ''} onChange={e => setDraft({ ...draft, name: e.target.value })} /></div>
+            <div className="space-y-1.5"><Label>Username</Label><Input value={draft.username || ''} placeholder="Auto-generated from name if blank" onChange={e => setDraft({ ...draft, username: e.target.value })} /></div>
             <div className="space-y-1.5"><Label>Title</Label><Input value={draft.title || ''} onChange={e => setDraft({ ...draft, title: e.target.value })} /></div>
             <div className="space-y-1.5"><Label>Email *</Label><Input value={draft.email || ''} onChange={e => setDraft({ ...draft, email: e.target.value })} /></div>
             <div className="space-y-1.5"><Label>Phone</Label><Input value={draft.phone || ''} onChange={e => setDraft({ ...draft, phone: e.target.value })} /></div>
@@ -392,6 +489,10 @@ export const ContactsPage = () => {
                   <option key={t} value={t}>{t}</option>
                 ))}
               </select>
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <Label htmlFor="add-dn" className="text-sm">DataNet Email</Label>
+              <Switch id="add-dn" checked={draft.dataNetEmailOptIn !== false} onCheckedChange={(v) => setDraft({ ...draft, dataNetEmailOptIn: v })} />
             </div>
           </div>
           <DialogFooter>

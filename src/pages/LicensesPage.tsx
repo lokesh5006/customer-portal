@@ -25,10 +25,10 @@ import { Key, AlertTriangle, Check, Users, ChevronDown, ChevronUp, Minus, Plus, 
 import { cn } from '@/lib/utils';
 
 const roleLabels: Record<string, string> = {
-  owner: 'Account Owner',
-  billing: 'Billing User',
-  admin: 'Firm Admin',
-  standard: 'Standard User',
+  account_owner: 'Account Owner',
+  billing_admin: 'Billing Admin',
+  license_admin: 'License Admin',
+  registered_contact: 'Registered Contact',
 };
 
 type RemovalType = 'now' | 'eoy' | null;
@@ -70,7 +70,7 @@ export const LicensesPage = () => {
 
   const subscriptions = getCompanySubscriptions();
   const users = getCompanyUsers();
-  const canModify = hasAccess(['owner', 'admin']);
+  const canModify = hasAccess(['account_owner', 'license_admin']);
 
   // Auto-select first sub/product if none selected
   if (subscriptions.length > 0 && !selectedSubId) {

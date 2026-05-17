@@ -16,9 +16,12 @@ import {
   DataTableColumn,
   PaginationControls,
 } from '@/components/listing';
+import {
+  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator,
+} from '@/components/ui/dropdown-menu';
 import { useApp } from '@/contexts/AppContext';
 import { useToast } from '@/hooks/use-toast';
-import { Plus, Search, HelpCircle } from 'lucide-react';
+import { Plus, Search, HelpCircle, MoreVertical, Eye, RefreshCw, CheckCircle2 } from 'lucide-react';
 
 interface Ticket {
   id: string;
@@ -30,9 +33,10 @@ interface Ticket {
 }
 
 export const SupportPage = () => {
-  const { getCompanyTickets, createTicket } = useApp();
+  const { getCompanyTickets, createTicket, hasAccess } = useApp();
   const { toast } = useToast();
   const tickets = getCompanyTickets();
+  const canManage = hasAccess(['account_owner', 'license_admin']);
 
   // Filters
   const [searchQuery, setSearchQuery] = useState('');
@@ -144,7 +148,40 @@ export const SupportPage = () => {
     {
       key: 'createdAt',
       header: 'Created',
-      render: (t) => new Date(t.createdAt).toLocaleDateString(),
+      render: (t) => new Date(t.createdAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+    },
+    {
+      key: 'actions', header: '', className: 'w-[50px] text-right',
+      render: (t) => {
+        const isClosed = t.status.toLowerCase() === 'closed';
+        return (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="icon" className="h-8 w-8">
+                <MoreVertical className="h-4 w-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onClick={() => toast({ title: 'Ticket details', description: `${t.id} — ${t.subject}` })}>
+                <Eye className="h-4 w-4 mr-2" />View Ticket
+              </DropdownMenuItem>
+              {canManage && (
+                <DropdownMenuItem onClick={() => toast({ title: 'Status update', description: 'Status change coming soon.' })}>
+                  <RefreshCw className="h-4 w-4 mr-2" />Update Status
+                </DropdownMenuItem>
+              )}
+              {!isClosed && (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => toast({ title: 'Ticket closed', description: t.id })}>
+                    <CheckCircle2 className="h-4 w-4 mr-2" />Close Ticket
+                  </DropdownMenuItem>
+                </>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        );
+      },
     },
   ];
 
@@ -154,7 +191,7 @@ export const SupportPage = () => {
         {/* Page Header */}
         <ListingPageHeader
           title="Support"
-          description="Get help and manage support tickets"
+          description="Open tickets, view history, and find answers."
           showCompanyContext={false}
           primaryAction={
             <Button onClick={() => setCreateOpen(true)}>

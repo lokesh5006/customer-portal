@@ -1,11 +1,10 @@
-import { useNavigate } from 'react-router-dom';
 import { useApp } from '@/contexts/AppContext';
 import { DashboardWidgetCard } from './DashboardWidgetCard';
 import { Building2, Calendar, CheckCircle2 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
+import { openProfileDrawer } from '@/lib/profileDrawer';
 
 export const AccountOverviewWidget = () => {
-  const navigate = useNavigate();
   const { currentCompany, getCompanySubscriptions, getCompanyUsers } = useApp();
   
   const subscriptions = getCompanySubscriptions();
@@ -18,10 +17,10 @@ export const AccountOverviewWidget = () => {
     : 'N/A';
 
   return (
-    <DashboardWidgetCard 
-      title="Account Overview" 
+    <DashboardWidgetCard
+      title="Account Overview"
       icon={Building2}
-      onClick={() => navigate('/profile')}
+      onClick={() => openProfileDrawer('profile')}
     >
       <div className="space-y-3">
         <div>

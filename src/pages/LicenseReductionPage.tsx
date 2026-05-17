@@ -99,7 +99,7 @@ export const LicenseReductionPage = () => {
   };
 
   const isCriticalUser = (user: User) =>
-    user.roles.includes('owner') || user.roles.includes('billing') || user.roles.includes('admin');
+    user.roles.includes('account_owner') || user.roles.includes('billing_admin') || user.roles.includes('license_admin');
 
   return (
     <MainLayout>

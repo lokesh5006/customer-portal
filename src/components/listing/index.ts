@@ -4,3 +4,5 @@ export { FilterField } from './FilterField';
 export { DataTable } from './DataTable';
 export type { DataTableColumn } from './DataTable';
 export { PaginationControls } from './PaginationControls';
+export { SortableHeader } from './SortableHeader';
+export type { SortDirection, SortState } from './SortableHeader';

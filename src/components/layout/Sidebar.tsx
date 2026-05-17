@@ -3,18 +3,16 @@ import {
   LayoutDashboard,
   Users,
   CreditCard,
-  Key,
   Download,
   HelpCircle,
-  User,
   LogOut,
   Newspaper,
-  Contact,
   FileText,
   FileSignature,
   ShieldCheck,
+  Database,
 } from 'lucide-react';
-import { useApp, UserRole } from '@/contexts/AppContext';
+import { useApp, Role } from '@/contexts/AppContext';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 
@@ -22,36 +20,54 @@ interface NavItem {
   label: string;
   icon: React.ComponentType<{ className?: string }>;
   path: string;
-  requiredRoles: UserRole[];
+  requiredRoles: Role[];
 }
 
 const navItems: NavItem[] = [
-  { label: 'Dashboard', icon: LayoutDashboard, path: '/dashboard', requiredRoles: ['owner', 'billing', 'admin', 'standard'] },
-  { label: 'Subscriptions', icon: CreditCard, path: '/subscriptions', requiredRoles: ['owner', 'billing', 'admin'] },
-  { label: 'Users & Contacts', icon: Users, path: '/users-contacts', requiredRoles: ['owner', 'billing', 'admin'] },
-  { label: 'Product Downloads & Links', icon: Download, path: '/downloads', requiredRoles: ['owner', 'billing', 'admin', 'standard'] },
-  { label: 'Invoices', icon: FileText, path: '/invoices', requiredRoles: ['owner', 'billing'] },
-  { label: 'Quotes', icon: FileSignature, path: '/quotes', requiredRoles: ['owner', 'billing'] },
-  { label: 'Support', icon: HelpCircle, path: '/support', requiredRoles: ['owner', 'billing', 'admin', 'standard'] },
-  { label: 'News', icon: Newspaper, path: '/news', requiredRoles: ['owner', 'billing', 'admin', 'standard'] },
-  { label: 'Profile', icon: User, path: '/profile', requiredRoles: ['owner', 'billing', 'admin', 'standard'] },
-  { label: 'Admin Tool', icon: ShieldCheck, path: '/admin', requiredRoles: ['owner', 'admin'] },
+  { label: 'Dashboard', icon: LayoutDashboard, path: '/dashboard', requiredRoles: ['account_owner', 'billing_admin', 'license_admin', 'registered_contact'] },
+  { label: 'Subscriptions', icon: CreditCard, path: '/subscriptions', requiredRoles: ['account_owner', 'billing_admin', 'license_admin'] },
+  { label: 'Users & Contacts', icon: Users, path: '/users-contacts', requiredRoles: ['account_owner', 'billing_admin', 'license_admin', 'registered_contact'] },
+  { label: 'Product Downloads & Links', icon: Download, path: '/downloads', requiredRoles: ['account_owner', 'billing_admin', 'license_admin', 'registered_contact'] },
+  { label: 'DataNet', icon: Database, path: '/datanet', requiredRoles: ['account_owner', 'billing_admin', 'license_admin', 'registered_contact'] },
+  { label: 'Invoices', icon: FileText, path: '/invoices', requiredRoles: ['account_owner', 'billing_admin'] },
+  { label: 'Quotes', icon: FileSignature, path: '/quotes', requiredRoles: ['account_owner', 'billing_admin'] },
+  { label: 'Support', icon: HelpCircle, path: '/support', requiredRoles: ['account_owner', 'billing_admin', 'license_admin', 'registered_contact'] },
+  { label: 'News', icon: Newspaper, path: '/news', requiredRoles: ['account_owner', 'billing_admin', 'license_admin', 'registered_contact'] },
+  { label: 'Admin Tool', icon: ShieldCheck, path: '/admin', requiredRoles: ['account_owner', 'license_admin'] },
 ];
 
 export const Sidebar = () => {
   const navigate = useNavigate();
   const location = useLocation();
-  const { hasAccess, logout } = useApp();
+  const { hasAccess, logout, isFirstTimeCustomer, hasSentQuote, hasDeclinedQuote, isReadOnlyMode } = useApp();
+
+  const handleNav = (path: string) => {
+    navigate(path);
+  };
 
   const handleLogout = () => {
     logout();
     navigate('/');
   };
 
-  const visibleItems = navItems.filter(item => hasAccess(item.requiredRoles));
+  let visibleItems = navItems.filter(item => hasAccess(item.requiredRoles));
+
+  // Pay-on-Receipt path: show ALL menus (CRUD is gated by read-only mode instead).
+  // The pre-purchase first-time gate only applies when we're not yet pending payment.
+  if (isFirstTimeCustomer() && !isReadOnlyMode()) {
+    if (hasSentQuote() && hasDeclinedQuote()) {
+      visibleItems = visibleItems.filter(i =>
+        i.path === '/quotes' || i.path === '/support' || i.path === '/subscriptions'
+      );
+    } else if (hasSentQuote()) {
+      visibleItems = visibleItems.filter(i => i.path === '/quotes' || i.path === '/support');
+    } else {
+      visibleItems = visibleItems.filter(i => i.path === '/subscriptions' || i.path === '/support');
+    }
+  }
 
   return (
-    <aside className="w-60 border-r bg-card h-[calc(100vh-3.5rem)] sticky top-14 flex flex-col">
+    <aside className="w-64 border-r bg-background h-[calc(100vh-4rem)] sticky top-16 flex flex-col">
       <nav className="flex-1 p-3 space-y-1 overflow-y-auto">
         {visibleItems.map(item => {
           const isActive = location.pathname === item.path;
@@ -60,10 +76,12 @@ export const Sidebar = () => {
               key={item.path}
               variant="ghost"
               className={cn(
-                'w-full justify-start gap-3 h-10 text-sm',
-                isActive && 'bg-sidebar-accent text-sidebar-accent-foreground font-medium'
+                'w-full justify-start gap-3 h-10 text-sm font-medium transition-colors',
+                isActive
+                  ? 'bg-primary/10 text-primary hover:bg-primary/15 hover:text-primary'
+                  : 'text-foreground hover:bg-muted'
               )}
-              onClick={() => navigate(item.path)}
+              onClick={() => handleNav(item.path)}
             >
               <item.icon className="h-4 w-4" />
               {item.label}
@@ -71,7 +89,7 @@ export const Sidebar = () => {
           );
         })}
       </nav>
-      
+
       <div className="p-3 border-t">
         <Button
           variant="ghost"

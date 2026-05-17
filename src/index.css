@@ -1,13 +1,15 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-
-/* NumberCruncher Customer Portal Design System */
+/* Leimberg Customer Portal Design System */
 
 @layer base {
-  :root {
+  :root,
+  .light {
+    /* Surfaces */
     --background: 210 20% 98%;
     --foreground: 222 47% 11%;
 
@@ -17,22 +19,25 @@
     --popover: 0 0% 100%;
     --popover-foreground: 222 47% 11%;
 
-    --primary: 217 91% 50%;
+    /* Brand */
+    --primary: 202 67% 33%;
     --primary-foreground: 0 0% 100%;
 
-    --secondary: 214 32% 91%;
-    --secondary-foreground: 222 47% 11%;
+    /* Secondary surfaces */
+    --secondary: 210 20% 94%;
+    --secondary-foreground: 222 47% 20%;
 
-    --muted: 214 32% 96%;
+    --muted: 210 20% 94%;
     --muted-foreground: 215 16% 47%;
 
-    --accent: 217 91% 95%;
-    --accent-foreground: 217 91% 40%;
+    --accent: 202 67% 95%;
+    --accent-foreground: 202 67% 28%;
 
-    --destructive: 0 84% 60%;
+    /* Status */
+    --destructive: 0 72% 51%;
     --destructive-foreground: 0 0% 100%;
 
-    --success: 142 71% 45%;
+    --success: 142 71% 40%;
     --success-foreground: 0 0% 100%;
 
     --warning: 38 92% 50%;
@@ -41,26 +46,27 @@
     --info: 199 89% 48%;
     --info-foreground: 0 0% 100%;
 
+    /* Borders, inputs, focus */
     --border: 214 32% 91%;
     --input: 214 32% 91%;
-    --ring: 217 91% 50%;
+    --ring: 202 67% 33%;
 
     --radius: 0.5rem;
 
     --sidebar-background: 0 0% 100%;
     --sidebar-foreground: 222 47% 11%;
-    --sidebar-primary: 217 91% 50%;
+    --sidebar-primary: 202 67% 33%;
     --sidebar-primary-foreground: 0 0% 100%;
-    --sidebar-accent: 217 91% 97%;
-    --sidebar-accent-foreground: 217 91% 40%;
+    --sidebar-accent: 202 67% 97%;
+    --sidebar-accent-foreground: 202 67% 28%;
     --sidebar-border: 214 32% 91%;
-    --sidebar-ring: 217 91% 50%;
+    --sidebar-ring: 202 67% 33%;
 
     --header-background: 0 0% 100%;
     --header-border: 214 32% 91%;
 
     /* Role colors */
-    --role-owner: 217 91% 50%;
+    --role-owner: 202 67% 33%;
     --role-billing: 142 71% 45%;
     --role-admin: 262 83% 58%;
     --role-standard: 215 16% 47%;
@@ -75,51 +81,59 @@
   }
 
   .dark {
-    --background: 222 47% 6%;
-    --foreground: 210 40% 98%;
+    /* Surfaces — warm near-black with subtle blue tint */
+    --background: 222 30% 9%;
+    --foreground: 210 20% 95%;
 
-    --card: 222 47% 8%;
-    --card-foreground: 210 40% 98%;
+    --card: 222 25% 12%;
+    --card-foreground: 210 20% 95%;
 
-    --popover: 222 47% 8%;
-    --popover-foreground: 210 40% 98%;
+    --popover: 222 25% 12%;
+    --popover-foreground: 210 20% 95%;
 
-    --primary: 217 91% 55%;
-    --primary-foreground: 0 0% 100%;
+    /* Brand — lifted slightly so it pops on dark */
+    --primary: 202 70% 55%;
+    --primary-foreground: 222 47% 11%;
 
-    --secondary: 217 33% 17%;
-    --secondary-foreground: 210 40% 98%;
+    /* Secondary surfaces */
+    --secondary: 222 20% 18%;
+    --secondary-foreground: 210 20% 95%;
 
-    --muted: 217 33% 17%;
-    --muted-foreground: 215 20% 65%;
+    --muted: 222 20% 18%;
+    --muted-foreground: 215 15% 65%;
 
-    --accent: 217 33% 17%;
-    --accent-foreground: 210 40% 98%;
+    --accent: 222 20% 22%;
+    --accent-foreground: 210 20% 95%;
 
-    --destructive: 0 63% 31%;
-    --destructive-foreground: 210 40% 98%;
+    /* Status — slightly dialed back to avoid eye-burn on dark */
+    --destructive: 0 65% 55%;
+    --destructive-foreground: 0 0% 100%;
 
-    --success: 142 71% 35%;
+    --success: 142 50% 50%;
     --success-foreground: 0 0% 100%;
 
-    --warning: 38 92% 40%;
-    --warning-foreground: 0 0% 100%;
+    --warning: 38 80% 55%;
+    --warning-foreground: 222 47% 11%;
 
-    --border: 217 33% 17%;
-    --input: 217 33% 17%;
-    --ring: 217 91% 55%;
+    --info: 199 80% 60%;
+    --info-foreground: 222 47% 11%;
 
-    --sidebar-background: 222 47% 8%;
-    --sidebar-foreground: 210 40% 98%;
-    --sidebar-primary: 217 91% 55%;
-    --sidebar-primary-foreground: 0 0% 100%;
-    --sidebar-accent: 217 33% 12%;
-    --sidebar-accent-foreground: 210 40% 98%;
-    --sidebar-border: 217 33% 17%;
-    --sidebar-ring: 217 91% 55%;
+    /* Borders, inputs, focus */
+    --border: 222 20% 22%;
+    --input: 222 20% 22%;
+    --ring: 202 70% 55%;
 
-    --header-background: 222 47% 8%;
-    --header-border: 217 33% 17%;
+    --sidebar-background: 222 25% 11%;
+    --sidebar-foreground: 210 20% 95%;
+    --sidebar-primary: 202 70% 55%;
+    --sidebar-primary-foreground: 222 47% 11%;
+    --sidebar-accent: 222 20% 18%;
+    --sidebar-accent-foreground: 210 20% 95%;
+    --sidebar-border: 222 20% 22%;
+    --sidebar-ring: 202 70% 55%;
+
+    --header-background: 222 25% 11%;
+    --header-border: 222 20% 22%;
   }
 }
 
@@ -128,9 +142,15 @@
     @apply border-border;
   }
 
+  html, body {
+    font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
   body {
-    @apply bg-background text-foreground font-sans antialiased;
-    font-family: 'Inter', system-ui, sans-serif;
+    @apply bg-background text-foreground font-sans;
   }
 }
 
@@ -145,7 +165,7 @@
   }
   
   .badge-admin {
-    @apply bg-purple-100 text-purple-700 border-purple-200;
+    @apply bg-purple-100 text-purple-700 border-purple-200 dark:bg-purple-500/15 dark:text-purple-300 dark:border-purple-500/30;
   }
   
   .badge-standard {

@@ -13,7 +13,7 @@ export const UserOverviewWidget = () => {
   const invitedUsers = users.filter(u => u.status === 'invited');
   const inactiveUsers = users.filter(u => u.status === 'inactive');
   
-  const canManage = hasAccess(['owner', 'admin']);
+  const canManage = hasAccess(['account_owner', 'license_admin']);
 
   return (
     <DashboardWidgetCard 

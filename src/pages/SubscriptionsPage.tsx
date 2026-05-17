@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { useApp, Quote, SubscriptionProduct, Subscription } from '@/contexts/AppContext';
+import { useApp, Quote, SubscriptionProduct, Subscription, LicenseType, Invoice } from '@/contexts/AppContext';
 import { MainLayout } from '@/components/layout/MainLayout';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -14,19 +14,41 @@ import {
 import {
   Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle, DialogDescription,
 } from '@/components/ui/dialog';
-import { ListingPageHeader } from '@/components/listing';
+import { ListingPageHeader, SortableHeader, SortState } from '@/components/listing';
+import {
+  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator,
+} from '@/components/ui/dropdown-menu';
 import { useToast } from '@/hooks/use-toast';
 import {
-  CreditCard, Eye, Edit, CheckCircle2, AlertTriangle, ArrowRight, Download, Check,
-  Building2, Mail, Phone, MapPin, FileText, Receipt, FileSignature, RefreshCw, Settings, X, MessageSquare,
+  CreditCard, Eye, Edit, CheckCircle2, Download, Check,
+  FileText, Receipt, FileSignature, RefreshCw, X, MessageSquare,
+  Monitor, Globe, BarChart3, Database, Package, MoreVertical, Search, Clock,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { RenewalFlyout } from '@/components/billing/RenewalFlyout';
 import {
-  ManageLicensesDrawer, AcceptQuoteDialog, DeclineQuoteDialog, ViewNoteDialog, RequestQuoteDialog,
+  ManageLicensesDrawer, AcceptQuoteDrawer, DeclineQuoteDialog, ViewNoteDialog, ViewDeclineReasonDialog, RequestQuoteDialog,
 } from '@/components/subscriptions/QuoteDialogs';
+import { RenewalFlyout } from '@/components/billing/RenewalFlyout';
+import { useReadOnlyGuard, READ_ONLY_TOOLTIP } from '@/hooks/useReadOnlyGuard';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 
 type PaymentMethod = 'Direct ACH' | 'Credit Card' | 'ACH e-Check' | 'Paper Check' | 'Invoice Only (Net 30)';
+
+const formatCurrency = (n: number): string =>
+  new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(n);
+
+const productIcon = (name: string) => {
+  if (name === 'NumberCruncher Desktop') return Monitor;
+  if (name === 'NumberCruncher Web') return Globe;
+  if (name === 'QuickView Desktop') return BarChart3;
+  if (name === 'DataNet') return Database;
+  return Package;
+};
 
 export const SubscriptionsPage = () => {
   const navigate = useNavigate();
@@ -37,14 +59,23 @@ export const SubscriptionsPage = () => {
     getCompanyInvoices,
     getCompanyQuotes,
     getCompanyQuoteRequests,
-    getAssignedLicenseCount,
     getCompanyConfig,
-    markInvoicePaid,
+    getAssignedLicenseCount,
+    isFirstTimeCustomer,
+    renameSubscription,
+    licenses,
   } = useApp();
   const { toast } = useToast();
-  const cfg = getCompanyConfig();
+  const { readOnly } = useReadOnlyGuard();
 
-  const subscriptions = getCompanySubscriptions();
+  useEffect(() => {
+    if (isFirstTimeCustomer()) navigate('/checkout');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const allSubscriptions = getCompanySubscriptions();
+  // Only show Annual Plan-type subscriptions in the selector pills
+  const subscriptions = allSubscriptions.filter(s => s.planType === 'Annual');
   const invoices = getCompanyInvoices();
   const quotes = getCompanyQuotes();
   const quoteRequests = getCompanyQuoteRequests();
@@ -54,8 +85,14 @@ export const SubscriptionsPage = () => {
   const [activeTab, setActiveTab] = useState(initialTab);
   const [editBillingOpen, setEditBillingOpen] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('Credit Card');
-  const [invoiceFilter, setInvoiceFilter] = useState<string>('all');
-  const [renewalOpen, setRenewalOpen] = useState(false);
+  const [renewOpen, setRenewOpen] = useState(false);
+  const [renewSubId, setRenewSubId] = useState<string>('');
+  const [renewInvoiceId, setRenewInvoiceId] = useState<string | undefined>(undefined);
+
+  // Rename subscription dialog
+  const [renameOpen, setRenameOpen] = useState(false);
+  const [renameSubId, setRenameSubId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState('');
 
   // Drawer + dialogs state
   const [manageOpen, setManageOpen] = useState(false);
@@ -64,11 +101,94 @@ export const SubscriptionsPage = () => {
   const [acceptQuote, setAcceptQuote] = useState<Quote | null>(null);
   const [declineQuote, setDeclineQuote] = useState<Quote | null>(null);
   const [noteQuote, setNoteQuote] = useState<Quote | null>(null);
+  const [viewDeclineQuote, setViewDeclineQuote] = useState<Quote | null>(null);
   const [requestQuoteOpen, setRequestQuoteOpen] = useState(false);
+
+  // Per-tab search + sort
+  const [invoiceSearch, setInvoiceSearch] = useState('');
+  const [invoiceSort, setInvoiceSort] = useState<SortState>({ key: null, direction: null });
+  const [quoteSearch, setQuoteSearch] = useState('');
+  const [quoteSort, setQuoteSort] = useState<SortState>({ key: null, direction: null });
 
   const currentSub = subscriptions[selectedSubIndex] || null;
   const subInvoices = invoices.filter(i => currentSub && i.subscriptionId === currentSub.id);
-  const hasActiveSubscription = subscriptions.some(s => ['active', 'overdue', 'pending_payment'].includes(s.status));
+  const hasActiveSubscription = subscriptions.some(s => s.status === 'active');
+
+  const termsLabel = getCompanyConfig().terms || 'Net 30';
+
+  // Sort/search helpers for invoices tab
+  const INVOICE_STATUS_ORDER: Record<Invoice['status'], number> = {
+    awaiting_payment: 0, overdue: 1, upcoming: 2, payment_terms_applied: 3,
+    unpaid: 4, pending: 5, paid: 6,
+  };
+  const filteredSubInvoices = useMemo(() => {
+    const q = invoiceSearch.trim().toLowerCase();
+    if (!q) return subInvoices;
+    return subInvoices.filter(inv => {
+      const haystack: string[] = [
+        inv.invoiceNumber, inv.id, inv.description || '', inv.poNumber || '',
+        inv.subscriptionName || '', ...inv.lineItems.map(l => l.product || ''),
+      ];
+      return haystack.some(v => v.toLowerCase().includes(q));
+    });
+  }, [subInvoices, invoiceSearch]);
+
+  const sortedSubInvoices = useMemo(() => {
+    if (!invoiceSort.key || !invoiceSort.direction) return filteredSubInvoices;
+    const dir = invoiceSort.direction === 'asc' ? 1 : -1;
+    return [...filteredSubInvoices].sort((a, b) => {
+      let av: string | number = '', bv: string | number = '';
+      switch (invoiceSort.key) {
+        case 'invoiceNumber': av = a.invoiceNumber.toLowerCase(); bv = b.invoiceNumber.toLowerCase(); break;
+        case 'date': av = a.date; bv = b.date; break;
+        case 'dueDate': av = a.dueDate; bv = b.dueDate; break;
+        case 'total': av = a.totalAmount ?? a.amount; bv = b.totalAmount ?? b.amount; break;
+        case 'status': av = INVOICE_STATUS_ORDER[a.status] ?? 99; bv = INVOICE_STATUS_ORDER[b.status] ?? 99; break;
+      }
+      if (av < bv) return -1 * dir;
+      if (av > bv) return 1 * dir;
+      return 0;
+    });
+  }, [filteredSubInvoices, invoiceSort]);
+
+  // Sort/search helpers for quotes tab — quotes aren't sub-scoped because
+  // the data model doesn't link quotes to subscriptions; we show all company quotes.
+  const QUOTE_STATUS_ORDER: Record<Quote['status'], number> = {
+    active: 0, accepted: 1, declined: 2, expired: 3,
+  };
+  const filteredQuotes = useMemo(() => {
+    const q = quoteSearch.trim().toLowerCase();
+    if (!q) return quotes;
+    return quotes.filter(qq => {
+      const haystack: string[] = [
+        qq.quoteNumber, qq.id, qq.note || '', qq.declineReason || '',
+        ...qq.lineItems.map(l => l.productName || ''),
+      ];
+      return haystack.some(v => v.toLowerCase().includes(q));
+    });
+  }, [quotes, quoteSearch]);
+
+  const sortedQuotes = useMemo(() => {
+    if (!quoteSort.key || !quoteSort.direction) return filteredQuotes;
+    const dir = quoteSort.direction === 'asc' ? 1 : -1;
+    return [...filteredQuotes].sort((a, b) => {
+      let av: string | number = '', bv: string | number = '';
+      switch (quoteSort.key) {
+        case 'quoteNumber': av = a.quoteNumber.toLowerCase(); bv = b.quoteNumber.toLowerCase(); break;
+        case 'products': av = (a.lineItems[0]?.productName || '').toLowerCase(); bv = (b.lineItems[0]?.productName || '').toLowerCase(); break;
+        case 'createdDate': av = a.createdDate; bv = b.createdDate; break;
+        case 'expiryDate': av = a.expiryDate; bv = b.expiryDate; break;
+        case 'total': av = a.amount; bv = b.amount; break;
+        case 'status': av = QUOTE_STATUS_ORDER[a.status] ?? 99; bv = QUOTE_STATUS_ORDER[b.status] ?? 99; break;
+      }
+      if (av < bv) return -1 * dir;
+      if (av > bv) return 1 * dir;
+      return 0;
+    });
+  }, [filteredQuotes, quoteSort]);
+
+  // Used to mark quotes as "expiring soon" (within 3 days)
+  const daysUntil = (iso: string) => Math.ceil((new Date(iso).getTime() - Date.now()) / (1000 * 60 * 60 * 24));
 
   // Realistic billing details (state-managed for the edit modal)
   const [billing, setBilling] = useState({
@@ -97,6 +217,11 @@ export const SubscriptionsPage = () => {
     setManageOpen(true);
   };
 
+  const openRenameDialog = (sub: Subscription) => {
+    setRenameSubId(sub.id);
+    setRenameDraft(sub.name);
+    setRenameOpen(true);
+  };
 
   const accountStatus: 'Current' | 'Renewal Due' | 'Payment Overdue' = (() => {
     const overdue = subInvoices.some(i => i.status === 'overdue');
@@ -105,6 +230,15 @@ export const SubscriptionsPage = () => {
     if (renewal && (renewal.getTime() - Date.now()) / (1000 * 60 * 60 * 24) < 60) return 'Renewal Due';
     return 'Current';
   })();
+
+  // Status badge for summary card (uses spec-mandated color classes)
+  const summaryStatusLabel = accountStatus === 'Current' ? 'Active' : accountStatus;
+  const summaryStatusClass =
+    accountStatus === 'Payment Overdue'
+      ? 'bg-destructive/10 text-destructive border-destructive/20'
+      : accountStatus === 'Renewal Due'
+      ? 'bg-warning/10 text-warning border-warning/20'
+      : 'bg-success/10 text-success border-success/20';
 
   const statusBadgeClass = (s: string) => {
     switch (s) {
@@ -127,8 +261,6 @@ export const SubscriptionsPage = () => {
   };
   const formatStatus = (s: string) => s.replace(/_/g, ' ');
 
-  const filteredInvoices = subInvoices.filter(i => invoiceFilter === 'all' || i.status === invoiceFilter);
-
   const lastPaid = subInvoices.find(i => i.status === 'paid');
   const nextInvoice = subInvoices.find(i => i.status !== 'paid');
   const outstanding = subInvoices.filter(i => i.balance > 0).reduce((a, i) => a + i.balance, 0);
@@ -147,31 +279,46 @@ export const SubscriptionsPage = () => {
           <Card>
             <CardContent className="p-8 text-center">
               <CreditCard className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
-              <h3 className="text-lg font-medium mb-2">No Subscriptions</h3>
-              <p className="text-muted-foreground mb-4">You don't have any active subscriptions yet.</p>
-              <Button onClick={() => navigate('/signup')}>Get Started</Button>
+              <h3 className="text-base font-semibold mb-2">No Subscriptions</h3>
+              <p className="text-sm text-muted-foreground mb-4">
+                You don't have any active subscriptions yet. Get started by selecting products.
+              </p>
+              <Button onClick={() => navigate('/checkout')}>Get Started</Button>
             </CardContent>
           </Card>
         ) : (
           <>
-            {/* Subscription Selector */}
-            {subscriptions.length > 1 && (
-              <div className="flex flex-wrap gap-2">
-                {subscriptions.map((sub, idx) => (
-                  <Button
-                    key={sub.id}
-                    variant={selectedSubIndex === idx ? 'default' : 'outline'}
-                    onClick={() => { setSelectedSubIndex(idx); setActiveTab('overview'); }}
-                    className="h-auto py-2 px-4"
-                  >
-                    <div className="text-left">
-                      <div className="text-sm font-medium">{sub.name}</div>
-                      <div className="text-xs opacity-80">{sub.planType} · {sub.products.length} product{sub.products.length !== 1 ? 's' : ''}</div>
-                    </div>
-                  </Button>
-                ))}
-              </div>
-            )}
+            {/* Subscription Selector — always shown when at least 1 Annual sub exists */}
+            <div className="flex flex-wrap gap-2">
+              {subscriptions.map((sub, idx) => (
+                <Button
+                  key={sub.id}
+                  variant={selectedSubIndex === idx ? 'default' : 'outline'}
+                  onClick={() => { setSelectedSubIndex(idx); setActiveTab('overview'); }}
+                  className="h-auto py-1.5 pl-4 pr-2"
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium">{sub.name}</span>
+                    <span
+                      role="button"
+                      tabIndex={0}
+                      onClick={(e) => { e.stopPropagation(); if (!readOnly) openRenameDialog(sub); }}
+                      onKeyDown={(e) => {
+                        if (!readOnly && (e.key === 'Enter' || e.key === ' ')) {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          openRenameDialog(sub);
+                        }
+                      }}
+                      className="ml-1 p-1 rounded hover:bg-black/10 focus:outline-none focus:ring-1 focus:ring-current inline-flex items-center justify-center"
+                      aria-label={`Rename ${sub.name}`}
+                    >
+                      <Edit className="h-3.5 w-3.5" />
+                    </span>
+                  </div>
+                </Button>
+              ))}
+            </div>
 
             {currentSub && (
               <Card>
@@ -185,321 +332,440 @@ export const SubscriptionsPage = () => {
                       </TabsList>
                     </div>
 
-                    {/* OVERVIEW TAB */}
-                    <TabsContent value="overview" className="p-6 space-y-6">
-                      {/* SECTION 1: Subscription Summary Header */}
-                      <Card className="border-2 border-primary/20 bg-gradient-to-br from-primary/5 to-transparent">
-                        <CardContent className="p-5">
-                          <div className="flex flex-wrap items-start justify-between gap-4">
-                            <div className="space-y-1">
-                              <div className="flex items-center gap-2">
-                                <h3 className="text-lg font-semibold">{currentSub.name}</h3>
-                                <Badge variant="outline" className={statusBadgeClass(accountStatus)}>{accountStatus}</Badge>
+                    {/* OVERVIEW TAB — two-column layout */}
+                    <TabsContent value="overview" className="p-6">
+                      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                        {/* LEFT COLUMN */}
+                        <div className="lg:col-span-8 space-y-6">
+                          {/* Annual Plan summary card */}
+                          <Card className="shadow-sm bg-gradient-to-br from-primary/5 via-card to-card border-primary/10">
+                            <CardContent className="p-6">
+                              <div className="flex items-start justify-between gap-4">
+                                <div className="flex items-start gap-3 min-w-0">
+                                  <div className="h-10 w-10 rounded-full bg-muted flex items-center justify-center shrink-0 text-sm font-semibold text-muted-foreground">
+                                    {currentSub.name.charAt(0).toUpperCase()}
+                                  </div>
+                                  <div className="min-w-0">
+                                    <h3 className="text-base font-semibold truncate">{currentSub.name}</h3>
+                                    <p className="text-xs text-muted-foreground">
+                                      Renews {new Date(currentSub.renewalDate).toLocaleDateString()} · Billed {currentSub.planType} · Last paid by {paymentMethod}
+                                    </p>
+                                  </div>
+                                </div>
+                                <Badge variant="outline" className={cn('shrink-0', summaryStatusClass)}>
+                                  {summaryStatusLabel}
+                                </Badge>
                               </div>
-                              <p className="text-xs text-muted-foreground">
-                                Renews {new Date(currentSub.renewalDate).toLocaleDateString()} · Billed {currentSub.planType} · Last paid by {paymentMethod}
-                              </p>
-                            </div>
-                            <div className="flex gap-2">
-                              {accountStatus === 'Payment Overdue' && (
-                                <Button size="sm" variant="destructive" onClick={() => setRenewalOpen(true)}>
-                                  <CreditCard className="h-3 w-3 mr-1" />Pay Now
-                                </Button>
-                              )}
-                            </div>
-                          </div>
-                          <div className="grid gap-4 md:grid-cols-4 mt-4 pt-4 border-t">
-                            <div>
-                              <p className="text-xs text-muted-foreground">Next Invoice</p>
-                              <p className="font-semibold">${(nextInvoice?.amount || subTotal(currentSub)).toLocaleString()}</p>
-                              <p className="text-xs text-muted-foreground">due {new Date(currentSub.renewalDate).toLocaleDateString()}</p>
-                            </div>
-                            <div>
-                              <p className="text-xs text-muted-foreground">Last Payment</p>
-                              <p className="font-semibold">{lastPaid ? `$${lastPaid.amount.toLocaleString()}` : '—'}</p>
-                              <p className="text-xs text-muted-foreground">{lastPaid ? new Date(lastPaid.date).toLocaleDateString() : '—'} · {paymentMethod}</p>
-                            </div>
-                            <div>
-                              <p className="text-xs text-muted-foreground">Outstanding Balance</p>
-                              <p className={cn('font-semibold', outstanding > 0 && 'text-destructive')}>${outstanding.toLocaleString()}</p>
-                              <p className="text-xs text-muted-foreground">{outstanding > 0 ? 'Action required' : 'Nothing due'}</p>
-                            </div>
-                            <div>
-                              <p className="text-xs text-muted-foreground">Products</p>
-                              <p className="font-semibold">{currentSub.products.length}</p>
-                              <p className="text-xs text-muted-foreground">in this subscription</p>
-                            </div>
-                          </div>
-                        </CardContent>
-                      </Card>
+                            </CardContent>
+                          </Card>
 
-                      {/* SECTION 2: Products Under This Subscription */}
-                      <div>
-                        <h3 className="font-semibold mb-3 text-sm">Products in this subscription</h3>
-                        <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
-                          {currentSub.products.map(prod => {
-                            const assigned = getAssignedLicenseCount(currentSub.id, prod.id);
-                            const avail = prod.licenseCount - assigned;
-                            return (
-                              <Card key={prod.id} className="hover:border-primary/40 transition-colors">
-                                <CardContent className="p-4 space-y-3">
-                                  <div className="flex items-start justify-between gap-2">
-                                    <h4 className="font-semibold text-sm">{prod.name}</h4>
-                                    <Badge variant="outline" className={statusBadgeClass(prod.status)}>{prod.status}</Badge>
+                          {/* KPI tiles */}
+                          <div className="grid gap-4 grid-cols-1 md:grid-cols-2 lg:grid-cols-4">
+                            <Card>
+                              <CardContent className="p-4 flex items-center justify-between">
+                                <div className="min-w-0">
+                                  <p className="text-sm text-muted-foreground">Next Invoice</p>
+                                  <p className="text-2xl font-bold mt-1 tracking-tight">
+                                    {formatCurrency(nextInvoice?.amount || subTotal(currentSub))}
+                                  </p>
+                                  <p className="text-xs text-muted-foreground mt-1">
+                                    due {nextInvoice ? new Date(nextInvoice.dueDate).toLocaleDateString() : new Date(currentSub.renewalDate).toLocaleDateString()}
+                                  </p>
+                                </div>
+                                <div className="h-10 w-10 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
+                                  <Receipt className="h-5 w-5 text-primary" />
+                                </div>
+                              </CardContent>
+                            </Card>
+
+                            <Card>
+                              <CardContent className="p-4 flex items-center justify-between">
+                                <div className="min-w-0">
+                                  <p className="text-sm text-muted-foreground">Last Payment</p>
+                                  <p className="text-2xl font-bold mt-1 tracking-tight">
+                                    {lastPaid ? formatCurrency(lastPaid.amount) : '—'}
+                                  </p>
+                                  <p className="text-xs text-muted-foreground mt-1">
+                                    {lastPaid ? `${new Date(lastPaid.date).toLocaleDateString()} · ${paymentMethod}` : '—'}
+                                  </p>
+                                </div>
+                                <div className="h-10 w-10 rounded-lg bg-info/10 flex items-center justify-center shrink-0">
+                                  <CreditCard className="h-5 w-5 text-info" />
+                                </div>
+                              </CardContent>
+                            </Card>
+
+                            <Card>
+                              <CardContent className="p-4 flex items-center justify-between">
+                                <div className="min-w-0">
+                                  <p className="text-sm text-muted-foreground">Outstanding Balance</p>
+                                  <p className={cn('text-2xl font-bold mt-1 tracking-tight', outstanding > 0 ? 'text-destructive' : 'text-success')}>
+                                    {formatCurrency(outstanding)}
+                                  </p>
+                                  <p className={cn('text-xs mt-1', outstanding > 0 ? 'text-destructive' : 'text-muted-foreground')}>
+                                    {outstanding > 0 ? 'Action required' : 'Nothing due'}
+                                  </p>
+                                </div>
+                                <div className={cn(
+                                  'h-10 w-10 rounded-lg flex items-center justify-center shrink-0',
+                                  outstanding > 0 ? 'bg-destructive/10' : 'bg-success/10'
+                                )}>
+                                  <CheckCircle2 className={cn('h-5 w-5', outstanding > 0 ? 'text-destructive' : 'text-success')} />
+                                </div>
+                              </CardContent>
+                            </Card>
+
+                            <Card>
+                              <CardContent className="p-4 flex items-center justify-between">
+                                <div className="min-w-0">
+                                  <p className="text-sm text-muted-foreground">Products</p>
+                                  <p className="text-2xl font-bold mt-1 tracking-tight">{currentSub.products.length}</p>
+                                  <p className="text-xs text-muted-foreground mt-1">in this subscription</p>
+                                </div>
+                                <div className="h-10 w-10 rounded-lg bg-warning/10 flex items-center justify-center shrink-0">
+                                  <Package className="h-5 w-5 text-warning" />
+                                </div>
+                              </CardContent>
+                            </Card>
+                          </div>
+
+                          {/* Products in this subscription */}
+                          <Card>
+                            <CardHeader className="flex flex-row items-center justify-between pb-4">
+                              <CardTitle className="text-base font-semibold">Products in this subscription</CardTitle>
+                              <span className="text-xs text-muted-foreground">{currentSub.products.length} total</span>
+                            </CardHeader>
+                            <CardContent className="p-6 pt-0">
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                {currentSub.products.map(prod => {
+                                  const assigned = getAssignedLicenseCount(currentSub.id, prod.id);
+                                  const avail = prod.licenseCount - assigned;
+                                  // Distribution of license types for this product
+                                  const productLicenses = licenses.filter(l => l.subscriptionId === currentSub.id && l.productId === prod.id);
+                                  const typeCounts: Record<LicenseType, number> = { paid: 0, it_assistant: 0, trial: 0 };
+                                  productLicenses.forEach(l => {
+                                    const lt = (l.licenseType || 'paid') as LicenseType;
+                                    typeCounts[lt]++;
+                                  });
+                                  const typeSummary = [
+                                    typeCounts.paid > 0 ? `${typeCounts.paid} User` : null,
+                                    typeCounts.trial > 0 ? `${typeCounts.trial} Trial` : null,
+                                    typeCounts.it_assistant > 0 ? `${typeCounts.it_assistant} IT Assistant` : null,
+                                  ].filter(Boolean).join(' · ');
+                                  const isActive = prod.status === 'active';
+                                  const dotClass = isActive
+                                    ? 'bg-success'
+                                    : prod.status === 'expired'
+                                    ? 'bg-destructive'
+                                    : 'bg-muted-foreground';
+                                  const availClass = avail < 0 ? 'text-destructive' : avail === 0 ? 'text-muted-foreground' : '';
+                                  const Icon = productIcon(prod.name);
+                                  const isDataNet = prod.name === 'DataNet';
+                                  return (
+                                    <div key={prod.id} className="border rounded-md p-4 space-y-3">
+                                      <div className="flex items-start gap-3">
+                                        <div className="h-8 w-8 shrink-0 rounded-md bg-primary/10 text-primary flex items-center justify-center">
+                                          <Icon className="h-4 w-4" />
+                                        </div>
+                                        <div className="min-w-0">
+                                          <h4 className="text-base font-semibold truncate">{prod.name}</h4>
+                                          <div className="flex items-center text-xs mt-0.5">
+                                            <span className={cn('inline-block h-2 w-2 rounded-full mr-1.5', dotClass)} />
+                                            <span className="capitalize">{prod.status}</span>
+                                          </div>
+                                        </div>
+                                      </div>
+                                      {isDataNet ? (
+                                        <div>
+                                          <p className="text-xs uppercase text-muted-foreground tracking-wide">Access</p>
+                                          <p className="text-sm font-semibold mt-0.5">All active users</p>
+                                        </div>
+                                      ) : (
+                                        <div className="grid grid-cols-2 gap-3">
+                                          <div>
+                                            <p className="text-xs uppercase text-muted-foreground tracking-wide">Seats</p>
+                                            <p className="text-sm font-semibold mt-0.5">{assigned}/{prod.licenseCount}</p>
+                                          </div>
+                                          <div>
+                                            <p className="text-xs uppercase text-muted-foreground tracking-wide">Available</p>
+                                            <p className={cn('text-sm font-semibold mt-0.5', availClass)}>
+                                              {avail}
+                                            </p>
+                                          </div>
+                                        </div>
+                                      )}
+                                      {!isDataNet && typeSummary && (
+                                        <div className="text-xs text-muted-foreground">
+                                          {typeSummary}
+                                        </div>
+                                      )}
+                                      {!isDataNet && (prod.pendingLicenseCount || 0) > 0 && (
+                                        <div className="text-xs text-warning">
+                                          {prod.pendingLicenseCount} additional seats pending payment.
+                                        </div>
+                                      )}
+                                      {isDataNet ? (
+                                        <div className="rounded-md bg-muted/40 border border-dashed p-3">
+                                          <p className="text-xs text-muted-foreground leading-relaxed">
+                                            All active users in your company automatically receive DataNet updates.
+                                            Manage individual delivery preferences from{' '}
+                                            <button
+                                              onClick={() => navigate('/users')}
+                                              className="text-primary hover:underline focus:outline-none focus-visible:underline"
+                                            >
+                                              Users &amp; Contacts
+                                            </button>.
+                                          </p>
+                                        </div>
+                                      ) : (
+                                        <Tooltip>
+                                          <TooltipTrigger asChild>
+                                            <span tabIndex={0} className="block">
+                                              <Button
+                                                variant="outline"
+                                                size="sm"
+                                                className="w-full"
+                                                onClick={() => openManageDrawer(currentSub, prod)}
+                                                disabled={readOnly}
+                                              >
+                                                Manage Licenses
+                                              </Button>
+                                            </span>
+                                          </TooltipTrigger>
+                                          {readOnly && <TooltipContent>{READ_ONLY_TOOLTIP}</TooltipContent>}
+                                        </Tooltip>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </CardContent>
+                          </Card>
+                        </div>
+
+                        {/* RIGHT COLUMN */}
+                        <div className="lg:col-span-4">
+                          <div className="lg:sticky lg:top-20 space-y-6">
+                            {/* Billing Details */}
+                            <Card>
+                              <CardHeader className="flex flex-row items-center justify-between pb-4">
+                                <CardTitle className="text-base font-semibold">Billing Details</CardTitle>
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-7 w-7"
+                                  onClick={() => { setDraftBilling(billing); setEditBillingOpen(true); }}
+                                  aria-label="Edit billing details"
+                                  disabled={readOnly}
+                                >
+                                  <Edit className="h-4 w-4" />
+                                </Button>
+                              </CardHeader>
+                              <CardContent className="p-6 pt-0">
+                                <div className="grid grid-cols-2 gap-x-6 gap-y-4">
+                                  <div>
+                                    <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Company Name</p>
+                                    <p className="text-sm mt-1">{billing.companyName}</p>
                                   </div>
-                                  <div className="flex items-baseline justify-between text-sm">
-                                    <span className="text-muted-foreground text-xs">Seats assigned</span>
-                                    <span className="font-semibold">{assigned}/{prod.licenseCount}</span>
+                                  <div>
+                                    <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Address</p>
+                                    <p className="text-sm mt-1">{billing.address}, {billing.city}, {billing.stateZip}</p>
                                   </div>
-                                  <div className="flex items-baseline justify-between text-sm">
-                                    <span className="text-muted-foreground text-xs">Available</span>
-                                    <span className={cn('font-semibold', avail === 0 ? 'text-destructive' : 'text-success')}>{avail}</span>
+                                  <div>
+                                    <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Billing Contact</p>
+                                    <p className="text-sm mt-1">{billing.contactName}</p>
                                   </div>
-                                  {(prod.pendingLicenseCount || 0) > 0 && (
-                                    <div className="text-xs text-warning">{prod.pendingLicenseCount} additional seats pending payment.</div>
-                                  )}
-                                  <Button variant="outline" size="sm" className="w-full" onClick={() => openManageDrawer(currentSub, prod)}>
-                                    <Settings className="h-3 w-3 mr-1" />Manage Licenses
-                                  </Button>
-                                </CardContent>
-                              </Card>
-                            );
-                          })}
+                                  <div>
+                                    <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Phone</p>
+                                    <p className="text-sm mt-1">{billing.phone}</p>
+                                  </div>
+                                  <div>
+                                    <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Tax ID</p>
+                                    <p className="text-sm mt-1">{billing.taxId}</p>
+                                  </div>
+                                  <div>
+                                    <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Billing Email</p>
+                                    <p className="text-sm mt-1 break-all">{billing.contactEmail}</p>
+                                  </div>
+                                </div>
+                              </CardContent>
+                            </Card>
+
+                            {/* Renewal Options */}
+                            <Card id="renewal-options">
+                              <CardHeader className="pb-4">
+                                <CardTitle className="text-base font-semibold">Renewal Options</CardTitle>
+                                <p className="text-xs text-muted-foreground mt-1">Select a payment method for your next renewal.</p>
+                              </CardHeader>
+                              <CardContent className="p-6 pt-0">
+                                <div className="space-y-2">
+                                  {paymentMethods.map(opt => {
+                                    const selected = paymentMethod === opt;
+                                    return (
+                                      <button
+                                        key={opt}
+                                        type="button"
+                                        onClick={() => {
+                                          setPaymentMethod(opt);
+                                          toast({ title: 'Renewal payment method updated', description: opt });
+                                        }}
+                                        className={cn(
+                                          'w-full flex items-center justify-between p-3 rounded-md border text-sm text-left transition-colors',
+                                          selected ? 'border-primary bg-primary/5' : 'border-border hover:border-primary/40'
+                                        )}
+                                      >
+                                        <span className="flex items-center gap-2.5">
+                                          <span className="h-4 w-4 rounded-full border-2 border-input flex items-center justify-center shrink-0">
+                                            {selected && <span className="h-2 w-2 rounded-full bg-primary" />}
+                                          </span>
+                                          <span className="text-sm">{opt}</span>
+                                        </span>
+                                        {selected && (
+                                          <Badge variant="outline" className="bg-primary text-primary-foreground border-primary text-xs">
+                                            Current
+                                          </Badge>
+                                        )}
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              </CardContent>
+                            </Card>
+                          </div>
                         </div>
                       </div>
-
-                      {/* Section 3: Billing Summary + Renewal Options */}
-                      <div id="renewal-options" className="grid gap-4 md:grid-cols-2">
-                        <Card>
-                          <CardHeader className="pb-2">
-                            <CardTitle className="text-base flex items-center gap-2">
-                              <Receipt className="h-4 w-4 text-primary" />Billing Summary
-                            </CardTitle>
-                          </CardHeader>
-                          <CardContent className="space-y-3 text-sm">
-                            <div className="flex justify-between">
-                              <span className="text-muted-foreground">Last Payment Date</span>
-                              <span className="font-medium">{lastPaid ? new Date(lastPaid.date).toLocaleDateString() : '—'}</span>
-                            </div>
-                            <div className="flex justify-between">
-                              <span className="text-muted-foreground">Last Payment Method</span>
-                              <span className="font-medium">Credit Card</span>
-                            </div>
-                            <div className="flex justify-between">
-                              <span className="text-muted-foreground">Next Invoice Amount</span>
-                              <span className="font-medium">${(nextInvoice?.amount || subTotal(currentSub)).toLocaleString()}</span>
-                            </div>
-                            <div className="flex justify-between">
-                              <span className="text-muted-foreground">Next Renewal Date</span>
-                              <span className="font-medium">{new Date(currentSub.renewalDate).toLocaleDateString()}</span>
-                            </div>
-                            <div className="flex justify-between">
-                              <span className="text-muted-foreground">Current Balance</span>
-                              <span className="font-medium">${outstanding.toLocaleString()}</span>
-                            </div>
-                            {outstanding > 0 && (
-                              <div className="flex justify-between text-destructive">
-                                <span>Outstanding Balance</span>
-                                <span className="font-semibold">${outstanding.toLocaleString()}</span>
-                              </div>
-                            )}
-                            <div className="pt-2 border-t flex justify-between items-center">
-                              <span className="text-muted-foreground">Status</span>
-                              <Badge variant="outline" className={statusBadgeClass(accountStatus)}>{accountStatus}</Badge>
-                            </div>
-                          </CardContent>
-                        </Card>
-
-                        {/* Section 3: Renewal Options */}
-                        <Card>
-                          <CardHeader className="pb-2">
-                            <CardTitle className="text-base flex items-center gap-2">
-                              <RefreshCw className="h-4 w-4 text-primary" />Renewal Options
-                            </CardTitle>
-                          </CardHeader>
-                          <CardContent>
-                            <p className="text-xs text-muted-foreground mb-3">Select a payment method for your next renewal.</p>
-                            <div className="space-y-2">
-                              {paymentMethods.map(opt => {
-                                const selected = paymentMethod === opt;
-                                return (
-                                  <button
-                                    key={opt}
-                                    onClick={() => { setPaymentMethod(opt); toast({ title: 'Renewal payment method updated', description: opt }); }}
-                                    className={cn(
-                                      'w-full flex items-center justify-between p-2.5 rounded-md border text-sm transition-colors text-left',
-                                      selected ? 'border-primary bg-primary/5' : 'border-border hover:border-primary/40'
-                                    )}
-                                  >
-                                    <span className={cn('flex items-center gap-2', selected && 'font-medium')}>
-                                      <CreditCard className="h-4 w-4 text-muted-foreground" />
-                                      {opt}
-                                    </span>
-                                    {selected && <Badge variant="outline" className="status-active text-xs"><Check className="h-3 w-3 mr-1" />Current</Badge>}
-                                  </button>
-                                );
-                              })}
-                            </div>
-                          </CardContent>
-                        </Card>
-                      </div>
-
-                      {/* Section 4: Billing Details */}
-                      <Card className="group">
-                        <CardHeader className="pb-2 flex flex-row items-center justify-between">
-                          <CardTitle className="text-base flex items-center gap-2">
-                            <Building2 className="h-4 w-4 text-primary" />Billing Details
-                          </CardTitle>
-                          <Button
-                            variant="ghost" size="sm"
-                            className="h-8 w-8 p-0 opacity-0 group-hover:opacity-100 transition-opacity"
-                            onClick={() => { setDraftBilling(billing); setEditBillingOpen(true); }}
-                          >
-                            <Edit className="h-4 w-4" />
-                          </Button>
-                        </CardHeader>
-                        <CardContent>
-                          <div className="grid gap-4 md:grid-cols-2 text-sm">
-                            <div className="flex items-start gap-2">
-                              <Building2 className="h-4 w-4 text-muted-foreground mt-0.5" />
-                              <div>
-                                <p className="text-xs text-muted-foreground">Company Name</p>
-                                <p className="font-medium">{billing.companyName}</p>
-                              </div>
-                            </div>
-                            <div className="flex items-start gap-2">
-                              <MapPin className="h-4 w-4 text-muted-foreground mt-0.5" />
-                              <div>
-                                <p className="text-xs text-muted-foreground">Address</p>
-                                <p className="font-medium">{billing.address}<br />{billing.city}, {billing.stateZip}</p>
-                              </div>
-                            </div>
-                            <div className="flex items-start gap-2">
-                              <Mail className="h-4 w-4 text-muted-foreground mt-0.5" />
-                              <div>
-                                <p className="text-xs text-muted-foreground">Billing Contact</p>
-                                <p className="font-medium">{billing.contactName}</p>
-                                <p className="text-xs text-muted-foreground">{billing.contactEmail}</p>
-                              </div>
-                            </div>
-                            <div className="flex items-start gap-2">
-                              <Phone className="h-4 w-4 text-muted-foreground mt-0.5" />
-                              <div>
-                                <p className="text-xs text-muted-foreground">Phone</p>
-                                <p className="font-medium">{billing.phone}</p>
-                                <p className="text-xs text-muted-foreground mt-1">Tax ID: {billing.taxId}</p>
-                              </div>
-                            </div>
-                          </div>
-                          <div className="mt-4 pt-4 border-t grid gap-3 md:grid-cols-4 text-sm">
-                            <div>
-                              <p className="text-xs text-muted-foreground">Payment Eligibility</p>
-                              <Badge variant="outline" className={statusBadgeClass(cfg.payOnTermsEnabled ? 'active' : 'pending')}>
-                                {cfg.payOnTermsEnabled ? 'Pay on Terms' : 'Pay on Receipt'}
-                              </Badge>
-                            </div>
-                            <div>
-                              <p className="text-xs text-muted-foreground">Default Billing Method</p>
-                              <p className="font-medium capitalize">{cfg.defaultBillingMethod.replace(/_/g, ' ')}</p>
-                            </div>
-                            {cfg.terms && (
-                              <div>
-                                <p className="text-xs text-muted-foreground">Terms</p>
-                                <p className="font-medium">{cfg.terms}</p>
-                              </div>
-                            )}
-                            <div>
-                              <p className="text-xs text-muted-foreground">Subscription Status</p>
-                              <Badge variant="outline" className={statusBadgeClass(currentSub.status)}>{formatStatus(currentSub.status)}</Badge>
-                            </div>
-                          </div>
-                          <p className="text-xs text-muted-foreground mt-3">
-                            Payment eligibility is managed by Admin. Contact support if you need payment terms enabled.
-                          </p>
-                        </CardContent>
-                      </Card>
                     </TabsContent>
 
-                    {/* INVOICES TAB */}
+                    {/* INVOICES TAB — new column structure with inline CTAs, search, and per-column sort */}
                     <TabsContent value="invoices" className="p-6 space-y-4">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div className="flex gap-1">
-                          {(['all', 'paid', 'awaiting_payment', 'payment_terms_applied', 'overdue'] as const).map(f => (
-                            <Button
-                              key={f}
-                              variant={invoiceFilter === f ? 'default' : 'outline'}
-                              size="sm"
-                              onClick={() => setInvoiceFilter(f)}
-                              className="capitalize"
-                            >
-                              {formatStatus(f)}
-                            </Button>
-                          ))}
+                      <div className="flex flex-wrap items-center gap-2">
+                        <div className="relative flex-1 min-w-[240px]">
+                          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                          <Input
+                            placeholder="Search invoices..."
+                            value={invoiceSearch}
+                            onChange={(e) => setInvoiceSearch(e.target.value)}
+                            className="pl-9"
+                          />
                         </div>
                         <Button variant="outline" size="sm" onClick={() => navigate('/invoices')}>
                           <FileText className="h-4 w-4 mr-1" />All Invoices
                         </Button>
                       </div>
-                      {filteredInvoices.length === 0 ? (
+                      {subInvoices.length === 0 ? (
                         <div className="text-center py-12 text-muted-foreground">
                           <Receipt className="h-12 w-12 mx-auto mb-2 opacity-30" />
-                          No invoices match this filter.
+                          No invoices for this subscription.
+                        </div>
+                      ) : sortedSubInvoices.length === 0 ? (
+                        <div className="text-center py-12 space-y-3">
+                          <p className="text-sm text-muted-foreground">No invoices match your search.</p>
+                          <Button variant="outline" size="sm" onClick={() => setInvoiceSearch('')}>Clear search</Button>
                         </div>
                       ) : (
                         <Table>
                           <TableHeader>
                             <TableRow>
-                              <TableHead>Invoice #</TableHead>
-                              <TableHead>Product</TableHead>
-                              <TableHead>Date</TableHead>
-                              <TableHead>Due Date</TableHead>
-                              <TableHead>Status</TableHead>
-                              <TableHead className="text-right">Amount</TableHead>
-                              <TableHead className="text-right">Actions</TableHead>
+                              <TableHead><SortableHeader label="Invoice ID" sortKey="invoiceNumber" sort={invoiceSort} onSortChange={setInvoiceSort} /></TableHead>
+                              <TableHead><SortableHeader label="Invoice Created" sortKey="date" sort={invoiceSort} onSortChange={setInvoiceSort} /></TableHead>
+                              <TableHead><SortableHeader label="Due Date" sortKey="dueDate" sort={invoiceSort} onSortChange={setInvoiceSort} /></TableHead>
+                              <TableHead className="text-right"><SortableHeader label="Total" sortKey="total" sort={invoiceSort} onSortChange={setInvoiceSort} align="right" /></TableHead>
+                              <TableHead><SortableHeader label="Status" sortKey="status" sort={invoiceSort} onSortChange={setInvoiceSort} /></TableHead>
+                              <TableHead className="w-[50px] text-right"></TableHead>
                             </TableRow>
                           </TableHeader>
                           <TableBody>
-                            {filteredInvoices.map(inv => (
-                              <TableRow key={inv.id}>
-                                <TableCell className="font-medium">{inv.invoiceNumber}</TableCell>
-                                <TableCell className="text-sm text-muted-foreground">
-                                  {inv.lineItems.map(l => l.product).join(', ')}
-                                </TableCell>
-                                <TableCell>{new Date(inv.date).toLocaleDateString()}</TableCell>
-                                <TableCell>{new Date(inv.dueDate).toLocaleDateString()}</TableCell>
-                                <TableCell>
-                                  <Badge variant="outline" className={statusBadgeClass(inv.status)}>{formatStatus(inv.status)}</Badge>
-                                </TableCell>
-                                <TableCell className="text-right font-medium">${inv.amount.toLocaleString()}</TableCell>
-                                <TableCell className="text-right">
-                                  {inv.status === 'awaiting_payment' && (
-                                    <Button variant="default" size="sm" className="mr-1" onClick={() => {
-                                      markInvoicePaid(inv.id);
-                                      toast({ title: 'Payment received.', description: 'Subscription / license changes activated.' });
-                                    }}>
-                                      <CheckCircle2 className="h-3 w-3 mr-1" />Mark as Paid
-                                    </Button>
-                                  )}
-                                  {(inv.status === 'overdue' || inv.status === 'unpaid' || inv.status === 'pending') && (
-                                    <Button variant="default" size="sm" className="mr-1" onClick={() => {
-                                      if (inv.invoiceType === 'Renewal Invoice' || inv.invoiceType === 'Initial Invoice') {
-                                        setRenewalOpen(true);
-                                      } else {
-                                        toast({ title: 'Pay invoice', description: `Opening payment for ${inv.invoiceNumber}` });
-                                      }
-                                    }}>
-                                      <CreditCard className="h-3 w-3 mr-1" />Pay Now
-                                    </Button>
-                                  )}
-                                  <Button variant="ghost" size="sm" onClick={() => toast({ title: 'Downloading PDF', description: inv.invoiceNumber })}>
-                                    <Download className="h-4 w-4" />
-                                  </Button>
-                                  <Button variant="ghost" size="sm" onClick={() => navigate('/invoices')}>
-                                    <Eye className="h-4 w-4" />
-                                  </Button>
-                                </TableCell>
-                              </TableRow>
-                            ))}
+                            {sortedSubInvoices.map(inv => {
+                              const total = inv.totalAmount ?? inv.amount;
+                              const isPayable = inv.status === 'awaiting_payment' || inv.status === 'overdue' || inv.status === 'upcoming' || inv.status === 'unpaid';
+                              const dueShort = new Date(inv.dueDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+                              const createdShort = new Date(inv.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+                              const handlePay = () => navigate('/pay', {
+                                state: {
+                                  source: 'invoice',
+                                  invoiceId: inv.id,
+                                  subtotal: inv.subtotal ?? total,
+                                  tax: inv.tax ?? 0,
+                                  totalAmount: total,
+                                  returnTo: '/subscriptions?tab=invoices',
+                                },
+                              });
+                              const handleRenew = () => {
+                                if (!currentSub) return;
+                                setRenewSubId(currentSub.id);
+                                setRenewInvoiceId(inv.id);
+                                setRenewOpen(true);
+                              };
+                              return (
+                                <TableRow key={inv.id}>
+                                  <TableCell>
+                                    <div className="flex flex-col leading-tight">
+                                      <span className="font-mono text-sm">{inv.invoiceNumber}</span>
+                                      {inv.poNumber && <span className="text-xs text-muted-foreground">PO #{inv.poNumber}</span>}
+                                    </div>
+                                  </TableCell>
+                                  <TableCell className="text-sm">{createdShort}</TableCell>
+                                  <TableCell className={cn('text-sm', inv.paidAt && 'text-muted-foreground')}>{dueShort}</TableCell>
+                                  <TableCell className="text-right font-medium">{formatCurrency(total)}</TableCell>
+                                  <TableCell>
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      {inv.status === 'paid' ? (
+                                        <div>
+                                          <Badge variant="outline" className="bg-success/10 text-success border-success/30">Paid</Badge>
+                                          {inv.paidAt && <div className="text-[11px] text-muted-foreground mt-1">Paid {new Date(inv.paidAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</div>}
+                                        </div>
+                                      ) : inv.status === 'awaiting_payment' ? (
+                                        <Badge variant="outline" className="bg-warning/10 text-warning border-warning/30">Awaiting Payment</Badge>
+                                      ) : inv.status === 'payment_terms_applied' ? (
+                                        <Badge variant="outline" className="bg-info/10 text-info border-info/30">{termsLabel}</Badge>
+                                      ) : inv.status === 'overdue' ? (
+                                        <Badge variant="outline" className="bg-destructive/10 text-destructive border-destructive/30">Overdue</Badge>
+                                      ) : inv.status === 'upcoming' ? (
+                                        <Badge variant="outline" className="text-muted-foreground border-muted-foreground/40">Upcoming</Badge>
+                                      ) : (
+                                        <Badge variant="outline" className={statusBadgeClass(inv.status)}>{formatStatus(inv.status)}</Badge>
+                                      )}
+                                      {(inv.status === 'awaiting_payment' || inv.status === 'unpaid') && (
+                                        <Button size="sm" className="h-7 px-2" onClick={handlePay}>Pay Now</Button>
+                                      )}
+                                      {inv.status === 'overdue' && (
+                                        <Button size="sm" variant="destructive" className="h-7 px-2" onClick={handlePay}>Pay Now</Button>
+                                      )}
+                                      {inv.status === 'upcoming' && inv.source === 'renewal' && (
+                                        <Button size="sm" variant="outline" className="h-7 px-2" onClick={handleRenew}><RefreshCw className="h-3.5 w-3.5 mr-1" />Renew</Button>
+                                      )}
+                                    </div>
+                                  </TableCell>
+                                  <TableCell className="text-right">
+                                    <DropdownMenu>
+                                      <DropdownMenuTrigger asChild>
+                                        <Button variant="ghost" size="icon" className="h-8 w-8">
+                                          <MoreVertical className="h-4 w-4" />
+                                        </Button>
+                                      </DropdownMenuTrigger>
+                                      <DropdownMenuContent align="end">
+                                        <DropdownMenuItem onClick={() => navigate('/invoices')}>
+                                          <Eye className="h-4 w-4 mr-2" />View Invoice
+                                        </DropdownMenuItem>
+                                        {isPayable && (
+                                          <DropdownMenuItem onClick={handlePay}>
+                                            <CreditCard className="h-4 w-4 mr-2" />Pay
+                                          </DropdownMenuItem>
+                                        )}
+                                        {inv.source === 'renewal' && currentSub && (
+                                          <DropdownMenuItem onClick={handleRenew}>
+                                            <RefreshCw className="h-4 w-4 mr-2" />Renew
+                                          </DropdownMenuItem>
+                                        )}
+                                        <DropdownMenuItem onClick={() => toast({ title: 'PDF download coming soon', description: inv.invoiceNumber })}>
+                                          <Download className="h-4 w-4 mr-2" />Download PDF
+                                        </DropdownMenuItem>
+                                      </DropdownMenuContent>
+                                    </DropdownMenu>
+                                  </TableCell>
+                                </TableRow>
+                              );
+                            })}
                           </TableBody>
                         </Table>
                       )}
@@ -529,72 +795,109 @@ export const SubscriptionsPage = () => {
                         </div>
                       )}
 
+                      {quotes.length > 0 && (
+                        <div className="relative">
+                          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                          <Input
+                            placeholder="Search quotes..."
+                            value={quoteSearch}
+                            onChange={(e) => setQuoteSearch(e.target.value)}
+                            className="pl-9"
+                          />
+                        </div>
+                      )}
                       {quotes.length === 0 ? (
                         <div className="text-center py-12 text-muted-foreground">No quotes available.</div>
+                      ) : sortedQuotes.length === 0 ? (
+                        <div className="text-center py-12 space-y-3">
+                          <p className="text-sm text-muted-foreground">No quotes match your search.</p>
+                          <Button variant="outline" size="sm" onClick={() => setQuoteSearch('')}>Clear search</Button>
+                        </div>
                       ) : (
                         <Table>
                           <TableHeader>
                             <TableRow>
-                              <TableHead>Quote #</TableHead>
-                              <TableHead>Product(s)</TableHead>
-                              <TableHead className="text-center">Licenses</TableHead>
-                              <TableHead>Created</TableHead>
-                              <TableHead>Expires</TableHead>
-                              <TableHead className="text-right">Amount</TableHead>
-                              <TableHead>Status</TableHead>
-                              <TableHead>Note</TableHead>
-                              <TableHead className="text-right">Actions</TableHead>
+                              <TableHead><SortableHeader label="Quote ID" sortKey="quoteNumber" sort={quoteSort} onSortChange={setQuoteSort} /></TableHead>
+                              <TableHead><SortableHeader label="Products" sortKey="products" sort={quoteSort} onSortChange={setQuoteSort} /></TableHead>
+                              <TableHead><SortableHeader label="Created Date" sortKey="createdDate" sort={quoteSort} onSortChange={setQuoteSort} /></TableHead>
+                              <TableHead><SortableHeader label="Expiry Date" sortKey="expiryDate" sort={quoteSort} onSortChange={setQuoteSort} /></TableHead>
+                              <TableHead className="text-right"><SortableHeader label="Total" sortKey="total" sort={quoteSort} onSortChange={setQuoteSort} align="right" /></TableHead>
+                              <TableHead><SortableHeader label="Status" sortKey="status" sort={quoteSort} onSortChange={setQuoteSort} /></TableHead>
+                              <TableHead className="w-[50px] text-right"></TableHead>
                             </TableRow>
                           </TableHeader>
                           <TableBody>
-                            {quotes.map(q => {
-                              const isExpired = q.status === 'expired';
-                              const totalLicenses = q.lineItems.reduce((a, l) => a + l.licenseCount, 0);
-                              const noteShort = q.note ? (q.note.length > 30 ? q.note.slice(0, 30) + '…' : q.note) : '—';
+                            {sortedQuotes.map(q => {
+                              const productNames = q.lineItems.map(l => l.productName);
+                              const productsLabel = productNames.length > 2
+                                ? `${productNames.slice(0, 2).join(', ')} +${productNames.length - 2}`
+                                : productNames.join(', ');
                               const statusClass =
-                                q.status === 'active' ? 'status-active' :
-                                q.status === 'accepted' ? 'status-active' :
-                                q.status === 'declined' ? 'status-overdue' :
-                                'status-inactive';
+                                q.status === 'active' ? 'bg-info/10 text-info border-info/30' :
+                                q.status === 'accepted' ? 'bg-success/10 text-success border-success/30' :
+                                q.status === 'declined' ? 'text-muted-foreground border-muted-foreground/40' :
+                                'bg-warning/10 text-warning border-warning/30';
+                              const expiresIn = daysUntil(q.expiryDate);
+                              const isExpiringSoon = q.status === 'active' && expiresIn >= 0 && expiresIn <= 3;
+                              const expiryShort = new Date(q.expiryDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+                              const createdShort = new Date(q.createdDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
                               return (
                                 <TableRow key={q.id}>
-                                  <TableCell className="font-medium">{q.quoteNumber}</TableCell>
-                                  <TableCell className="text-sm">{q.lineItems.map(l => l.productName).join(', ')}</TableCell>
-                                  <TableCell className="text-center">{totalLicenses}</TableCell>
-                                  <TableCell>{new Date(q.createdDate).toLocaleDateString()}</TableCell>
-                                  <TableCell>{new Date(q.expiryDate).toLocaleDateString()}</TableCell>
-                                  <TableCell className="text-right font-medium">${q.amount.toLocaleString()}</TableCell>
-                                  <TableCell><Badge variant="outline" className={statusClass}>{q.status}</Badge></TableCell>
+                                  <TableCell className="font-mono text-sm">{q.quoteNumber}</TableCell>
+                                  <TableCell className="text-sm">{productsLabel}</TableCell>
+                                  <TableCell className="text-sm">{createdShort}</TableCell>
                                   <TableCell>
-                                    {q.note ? (
-                                      <button className="text-xs text-primary hover:underline text-left" onClick={() => setNoteQuote(q)}>
-                                        {noteShort}
-                                      </button>
-                                    ) : <span className="text-xs text-muted-foreground">—</span>}
+                                    <span className={cn('text-sm inline-flex items-center gap-1', isExpiringSoon && 'text-warning font-medium')}>
+                                      {isExpiringSoon && <Clock className="h-3.5 w-3.5" />}
+                                      {expiryShort}
+                                    </span>
                                   </TableCell>
+                                  <TableCell className="text-right font-medium">{formatCurrency(q.amount)}</TableCell>
+                                  <TableCell><Badge variant="outline" className={statusClass}>{q.status}</Badge></TableCell>
                                   <TableCell className="text-right">
-                                    <div className="flex justify-end gap-1 items-center">
-                                      {q.status === 'active' && (
-                                        <>
-                                          <Button size="sm" variant="outline" onClick={() => setAcceptQuote(q)}>
-                                            <Check className="h-3 w-3 mr-1" />Accept
-                                          </Button>
-                                          <Button size="sm" variant="ghost" onClick={() => setDeclineQuote(q)}>
-                                            <X className="h-3 w-3 mr-1" />Decline
-                                          </Button>
-                                        </>
-                                      )}
-                                      {isExpired && (
-                                        <span className="text-xs text-muted-foreground" title="This quote has expired. Please generate a new quote.">
-                                          Expired
-                                        </span>
-                                      )}
-                                      {q.status === 'declined' && (
-                                        <Button size="sm" variant="outline" onClick={() => navigate(`/checkout?fromQuote=${q.quoteNumber}&product=${encodeURIComponent(q.lineItems[0]?.productName || '')}&licenses=${q.lineItems[0]?.licenseCount || 1}&note=${encodeURIComponent(q.note || '')}`)}>
-                                          <RefreshCw className="h-3 w-3 mr-1" />Regenerate
+                                    <DropdownMenu>
+                                      <DropdownMenuTrigger asChild>
+                                        <Button variant="ghost" size="icon" className="h-8 w-8">
+                                          <MoreVertical className="h-4 w-4" />
                                         </Button>
-                                      )}
-                                    </div>
+                                      </DropdownMenuTrigger>
+                                      <DropdownMenuContent align="end">
+                                        <DropdownMenuItem onClick={() => setNoteQuote(q)}>
+                                          <Eye className="h-4 w-4 mr-2" />View Quote
+                                        </DropdownMenuItem>
+                                        {q.note && (
+                                          <DropdownMenuItem onClick={() => setNoteQuote(q)}>
+                                            <Eye className="h-4 w-4 mr-2" />View Note
+                                          </DropdownMenuItem>
+                                        )}
+                                        {q.status === 'declined' && q.declineReason && (
+                                          <DropdownMenuItem onClick={() => setViewDeclineQuote(q)}>
+                                            <MessageSquare className="h-4 w-4 mr-2" />View Decline Reason
+                                          </DropdownMenuItem>
+                                        )}
+                                        {q.status === 'active' && (
+                                          <DropdownMenuItem onClick={() => setAcceptQuote(q)} disabled={readOnly}>
+                                            <Check className="h-4 w-4 mr-2" />Accept Quote
+                                          </DropdownMenuItem>
+                                        )}
+                                        {q.status === 'declined' && (
+                                          <DropdownMenuItem onClick={() => navigate('/checkout', { state: { fromQuote: q.id, lineItems: q.lineItems } })} disabled={readOnly}>
+                                            <RefreshCw className="h-4 w-4 mr-2" />Regenerate
+                                          </DropdownMenuItem>
+                                        )}
+                                        <DropdownMenuItem onClick={() => toast({ title: 'PDF download coming soon', description: q.quoteNumber })}>
+                                          <Download className="h-4 w-4 mr-2" />Download PDF
+                                        </DropdownMenuItem>
+                                        {q.status === 'active' && (
+                                          <>
+                                            <DropdownMenuSeparator />
+                                            <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => setDeclineQuote(q)} disabled={readOnly}>
+                                              <X className="h-4 w-4 mr-2" />Decline Quote
+                                            </DropdownMenuItem>
+                                          </>
+                                        )}
+                                      </DropdownMenuContent>
+                                    </DropdownMenu>
                                   </TableCell>
                                 </TableRow>
                               );
@@ -629,6 +932,42 @@ export const SubscriptionsPage = () => {
         )}
       </div>
 
+      {/* Rename Subscription Dialog */}
+      <Dialog open={renameOpen} onOpenChange={setRenameOpen}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Rename Subscription</DialogTitle>
+            <DialogDescription>
+              Give this subscription a name that's meaningful to your team.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-1.5">
+            <Label htmlFor="sub-name">Subscription name</Label>
+            <Input
+              id="sub-name"
+              value={renameDraft}
+              onChange={(e) => setRenameDraft(e.target.value)}
+              autoFocus
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRenameOpen(false)}>Cancel</Button>
+            <Button
+              onClick={() => {
+                if (renameSubId && renameDraft.trim()) {
+                  renameSubscription(renameSubId, renameDraft.trim());
+                  toast({ title: 'Subscription renamed' });
+                  setRenameOpen(false);
+                }
+              }}
+              disabled={!renameDraft.trim()}
+            >
+              Save
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* Edit Billing Details Modal */}
       <Dialog open={editBillingOpen} onOpenChange={setEditBillingOpen}>
         <DialogContent className="max-w-md">
@@ -657,22 +996,22 @@ export const SubscriptionsPage = () => {
         </DialogContent>
       </Dialog>
 
-      <RenewalFlyout
-        open={renewalOpen}
-        onOpenChange={setRenewalOpen}
-        subscription={currentSub}
-        renewalPeriod="Jan 1, 2027 → Dec 31, 2027"
-      />
-
       <ManageLicensesDrawer
         open={manageOpen}
         onOpenChange={setManageOpen}
         subscription={manageSub}
         product={manageProd}
       />
-      <AcceptQuoteDialog open={!!acceptQuote} onOpenChange={(v) => !v && setAcceptQuote(null)} quote={acceptQuote} />
+      <AcceptQuoteDrawer open={!!acceptQuote} onOpenChange={(v) => !v && setAcceptQuote(null)} quote={acceptQuote} />
+      <RenewalFlyout
+        open={renewOpen}
+        onOpenChange={setRenewOpen}
+        subscriptionId={renewSubId}
+        invoiceId={renewInvoiceId}
+      />
       <DeclineQuoteDialog open={!!declineQuote} onOpenChange={(v) => !v && setDeclineQuote(null)} quote={declineQuote} />
       <ViewNoteDialog open={!!noteQuote} onOpenChange={(v) => !v && setNoteQuote(null)} quote={noteQuote} />
+      <ViewDeclineReasonDialog open={!!viewDeclineQuote} onOpenChange={(v) => !v && setViewDeclineQuote(null)} quote={viewDeclineQuote} />
       <RequestQuoteDialog open={requestQuoteOpen} onOpenChange={setRequestQuoteOpen} />
     </MainLayout>
   );

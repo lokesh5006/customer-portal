@@ -1,93 +1,199 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { MainLayout } from '@/components/layout/MainLayout';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Input } from '@/components/ui/input';
 import {
-  ListingPageHeader, SearchFilterCard, FilterField, DataTable, DataTableColumn, PaginationControls,
+  ListingPageHeader, DataTable, DataTableColumn, PaginationControls, SortableHeader, SortState,
 } from '@/components/listing';
-import { useApp, Quote } from '@/contexts/AppContext';
-import { FileSignature, Eye, Check, X, RefreshCw, Plus, MessageSquare } from 'lucide-react';
 import {
-  AcceptQuoteDialog, DeclineQuoteDialog, ViewNoteDialog, RequestQuoteDialog,
+  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator,
+} from '@/components/ui/dropdown-menu';
+import { useApp, Quote } from '@/contexts/AppContext';
+import {
+  FileSignature, Eye, Check, X, RefreshCw, Plus, MessageSquare, MoreVertical, Download, Search, Clock,
+} from 'lucide-react';
+import {
+  AcceptQuoteDrawer, DeclineQuoteDialog, ViewNoteDialog, ViewDeclineReasonDialog, RequestQuoteDialog,
 } from '@/components/subscriptions/QuoteDialogs';
+import { useToast } from '@/hooks/use-toast';
+import { useReadOnlyGuard, READ_ONLY_TOOLTIP } from '@/hooks/useReadOnlyGuard';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { formatCurrency } from '@/lib/format';
+import { cn } from '@/lib/utils';
+
+const QUOTE_STATUS_ORDER: Record<Quote['status'], number> = {
+  active: 0, accepted: 1, declined: 2, expired: 3,
+};
+
+const formatShortDate = (iso: string) =>
+  new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+
+const daysUntil = (iso: string) =>
+  Math.ceil((new Date(iso).getTime() - Date.now()) / (1000 * 60 * 60 * 24));
 
 export const QuotesPage = () => {
   const navigate = useNavigate();
-  const { currentCompany, getCompanyQuotes, getCompanyQuoteRequests, getCompanySubscriptions, hasAccess } = useApp();
+  const { toast } = useToast();
+  const { getCompanyQuotes, getCompanyQuoteRequests, getCompanySubscriptions, hasAccess } = useApp();
+  const { readOnly } = useReadOnlyGuard();
   const quotes = getCompanyQuotes();
   const quoteRequests = getCompanyQuoteRequests();
-  const canAccept = hasAccess(['owner', 'billing']);
-  const hasActiveSubscription = getCompanySubscriptions().some(s => ['active', 'overdue', 'pending_payment'].includes(s.status));
+  const canAccept = hasAccess(['account_owner', 'billing_admin']) && !readOnly;
+  const hasActivePaidSubscription = getCompanySubscriptions().some(s => s.status === 'active');
 
   const [searchQuery, setSearchQuery] = useState('');
-  const [statusFilter, setStatusFilter] = useState('all');
+  const [sort, setSort] = useState<SortState>({ key: null, direction: null });
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
 
   const [acceptQuote, setAcceptQuote] = useState<Quote | null>(null);
   const [declineQuote, setDeclineQuote] = useState<Quote | null>(null);
   const [noteQuote, setNoteQuote] = useState<Quote | null>(null);
+  const [viewDeclineQuote, setViewDeclineQuote] = useState<Quote | null>(null);
   const [requestOpen, setRequestOpen] = useState(false);
 
-  const filtered = quotes.filter(q => {
-    const matchesSearch = q.quoteNumber.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      q.lineItems.some(l => l.productName.toLowerCase().includes(searchQuery.toLowerCase()));
-    const matchesStatus = statusFilter === 'all' || q.status === statusFilter;
-    return matchesSearch && matchesStatus;
-  });
+  // Search across documented fields: quoteNumber/id, line item product names, note, declineReason.
+  const filtered = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return quotes;
+    return quotes.filter(qq => {
+      const haystack: string[] = [
+        qq.quoteNumber, qq.id, qq.note || '', qq.declineReason || '',
+        ...qq.lineItems.map(l => l.productName || ''),
+      ];
+      return haystack.some(v => v.toLowerCase().includes(q));
+    });
+  }, [quotes, searchQuery]);
 
-  const totalPages = Math.ceil(filtered.length / pageSize);
-  const paginated = filtered.slice((currentPage - 1) * pageSize, currentPage * pageSize);
+  const sorted = useMemo(() => {
+    if (!sort.key || !sort.direction) return filtered;
+    const dir = sort.direction === 'asc' ? 1 : -1;
+    return [...filtered].sort((a, b) => {
+      let av: string | number = '', bv: string | number = '';
+      switch (sort.key) {
+        case 'quoteNumber': av = a.quoteNumber.toLowerCase(); bv = b.quoteNumber.toLowerCase(); break;
+        case 'products': av = (a.lineItems[0]?.productName || '').toLowerCase(); bv = (b.lineItems[0]?.productName || '').toLowerCase(); break;
+        case 'createdDate': av = a.createdDate; bv = b.createdDate; break;
+        case 'expiryDate': av = a.expiryDate; bv = b.expiryDate; break;
+        case 'total': av = a.amount; bv = b.amount; break;
+        case 'status': av = QUOTE_STATUS_ORDER[a.status] ?? 99; bv = QUOTE_STATUS_ORDER[b.status] ?? 99; break;
+      }
+      if (av < bv) return -1 * dir;
+      if (av > bv) return 1 * dir;
+      return 0;
+    });
+  }, [filtered, sort]);
+
+  const totalPages = Math.max(1, Math.ceil(sorted.length / pageSize));
+  const paginated = sorted.slice((currentPage - 1) * pageSize, currentPage * pageSize);
 
   const statusColor = (s: Quote['status']) => {
     switch (s) {
-      case 'active': return 'status-active';
-      case 'accepted': return 'status-active';
-      case 'declined': return 'status-overdue';
-      case 'expired': return 'status-inactive';
+      case 'active': return 'bg-info/10 text-info border-info/30';
+      case 'accepted': return 'bg-success/10 text-success border-success/30';
+      case 'declined': return 'text-muted-foreground border-muted-foreground/40';
+      case 'expired': return 'bg-warning/10 text-warning border-warning/30';
     }
   };
 
+  const handleRegenerate = (q: Quote) => {
+    navigate('/checkout', { state: { fromQuote: q.id, lineItems: q.lineItems } });
+  };
+
   const columns: DataTableColumn<Quote>[] = [
-    { key: 'id', header: 'Quote #', render: q => <span className="font-medium">{q.quoteNumber}</span> },
-    { key: 'product', header: 'Product(s)', render: q => <div className="text-sm">{q.lineItems.map(l => l.productName).join(', ')}</div> },
-    { key: 'lic', header: 'Licenses', className: 'text-center', render: q => q.lineItems.reduce((a, l) => a + l.licenseCount, 0) },
-    { key: 'created', header: 'Created', render: q => new Date(q.createdDate).toLocaleDateString() },
-    { key: 'expires', header: 'Expires', render: q => new Date(q.expiryDate).toLocaleDateString() },
-    { key: 'amount', header: 'Amount', className: 'text-right', render: q => <span className="font-medium">${q.amount.toLocaleString()}</span> },
-    { key: 'status', header: 'Status', render: q => <Badge variant="outline" className={statusColor(q.status)}>{q.status}</Badge> },
     {
-      key: 'note', header: 'Note',
-      render: q => q.note ? (
-        <button className="text-xs text-primary hover:underline text-left" onClick={() => setNoteQuote(q)}>
-          {q.note.length > 30 ? q.note.slice(0, 30) + '…' : q.note}
-        </button>
-      ) : <span className="text-xs text-muted-foreground">—</span>,
+      key: 'quoteNumber',
+      header: <SortableHeader label="Quote ID" sortKey="quoteNumber" sort={sort} onSortChange={setSort} />,
+      render: q => <span className="font-mono text-sm">{q.quoteNumber}</span>,
     },
     {
-      key: 'actions', header: 'Actions', className: 'text-right',
+      key: 'products',
+      header: <SortableHeader label="Products" sortKey="products" sort={sort} onSortChange={setSort} />,
+      render: q => {
+        const names = q.lineItems.map(l => l.productName);
+        const label = names.length > 2 ? `${names.slice(0, 2).join(', ')} +${names.length - 2}` : names.join(', ');
+        return <div className="text-sm">{label}</div>;
+      },
+    },
+    {
+      key: 'createdDate',
+      header: <SortableHeader label="Created Date" sortKey="createdDate" sort={sort} onSortChange={setSort} />,
+      render: q => <span className="text-sm">{formatShortDate(q.createdDate)}</span>,
+    },
+    {
+      key: 'expiryDate',
+      header: <SortableHeader label="Expiry Date" sortKey="expiryDate" sort={sort} onSortChange={setSort} />,
+      render: q => {
+        const expiresIn = daysUntil(q.expiryDate);
+        const isExpiringSoon = q.status === 'active' && expiresIn >= 0 && expiresIn <= 3;
+        return (
+          <span className={cn('text-sm inline-flex items-center gap-1', isExpiringSoon && 'text-warning font-medium')}>
+            {isExpiringSoon && <Clock className="h-3.5 w-3.5" />}
+            {formatShortDate(q.expiryDate)}
+          </span>
+        );
+      },
+    },
+    {
+      key: 'total',
+      className: 'text-right',
+      header: <SortableHeader label="Total" sortKey="total" sort={sort} onSortChange={setSort} align="right" />,
+      render: q => <span className="font-medium">{formatCurrency(q.amount)}</span>,
+    },
+    {
+      key: 'status',
+      header: <SortableHeader label="Status" sortKey="status" sort={sort} onSortChange={setSort} />,
+      render: q => <Badge variant="outline" className={statusColor(q.status)}>{q.status}</Badge>,
+    },
+    {
+      key: 'actions', header: '', className: 'w-[50px] text-right',
       render: q => (
-        <div className="flex justify-end gap-1 items-center">
-          {q.status === 'active' && canAccept && (
-            <>
-              <Button size="sm" variant="outline" onClick={() => setAcceptQuote(q)}><Check className="h-3 w-3 mr-1" />Accept</Button>
-              <Button size="sm" variant="ghost" onClick={() => setDeclineQuote(q)}><X className="h-3 w-3 mr-1" />Decline</Button>
-            </>
-          )}
-          {q.status === 'expired' && (
-            <span className="text-xs text-muted-foreground" title="This quote has expired. Please generate a new quote.">Expired</span>
-          )}
-          {q.status === 'declined' && (
-            <Button size="sm" variant="outline" onClick={() => navigate(`/checkout?fromQuote=${q.quoteNumber}&product=${encodeURIComponent(q.lineItems[0]?.productName || '')}&licenses=${q.lineItems[0]?.licenseCount || 1}&note=${encodeURIComponent(q.note || '')}`)}>
-              <RefreshCw className="h-3 w-3 mr-1" />Regenerate Quote
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={(e) => e.stopPropagation()}>
+              <MoreVertical className="h-4 w-4" />
             </Button>
-          )}
-          {q.status === 'accepted' && (
-            <Button size="sm" variant="ghost" onClick={() => navigate('/invoices')}><Eye className="h-3 w-3 mr-1" />View Invoice</Button>
-          )}
-        </div>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem onClick={() => setNoteQuote(q)}>
+              <Eye className="h-4 w-4 mr-2" />View Quote
+            </DropdownMenuItem>
+            {q.note && (
+              <DropdownMenuItem onClick={() => setNoteQuote(q)}>
+                <Eye className="h-4 w-4 mr-2" />View Note
+              </DropdownMenuItem>
+            )}
+            {q.status === 'declined' && q.declineReason && (
+              <DropdownMenuItem onClick={() => setViewDeclineQuote(q)}>
+                <MessageSquare className="h-4 w-4 mr-2" />View Decline Reason
+              </DropdownMenuItem>
+            )}
+            {q.status === 'active' && canAccept && (
+              <DropdownMenuItem onClick={() => setAcceptQuote(q)} disabled={readOnly}>
+                <Check className="h-4 w-4 mr-2" />Accept Quote
+              </DropdownMenuItem>
+            )}
+            {q.status === 'declined' && (
+              <DropdownMenuItem onClick={() => handleRegenerate(q)} disabled={readOnly}>
+                <RefreshCw className="h-4 w-4 mr-2" />Regenerate
+              </DropdownMenuItem>
+            )}
+            <DropdownMenuItem onClick={() => toast({ title: 'PDF download coming soon', description: q.quoteNumber })}>
+              <Download className="h-4 w-4 mr-2" />Download PDF
+            </DropdownMenuItem>
+            {q.status === 'active' && canAccept && (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => setDeclineQuote(q)} disabled={readOnly}>
+                  <X className="h-4 w-4 mr-2" />Decline Quote
+                </DropdownMenuItem>
+              </>
+            )}
+          </DropdownMenuContent>
+        </DropdownMenu>
       ),
     },
   ];
@@ -97,56 +203,68 @@ export const QuotesPage = () => {
       <div className="space-y-6">
         <ListingPageHeader
           title="Quotes"
-          description={`Review, accept, or decline quotes for ${currentCompany?.name}`}
+          description="Review, accept, or decline quotes for new subscriptions and changes."
+          showCompanyContext={false}
           primaryAction={
-            hasActiveSubscription ? (
-              <Button onClick={() => setRequestOpen(true)}>
-                <MessageSquare className="h-4 w-4 mr-1" />Request a Quote
-              </Button>
-            ) : (
-              <Button onClick={() => navigate('/checkout')}>
-                <Plus className="h-4 w-4 mr-1" />New Quote
-              </Button>
-            )
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span tabIndex={0}>
+                  {hasActivePaidSubscription ? (
+                    <Button onClick={() => setRequestOpen(true)} disabled={readOnly}>
+                      <MessageSquare className="h-4 w-4 mr-1" />Request Quote
+                    </Button>
+                  ) : (
+                    <Button onClick={() => navigate('/checkout')} disabled={readOnly}>
+                      <Plus className="h-4 w-4 mr-1" />New Quote
+                    </Button>
+                  )}
+                </span>
+              </TooltipTrigger>
+              {readOnly && <TooltipContent>{READ_ONLY_TOOLTIP}</TooltipContent>}
+            </Tooltip>
           }
         />
 
-        {hasActiveSubscription && (
+        {hasActivePaidSubscription && (
           <div className="rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
             You already have an active subscription. To modify or add products/licenses, please request a quote.
           </div>
         )}
 
-        <SearchFilterCard
-          searchValue={searchQuery}
-          onSearchChange={(v) => { setSearchQuery(v); setCurrentPage(1); }}
-          searchPlaceholder="Search by quote # or product..."
-          onReset={() => { setSearchQuery(''); setStatusFilter('all'); setCurrentPage(1); }}
-          filters={
-            <FilterField label="Status" value={statusFilter} onChange={(v) => { setStatusFilter(v); setCurrentPage(1); }}
-              options={[
-                { value: 'all', label: 'All' },
-                { value: 'active', label: 'Active' },
-                { value: 'accepted', label: 'Accepted' },
-                { value: 'declined', label: 'Declined' },
-                { value: 'expired', label: 'Expired' },
-              ]}
+        <Card className="p-3">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            <Input
+              placeholder="Search quotes..."
+              value={searchQuery}
+              onChange={(e) => { setSearchQuery(e.target.value); setCurrentPage(1); }}
+              className="pl-9"
             />
-          }
-        />
+          </div>
+        </Card>
 
         <div>
-          <DataTable columns={columns} data={paginated} keyExtractor={q => q.id}
-            emptyMessage="No quotes available." emptyIcon={<FileSignature className="h-12 w-12 text-muted-foreground" />}
-          />
-          <Card className="rounded-t-none border-t-0">
-            <PaginationControls
-              currentPage={currentPage} totalPages={totalPages} pageSize={pageSize}
-              totalRecords={filtered.length}
-              onPageChange={setCurrentPage}
-              onPageSizeChange={(s) => { setPageSize(s); setCurrentPage(1); }}
-            />
-          </Card>
+          {sorted.length === 0 && searchQuery ? (
+            <Card className="p-12 flex flex-col items-center gap-2 text-center">
+              <FileSignature className="h-10 w-10 text-muted-foreground" />
+              <p className="text-sm text-muted-foreground">No quotes match your search.</p>
+              <Button variant="outline" size="sm" onClick={() => setSearchQuery('')}>Clear search</Button>
+            </Card>
+          ) : (
+            <>
+              <DataTable columns={columns} data={paginated} keyExtractor={q => q.id}
+                emptyMessage="No quotes available." emptyIcon={<FileSignature className="h-12 w-12 text-muted-foreground" />}
+              />
+              <Card className="rounded-t-none border-t-0">
+                <PaginationControls
+                  currentPage={currentPage} totalPages={totalPages} pageSize={pageSize}
+                  totalRecords={sorted.length}
+                  onPageChange={setCurrentPage}
+                  onPageSizeChange={(s) => { setPageSize(s); setCurrentPage(1); }}
+                />
+              </Card>
+            </>
+          )}
         </div>
 
         {quoteRequests.length > 0 && (
@@ -168,9 +286,10 @@ export const QuotesPage = () => {
         )}
       </div>
 
-      <AcceptQuoteDialog open={!!acceptQuote} onOpenChange={(v) => !v && setAcceptQuote(null)} quote={acceptQuote} />
+      <AcceptQuoteDrawer open={!!acceptQuote} onOpenChange={(v) => !v && setAcceptQuote(null)} quote={acceptQuote} />
       <DeclineQuoteDialog open={!!declineQuote} onOpenChange={(v) => !v && setDeclineQuote(null)} quote={declineQuote} />
       <ViewNoteDialog open={!!noteQuote} onOpenChange={(v) => !v && setNoteQuote(null)} quote={noteQuote} />
+      <ViewDeclineReasonDialog open={!!viewDeclineQuote} onOpenChange={(v) => !v && setViewDeclineQuote(null)} quote={viewDeclineQuote} />
       <RequestQuoteDialog open={requestOpen} onOpenChange={setRequestOpen} />
     </MainLayout>
   );

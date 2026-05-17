@@ -24,7 +24,7 @@ export const UsersContactsPage = () => {
   return (
     <div>
       {/* Sticky tab bar above the page content */}
-      <div className="sticky top-14 z-30 bg-background border-b">
+      <div className="sticky top-16 z-30 bg-background border-b">
         <div className="container mx-auto px-6">
           <Tabs value={tab} onValueChange={handleChange}>
             <TabsList className="my-2">

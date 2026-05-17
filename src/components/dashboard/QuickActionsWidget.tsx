@@ -7,6 +7,7 @@ import {
   CreditCard, Key, Download, LifeBuoy, Settings, RefreshCw,
 } from 'lucide-react';
 import { RenewalFlyout } from '@/components/billing/RenewalFlyout';
+import { openProfileDrawer } from '@/lib/profileDrawer';
 
 export const QuickActionsWidget = () => {
   const navigate = useNavigate();
@@ -19,9 +20,24 @@ export const QuickActionsWidget = () => {
   const totalOverdue = overdueInvoices.reduce((a, i) => a + i.balance, 0);
   const hasOverdue = overdueInvoices.length > 0;
 
-  const isOwner = hasAccess(['owner']);
-  const isBilling = hasAccess(['billing']);
+  const isOwner = hasAccess(['account_owner']);
+  const isBilling = hasAccess(['billing_admin']);
   const canManage = isOwner || isBilling;
+
+  const payOverdue = () => {
+    const first = overdueInvoices[0];
+    if (!first) return;
+    navigate('/pay', {
+      state: {
+        source: 'invoice',
+        invoiceId: first.id,
+        subtotal: first.amount,
+        tax: 0,
+        totalAmount: first.amount,
+        returnTo: '/dashboard',
+      },
+    });
+  };
 
   return (
     <Card>
@@ -29,7 +45,7 @@ export const QuickActionsWidget = () => {
       <CardContent>
         <div className="flex flex-wrap gap-2">
           {hasOverdue && canManage && (
-            <Button variant="destructive" onClick={() => setRenewalOpen(true)}>
+            <Button variant="destructive" onClick={payOverdue}>
               <CreditCard className="h-4 w-4 mr-2" />Pay Dues – ${totalOverdue.toLocaleString()}
             </Button>
           )}
@@ -49,7 +65,7 @@ export const QuickActionsWidget = () => {
           <Button variant="outline" onClick={() => navigate('/support')}>
             <LifeBuoy className="h-4 w-4 mr-2" />Support
           </Button>
-          <Button variant="outline" onClick={() => navigate('/profile')}>
+          <Button variant="outline" onClick={() => openProfileDrawer('profile')}>
             <Settings className="h-4 w-4 mr-2" />Profile
           </Button>
         </div>
@@ -57,8 +73,7 @@ export const QuickActionsWidget = () => {
       <RenewalFlyout
         open={renewalOpen}
         onOpenChange={setRenewalOpen}
-        subscription={subs[0] || null}
-        renewalPeriod="Jan 1, 2027 → Dec 31, 2027"
+        subscriptionId={subs[0]?.id || ''}
       />
     </Card>
   );

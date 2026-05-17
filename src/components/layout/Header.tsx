@@ -1,7 +1,7 @@
-import { useState } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
-import { ChevronDown, User, LogOut, Building2, Settings, AlertTriangle } from 'lucide-react';
-import { useApp, UserRole } from '@/contexts/AppContext';
+import { useEffect, useMemo, useState } from 'react';
+import { useNavigate, useLocation, useSearchParams } from 'react-router-dom';
+import { ChevronDown, LogOut, Settings, AlertTriangle, Bell } from 'lucide-react';
+import { useApp, Role, ROLE_LABELS, ROLE_BADGE_CLASS, User as AppUser } from '@/contexts/AppContext';
 import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
@@ -12,32 +12,32 @@ import {
   DropdownMenuLabel,
   DropdownMenuCheckboxItem,
 } from '@/components/ui/dropdown-menu';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
+import { ProfileSettingsDrawer } from '@/components/profile/ProfileSettingsDrawer';
+import { PROFILE_DRAWER_EVENT, openProfileDrawer, ProfileDrawerTab } from '@/lib/profileDrawer';
+import { NotificationPanel } from '@/components/notifications/NotificationPanel';
 
-const roleLabels: Record<UserRole, string> = {
-  owner: 'Account Owner',
-  billing: 'Billing User',
-  admin: 'Firm Admin',
-  standard: 'Standard User',
-};
+const roleLabels = ROLE_LABELS;
+const roleColors = ROLE_BADGE_CLASS;
 
-const roleColors: Record<UserRole, string> = {
-  owner: 'badge-owner',
-  billing: 'badge-billing',
-  admin: 'badge-admin',
-  standard: 'badge-standard',
+const getInitials = (user: AppUser | null | undefined): string => {
+  if (!user) return '??';
+  const first = (user.firstName || '').trim().charAt(0).toUpperCase();
+  const last = (user.lastName || '').trim().charAt(0).toUpperCase();
+  if (first || last) return `${first}${last}`;
+  return (user.email || '').slice(0, 2).toUpperCase();
 };
 
 export const Header = () => {
   const navigate = useNavigate();
   const location = useLocation();
+  const [searchParams] = useSearchParams();
   const {
     currentUser,
-    currentCompany,
-    companies,
-    selectCompany,
     logout,
     demoRoles,
     setDemoRoles,
@@ -46,52 +46,73 @@ export const Header = () => {
     isProxySession,
     proxiedUser,
     endProxySession,
-    hasAccess,
+    getUserNotifications,
+    getUnreadNotificationCount,
+    markNotificationRead,
+    markAllNotificationsRead,
   } = useApp();
 
-  const handleCompanyChange = (companyId: string) => {
-    selectCompany(companyId);
-  };
+  const [profileDrawerOpen, setProfileDrawerOpen] = useState(false);
+  const [profileDrawerTab, setProfileDrawerTab] = useState<ProfileDrawerTab>('profile');
+  const [bellOpen, setBellOpen] = useState(false);
+
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail as { tab?: ProfileDrawerTab } | undefined;
+      if (detail?.tab) setProfileDrawerTab(detail.tab);
+      else setProfileDrawerTab('profile');
+      setProfileDrawerOpen(true);
+    };
+    window.addEventListener(PROFILE_DRAWER_EVENT, handler);
+    return () => window.removeEventListener(PROFILE_DRAWER_EVENT, handler);
+  }, []);
+
+  const demoMode = useMemo(() => {
+    if (searchParams.get('demo') === '1') {
+      sessionStorage.setItem('leimberg.demoMode', '1');
+      return true;
+    }
+    return sessionStorage.getItem('leimberg.demoMode') === '1';
+  }, [searchParams]);
+
+  const notifications = useMemo(() => getUserNotifications(), [getUserNotifications]);
+  const unreadCount = useMemo(() => getUnreadNotificationCount(), [getUnreadNotificationCount]);
 
   const handleLogout = () => {
     logout();
     navigate('/');
   };
 
-  const handleRoleToggle = (role: UserRole) => {
-    if (demoRoles.includes(role)) {
-      if (demoRoles.length > 1) {
-        setDemoRoles(demoRoles.filter(r => r !== role));
-      }
-    } else {
-      setDemoRoles([...demoRoles, role]);
-    }
+  const openProfileSettings = () => {
+    setProfileDrawerTab('profile');
+    setProfileDrawerOpen(true);
   };
 
-  // Check if current page is accessible with new roles
-  const checkPageAccess = (newRoles: UserRole[]) => {
-    const pageAccess: Record<string, UserRole[]> = {
-      '/dashboard': ['owner', 'billing', 'admin', 'standard'],
-      '/users': ['owner', 'admin'],
-      '/subscriptions': ['owner', 'billing', 'admin'],
-      '/licenses': ['owner', 'admin'],
-      '/billing': ['owner', 'billing'],
-      '/downloads': ['owner', 'billing', 'admin', 'standard'],
-      '/news': ['owner', 'billing', 'admin', 'standard'],
-      '/support': ['owner', 'billing', 'admin', 'standard'],
-      '/profile': ['owner', 'billing', 'admin', 'standard'],
+  const checkPageAccess = (newRoles: Role[]) => {
+    const pageAccess: Record<string, Role[]> = {
+      '/dashboard': ['account_owner', 'billing_admin', 'license_admin', 'registered_contact'],
+      '/users': ['account_owner', 'billing_admin', 'license_admin', 'registered_contact'],
+      '/users-contacts': ['account_owner', 'billing_admin', 'license_admin', 'registered_contact'],
+      '/subscriptions': ['account_owner', 'billing_admin', 'license_admin'],
+      '/billing': ['account_owner', 'billing_admin'],
+      '/invoices': ['account_owner', 'billing_admin'],
+      '/quotes': ['account_owner', 'billing_admin'],
+      '/downloads': ['account_owner', 'billing_admin', 'license_admin', 'registered_contact'],
+      '/news': ['account_owner', 'billing_admin', 'license_admin', 'registered_contact'],
+      '/support': ['account_owner', 'billing_admin', 'license_admin', 'registered_contact'],
+      '/admin': ['account_owner', 'license_admin'],
     };
 
     const currentPath = location.pathname;
     const requiredRoles = pageAccess[currentPath] || [];
-    
+
     let effectiveRoles = [...newRoles];
-    if (billingHasAdminAccess && newRoles.includes('billing') && !newRoles.includes('admin')) {
-      effectiveRoles.push('admin');
+    if (billingHasAdminAccess && newRoles.includes('billing_admin') && !newRoles.includes('license_admin')) {
+      effectiveRoles.push('license_admin');
     }
-    
+
     const hasPageAccess = requiredRoles.some(role => effectiveRoles.includes(role));
-    
+
     if (!hasPageAccess && currentPath !== '/dashboard') {
       navigate('/dashboard');
     }
@@ -101,8 +122,8 @@ export const Header = () => {
 
   return (
     <>
-      {/* Proxy Session Banner */}
-      {isProxySession && proxiedUser && (
+      {/* Proxy Session Banner — only visible during a proxy session AND in demo mode */}
+      {demoMode && isProxySession && proxiedUser && (
         <div className="proxy-banner px-4 py-2 flex items-center justify-between bg-warning/10 border-b border-warning/30">
           <div className="flex items-center gap-2">
             <AlertTriangle className="h-4 w-4 text-warning" />
@@ -122,59 +143,41 @@ export const Header = () => {
           </Button>
         </div>
       )}
-      
-      <header className="h-14 border-b bg-card flex items-center justify-between px-4 sticky top-0 z-40">
+
+      <header className="h-16 border-b bg-background flex items-center justify-between px-6 sticky top-0 z-40">
         <div className="flex items-center gap-4">
           {/* Logo */}
-          <div className="flex items-center gap-2">
-            <div className="h-8 w-8 rounded-lg bg-primary flex items-center justify-center">
-              <span className="text-primary-foreground font-bold text-sm">NC</span>
-            </div>
-            <span className="font-semibold text-foreground hidden sm:inline">NumberCruncher</span>
+          <div className="flex items-center">
+            <img
+              src="/leimberg-logo.png"
+              alt="Leimberg, LeClair & Lackner, Inc."
+              className="h-7 dark:brightness-0 dark:invert"
+            />
           </div>
-
-          {/* Company Switcher */}
-          {currentCompany && (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="ghost" className="gap-2 text-muted-foreground hover:text-foreground">
-                  <Building2 className="h-4 w-4" />
-                  <span className="hidden sm:inline">{currentCompany.name}</span>
-                  <ChevronDown className="h-4 w-4" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="start" className="w-56">
-                <DropdownMenuLabel>Switch Company</DropdownMenuLabel>
-                <DropdownMenuSeparator />
-                {companies.map(company => (
-                  <DropdownMenuItem
-                    key={company.id}
-                    onClick={() => handleCompanyChange(company.id)}
-                    className={company.id === currentCompany.id ? 'bg-accent' : ''}
-                  >
-                    <Building2 className="h-4 w-4 mr-2" />
-                    {company.name}
-                  </DropdownMenuItem>
-                ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          )}
         </div>
 
-        <div className="flex items-center gap-3">
-          {/* Role Switcher (Demo) */}
+        <div className="flex items-center gap-2">
+          {/* Role Demo dropdown */}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="outline" size="sm" className="gap-2">
+              <Button variant="outline" size="sm" className="gap-2 h-9">
+                <span className="text-xs text-muted-foreground mr-1">Demo:</span>
                 <Settings className="h-4 w-4" />
-                <span className="hidden sm:inline">Role Demo</span>
+                <span className="hidden sm:inline">Role</span>
                 <ChevronDown className="h-4 w-4" />
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-64">
-              <DropdownMenuLabel>Demo Role Switcher</DropdownMenuLabel>
+            <DropdownMenuContent align="end" className="w-72">
+              <DropdownMenuLabel>
+                <div className="flex flex-col gap-1">
+                  <span>Demo Role Switcher</span>
+                  <span className="text-xs font-normal text-muted-foreground">
+                    Switch roles to preview different user experiences. Demo only.
+                  </span>
+                </div>
+              </DropdownMenuLabel>
               <DropdownMenuSeparator />
-              {(['owner', 'billing', 'admin', 'standard'] as UserRole[]).map(role => (
+              {(['account_owner', 'billing_admin', 'license_admin', 'registered_contact'] as Role[]).map(role => (
                 <DropdownMenuCheckboxItem
                   key={role}
                   checked={demoRoles.includes(role)}
@@ -223,40 +226,94 @@ export const Header = () => {
             )}
           </div>
 
+          {/* Notification Bell */}
+          <Popover open={bellOpen} onOpenChange={setBellOpen}>
+            <PopoverTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="relative h-9 w-9"
+                aria-label={`Notifications${unreadCount > 0 ? `, ${unreadCount} unread` : ''}`}
+              >
+                <Bell className="h-4 w-4" />
+                {unreadCount > 0 && (
+                  <span className="absolute top-2 right-2 h-2 w-2 rounded-full bg-destructive border-2 border-background" />
+                )}
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="end" className="w-96 p-0">
+              <NotificationPanel
+                notifications={notifications}
+                onItemClick={(n) => {
+                  markNotificationRead(n.id);
+                  setBellOpen(false);
+                  if (n.link) navigate(n.link);
+                }}
+                onMarkAllRead={() => markAllNotificationsRead()}
+                onSettingsClick={() => {
+                  setBellOpen(false);
+                  openProfileDrawer('notifications');
+                }}
+              />
+            </PopoverContent>
+          </Popover>
+
           {/* User Menu */}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="ghost" className="gap-2">
-                <div className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center">
-                  <User className="h-4 w-4 text-primary" />
-                </div>
-                <span className="hidden sm:inline text-sm">
+              <Button variant="ghost" className="h-9 px-2 gap-2" aria-label="Open user menu">
+                <Avatar className="h-7 w-7">
+                  <AvatarFallback className="bg-primary/10 text-primary text-xs font-semibold">
+                    {getInitials(displayUser)}
+                  </AvatarFallback>
+                </Avatar>
+                <span className="hidden md:inline text-sm font-medium">
                   {displayUser?.firstName} {displayUser?.lastName}
                 </span>
-                <ChevronDown className="h-4 w-4" />
+                <ChevronDown className="h-4 w-4 text-muted-foreground" />
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-56">
-              <DropdownMenuLabel>
-                <div className="flex flex-col">
-                  <span>{displayUser?.firstName} {displayUser?.lastName}</span>
-                  <span className="text-xs text-muted-foreground font-normal">{displayUser?.email}</span>
+            <DropdownMenuContent align="end" className="w-64">
+              <DropdownMenuLabel className="font-normal">
+                <div className="flex items-center gap-3">
+                  <Avatar className="h-9 w-9">
+                    <AvatarFallback className="bg-primary/10 text-primary text-sm font-semibold">
+                      {getInitials(displayUser)}
+                    </AvatarFallback>
+                  </Avatar>
+                  <div className="flex flex-col min-w-0">
+                    <p className="text-sm font-medium truncate">
+                      {displayUser?.firstName} {displayUser?.lastName}
+                    </p>
+                    <p className="text-xs text-muted-foreground truncate">
+                      {displayUser?.email}
+                    </p>
+                  </div>
                 </div>
               </DropdownMenuLabel>
               <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={() => navigate('/profile')}>
-                <User className="h-4 w-4 mr-2" />
-                Profile
+              <DropdownMenuItem onClick={openProfileSettings}>
+                <Settings className="h-4 w-4 mr-2" />
+                Settings / Profile
               </DropdownMenuItem>
               <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={handleLogout} className="text-destructive">
+              <DropdownMenuItem
+                onClick={handleLogout}
+                className="text-destructive focus:text-destructive"
+              >
                 <LogOut className="h-4 w-4 mr-2" />
-                Sign Out
+                Log out
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
       </header>
+
+      <ProfileSettingsDrawer
+        open={profileDrawerOpen}
+        onOpenChange={setProfileDrawerOpen}
+        initialTab={profileDrawerTab}
+      />
     </>
   );
 };

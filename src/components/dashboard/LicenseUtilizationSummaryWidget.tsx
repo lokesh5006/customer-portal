@@ -11,7 +11,7 @@ export const LicenseUtilizationSummaryWidget = () => {
   const { getCompanySubscriptions, getAssignedLicenseCount, hasAccess } = useApp();
 
   const subscriptions = getCompanySubscriptions();
-  const canManage = hasAccess(['owner', 'admin']);
+  const canManage = hasAccess(['account_owner', 'license_admin']);
 
   const rows = subscriptions.flatMap(sub =>
     sub.products.map(prod => {

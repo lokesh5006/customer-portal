@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription, SheetFooter,
 } from '@/components/ui/sheet';
@@ -14,51 +15,37 @@ import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Checkbox } from '@/components/ui/checkbox';
 import { useApp, Subscription, SubscriptionProduct, Quote, PaymentMethod } from '@/contexts/AppContext';
 import { useToast } from '@/hooks/use-toast';
-import { Plus, Minus, CheckCircle2, Lock } from 'lucide-react';
+import { Plus, Minus, CheckCircle2 } from 'lucide-react';
 
 /* ============================================================
  * Payment Method Picker (radio cards)
  * ========================================================== */
 const PaymentMethodPicker = ({
-  value, onChange, available, payOnTermsEnabled, terms,
+  value, onChange, available, terms,
 }: {
   value: PaymentMethod | '';
   onChange: (v: PaymentMethod) => void;
   available: PaymentMethod[];
-  payOnTermsEnabled: boolean;
   terms?: string;
 }) => {
-  const cards: { id: PaymentMethod; title: string; desc: string }[] = [
+  const cardsForAvailable: { id: PaymentMethod; title: string; desc: string }[] = [
     { id: 'pay_immediately', title: 'Pay Immediately', desc: 'Pay now and activate your subscription after successful payment.' },
     { id: 'pay_on_receipt', title: 'Pay on Receipt', desc: 'An invoice will be generated. Subscription will be activated after payment is received.' },
     { id: 'pay_on_terms', title: 'Pay on Terms', desc: terms ? `Invoice will be generated under approved payment terms (${terms}).` : 'Invoice will be generated under approved payment terms.' },
   ];
   return (
     <RadioGroup value={value} onValueChange={(v) => onChange(v as PaymentMethod)} className="space-y-2">
-      {cards.map(c => {
-        const isAvail = available.includes(c.id);
-        const isTerms = c.id === 'pay_on_terms';
-        if (isTerms && !payOnTermsEnabled) {
-          return (
-            <label key={c.id} className="flex items-start gap-2 border rounded-md p-3 opacity-60 cursor-not-allowed bg-muted/30">
-              <Lock className="h-4 w-4 mt-0.5 text-muted-foreground" />
-              <div>
-                <div className="text-sm font-medium">{c.title}</div>
-                <div className="text-xs text-muted-foreground">Pay on Terms is not enabled for this company.</div>
-              </div>
-            </label>
-          );
-        }
-        return (
+      {cardsForAvailable
+        .filter(c => available.includes(c.id))
+        .map(c => (
           <label key={c.id} className={`flex items-start gap-2 border rounded-md p-3 cursor-pointer hover:bg-muted/40 ${value === c.id ? 'border-primary bg-primary/5' : ''}`}>
-            <RadioGroupItem value={c.id} className="mt-0.5" disabled={!isAvail} />
+            <RadioGroupItem value={c.id} className="mt-0.5" />
             <div>
               <div className="text-sm font-medium">{c.title}</div>
               <div className="text-xs text-muted-foreground">{c.desc}</div>
             </div>
           </label>
-        );
-      })}
+        ))}
     </RadioGroup>
   );
 };
@@ -82,16 +69,17 @@ export const ManageLicensesDrawer = ({
   const assigned = subscription && product ? getAssignedLicenseCount(subscription.id, product.id) : 0;
   const cfg = getCompanyConfig(subscription?.companyId);
   const available = getAvailablePaymentMethods(subscription?.companyId);
+  const defaultMethod: PaymentMethod = available.includes('pay_on_terms') ? 'pay_on_terms' : 'pay_on_receipt';
 
   const [seatCount, setSeatCount] = useState(current);
-  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod | ''>('');
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>(defaultMethod);
   const [savedMessage, setSavedMessage] = useState<string | null>(null);
 
   useEffect(() => {
     setSeatCount(current);
-    setPaymentMethod('');
+    setPaymentMethod(defaultMethod);
     setSavedMessage(null);
-  }, [current, product?.id, open]);
+  }, [current, product?.id, open, defaultMethod]);
 
   const minusDisabled = seatCount <= purchased;
   const delta = seatCount - current;
@@ -104,11 +92,7 @@ export const ManageLicensesDrawer = ({
       setSavedMessage('No license changes to save.');
       return;
     }
-    if (requiresPayment && !paymentMethod) {
-      toast({ title: 'Please select a payment method to continue.', variant: 'destructive' });
-      return;
-    }
-    const result = requestLicenseChange(subscription.id, product.id, seatCount, requiresPayment ? (paymentMethod as PaymentMethod) : 'pay_on_receipt');
+    const result = requestLicenseChange(subscription.id, product.id, seatCount, requiresPayment ? paymentMethod : defaultMethod);
     if (delta < 0) {
       setSavedMessage('License count updated successfully.');
       toast({ title: 'License count updated successfully.' });
@@ -189,7 +173,6 @@ export const ManageLicensesDrawer = ({
                     value={paymentMethod}
                     onChange={setPaymentMethod}
                     available={available}
-                    payOnTermsEnabled={cfg.payOnTermsEnabled}
                     terms={cfg.terms}
                   />
                 </div>
@@ -221,30 +204,48 @@ export const ManageLicensesDrawer = ({
 };
 
 /* ============================================================
- * Accept Quote Dialog
+ * Accept Quote Drawer (side Sheet)
  * ========================================================== */
-export const AcceptQuoteDialog = ({
+export const AcceptQuoteDrawer = ({
   open, onOpenChange, quote,
 }: { open: boolean; onOpenChange: (v: boolean) => void; quote: Quote | null }) => {
+  const navigate = useNavigate();
   const { acceptQuote, getCompanyConfig, getAvailablePaymentMethods } = useApp();
   const { toast } = useToast();
-  const [poNumber, setPoNumber] = useState('');
-  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod | ''>('');
   const cfg = getCompanyConfig(quote?.companyId);
   const available = getAvailablePaymentMethods(quote?.companyId);
+  const defaultMethod: PaymentMethod = available.includes('pay_on_terms') ? 'pay_on_terms' : 'pay_on_receipt';
+  const [poNumber, setPoNumber] = useState('');
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>(defaultMethod);
 
   useEffect(() => {
     if (open) {
       setPoNumber(quote?.poNumber || '');
-      setPaymentMethod('');
+      setPaymentMethod(defaultMethod);
     }
-  }, [open, quote?.poNumber]);
+  }, [open, quote?.poNumber, defaultMethod]);
 
   if (!quote) return null;
 
+  const subtotal = quote.amount;
+  const tax = Math.round(subtotal * 0.07 * 100) / 100;
+  const total = Math.round((subtotal + tax) * 100) / 100;
+
   const handleConfirm = () => {
-    if (!paymentMethod) {
-      toast({ title: 'Please select a payment method to continue.', variant: 'destructive' });
+    if (paymentMethod === 'pay_immediately') {
+      onOpenChange(false);
+      navigate('/pay', {
+        state: {
+          source: 'quote',
+          quoteId: quote.id,
+          lineItems: quote.lineItems,
+          subtotal,
+          tax,
+          totalAmount: total,
+          returnTo: '/quotes',
+          poNumber: poNumber || undefined,
+        },
+      });
       return;
     }
     const result = acceptQuote(quote.id, { poNumber: poNumber || undefined, paymentMethod });
@@ -252,9 +253,7 @@ export const AcceptQuoteDialog = ({
       toast({ title: 'Unable to accept quote', description: 'This quote has expired.', variant: 'destructive' });
       return;
     }
-    if (paymentMethod === 'pay_immediately') {
-      toast({ title: 'Quote accepted and payment completed.', description: `Subscription activated. Invoice ${result.invoice.invoiceNumber}.` });
-    } else if (paymentMethod === 'pay_on_terms') {
+    if (paymentMethod === 'pay_on_terms') {
       toast({ title: 'Quote accepted under approved payment terms.', description: `Subscription activated. Invoice ${result.invoice.invoiceNumber}.` });
     } else {
       toast({ title: 'Quote accepted.', description: `Invoice ${result.invoice.invoiceNumber} generated. Subscription activates after payment.` });
@@ -263,14 +262,14 @@ export const AcceptQuoteDialog = ({
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle>Accept Quote</DialogTitle>
-          <DialogDescription>Review and confirm acceptance of this quote.</DialogDescription>
-        </DialogHeader>
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent side="right" className="w-full sm:max-w-xl flex flex-col">
+        <SheetHeader>
+          <SheetTitle>Accept Quote</SheetTitle>
+          <SheetDescription>Review and confirm acceptance of this quote.</SheetDescription>
+        </SheetHeader>
 
-        <div className="space-y-4">
+        <div className="flex-1 overflow-y-auto space-y-4 py-4">
           <div className="rounded-md border p-3 text-sm space-y-1">
             <div className="flex justify-between"><span className="text-muted-foreground">Quote #</span><span className="font-medium">{quote.quoteNumber}</span></div>
             <div className="flex justify-between"><span className="text-muted-foreground">Products</span><span className="font-medium text-right">{quote.lineItems.map(l => `${l.productName} (${l.licenseCount})`).join(', ')}</span></div>
@@ -281,7 +280,10 @@ export const AcceptQuoteDialog = ({
           </div>
 
           <div>
-            <Label htmlFor="po">PO Number</Label>
+            <Label htmlFor="po">PO Number (optional)</Label>
+            <p className="text-xs text-muted-foreground mb-1.5">
+              Provide a purchase order reference if required by your company.
+            </p>
             <Input id="po" value={poNumber} onChange={(e) => setPoNumber(e.target.value)} placeholder="Enter PO number if applicable" />
           </div>
 
@@ -292,21 +294,25 @@ export const AcceptQuoteDialog = ({
                 value={paymentMethod}
                 onChange={setPaymentMethod}
                 available={available}
-                payOnTermsEnabled={cfg.payOnTermsEnabled}
                 terms={cfg.terms}
               />
             </div>
           </div>
         </div>
 
-        <DialogFooter>
+        <SheetFooter className="gap-2">
           <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-          <Button onClick={handleConfirm}>Confirm Acceptance</Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+          <Button onClick={handleConfirm}>
+            {paymentMethod === 'pay_immediately' ? 'Continue to Payment' : 'Confirm Acceptance'}
+          </Button>
+        </SheetFooter>
+      </SheetContent>
+    </Sheet>
   );
 };
+
+// Backward-compat alias so existing imports of AcceptQuoteDialog continue to work
+export const AcceptQuoteDialog = AcceptQuoteDrawer;
 
 /* ============================================================
  * Decline Quote Dialog
@@ -336,12 +342,45 @@ export const DeclineQuoteDialog = ({
           <DialogDescription>Are you sure you want to decline this quote?</DialogDescription>
         </DialogHeader>
         <div className="space-y-2">
-          <Label htmlFor="reason">Reason / Note (optional)</Label>
-          <Textarea id="reason" value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Add reason for declining quote" />
+          <Label htmlFor="reason">Reason (optional)</Label>
+          <Textarea
+            id="reason"
+            value={reason}
+            onChange={(e) => setReason(e.target.value.slice(0, 500))}
+            placeholder="Help us understand why you're declining this quote..."
+            rows={3}
+            maxLength={500}
+          />
+          <p className="text-xs text-muted-foreground">{reason.length}/500</p>
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
           <Button variant="destructive" onClick={handleDecline}>Decline Quote</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+};
+
+/* ============================================================
+ * View Decline Reason Dialog
+ * ========================================================== */
+export const ViewDeclineReasonDialog = ({
+  open, onOpenChange, quote,
+}: { open: boolean; onOpenChange: (v: boolean) => void; quote: Quote | null }) => {
+  if (!quote) return null;
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Decline Reason — {quote.quoteNumber}</DialogTitle>
+          <DialogDescription>Reason recorded when this quote was declined.</DialogDescription>
+        </DialogHeader>
+        <div className="rounded-md border bg-muted/30 p-3 text-sm whitespace-pre-wrap">
+          {quote.declineReason || '—'}
+        </div>
+        <DialogFooter>
+          <Button onClick={() => onOpenChange(false)}>Close</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

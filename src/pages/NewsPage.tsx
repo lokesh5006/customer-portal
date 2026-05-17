@@ -17,7 +17,7 @@ const newsItems = [
     id: '2',
     title: 'Spring 2026 Rate Updates',
     date: '2026-03-15',
-    summary: 'Updated tax rate tables are now available for Q2 2026. Make sure to update your Rate Module.',
+    summary: 'Updated tax rate tables are now available for Q2 2026. Make sure to apply the latest updates from the Downloads page.',
     category: 'Industry',
   },
   {
@@ -54,7 +54,7 @@ export const NewsPage = () => {
       <div className="space-y-6">
         <ListingPageHeader
           title="News"
-          description="Stay up to date with the latest updates and announcements"
+          description="Latest announcements and product updates."
           showCompanyContext={false}
         />
 

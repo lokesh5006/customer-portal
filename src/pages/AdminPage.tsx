@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { MainLayout } from '@/components/layout/MainLayout';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -9,11 +10,24 @@ import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useApp, PaymentTerms } from '@/contexts/AppContext';
 import { useToast } from '@/hooks/use-toast';
-import { Building2, ShieldCheck, Save } from 'lucide-react';
+import { useReadOnlyGuard } from '@/hooks/useReadOnlyGuard';
+import { Building2, ShieldCheck, Save, RefreshCw, AlertOctagon, Undo2 } from 'lucide-react';
 
 export const AdminPage = () => {
-  const { companies, getCompanyConfig, updateCompanyConfig } = useApp();
+  const {
+    companies, getCompanyConfig, updateCompanyConfig, forceGenerateRenewalInvoices,
+    forceSuspendCurrentSubscription, restoreActiveSubscription,
+  } = useApp();
   const { toast } = useToast();
+  const { readOnly } = useReadOnlyGuard();
+  const [searchParams] = useSearchParams();
+  const demoMode = useMemo(() => {
+    if (searchParams.get('demo') === '1') {
+      sessionStorage.setItem('leimberg.demoMode', '1');
+      return true;
+    }
+    return sessionStorage.getItem('leimberg.demoMode') === '1';
+  }, [searchParams]);
   const [companyId, setCompanyId] = useState(companies[0]?.id || 'company-1');
   const cfg = getCompanyConfig(companyId);
   const [eligibility, setEligibility] = useState<'pay_on_receipt' | 'pay_on_terms'>(cfg.paymentEligibility);
@@ -43,7 +57,8 @@ export const AdminPage = () => {
       <div className="space-y-6 max-w-3xl">
         <ListingPageHeader
           title="Admin Tool"
-          description="Mock admin configuration for company-level payment eligibility."
+          description="Configure customer billing eligibility and run admin actions."
+          showCompanyContext={false}
         />
 
         <Card>
@@ -109,10 +124,61 @@ export const AdminPage = () => {
             </div>
 
             <div className="flex justify-end">
-              <Button onClick={handleSave}><Save className="h-4 w-4 mr-1" />Save Configuration</Button>
+              <Button onClick={handleSave} disabled={readOnly}><Save className="h-4 w-4 mr-1" />Save Configuration</Button>
             </div>
           </CardContent>
         </Card>
+
+        {demoMode && (
+          <Card className="border-warning/40 bg-warning/5">
+            <CardHeader>
+              <CardTitle className="text-base flex items-center gap-2">
+                <RefreshCw className="h-4 w-4 text-warning" />Demo Tools
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <p className="text-sm text-muted-foreground">
+                Generate renewal invoices for any active subscription regardless of how far away its renewal date is.
+                Useful for showing the renewal flow end-to-end.
+              </p>
+              <div className="flex flex-wrap justify-end gap-2">
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    const created = forceGenerateRenewalInvoices();
+                    toast({
+                      title: created > 0 ? `Generated ${created} renewal invoice${created === 1 ? '' : 's'}` : 'No new invoices generated',
+                      description: created > 0 ? 'Check the Invoices page.' : 'All eligible subscriptions already have renewal invoices.',
+                    });
+                  }}
+                >
+                  <RefreshCw className="h-4 w-4 mr-1" />Force Generate Renewal Invoices
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    const ok = forceSuspendCurrentSubscription();
+                    toast({
+                      title: ok ? 'Subscription suspended for demo purposes.' : 'No active subscription to suspend',
+                      description: ok ? 'Reload the page to see the destructive banner and gated downloads.' : undefined,
+                    });
+                  }}
+                >
+                  <AlertOctagon className="h-4 w-4 mr-1" />Force Subscription Suspension
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    restoreActiveSubscription();
+                    toast({ title: 'Subscription restored.' });
+                  }}
+                >
+                  <Undo2 className="h-4 w-4 mr-1" />Restore Active Subscription
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        )}
       </div>
     </MainLayout>
   );

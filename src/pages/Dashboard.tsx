@@ -34,6 +34,7 @@ import { UserOverviewWidget } from '@/components/dashboard/UserOverviewWidget';
 import { QuickActionsWidget } from '@/components/dashboard/QuickActionsWidget';
 import { MyTicketsWidget } from '@/components/dashboard/MyTicketsWidget';
 import { RenewalFlyout } from '@/components/billing/RenewalFlyout';
+import { PageHeader } from '@/components/layout/PageHeader';
 
 export const Dashboard = () => {
   const navigate = useNavigate();
@@ -41,10 +42,10 @@ export const Dashboard = () => {
   const [dataNetOptOut, setDataNetOptOut] = useState(false);
   const [renewalOpen, setRenewalOpen] = useState(false);
 
-  const isOwner = hasAccess(['owner']);
-  const isBilling = hasAccess(['billing']);
-  const isAdmin = hasAccess(['admin']);
-  const isStandard = demoRoles.length === 1 && demoRoles[0] === 'standard';
+  const isOwner = hasAccess(['account_owner']);
+  const isBilling = hasAccess(['billing_admin']);
+  const isAdmin = hasAccess(['license_admin']);
+  const isStandard = demoRoles.length === 1 && demoRoles[0] === 'registered_contact';
   const canViewBilling = isOwner || isBilling;
   const canViewUsers = isOwner || isAdmin;
 
@@ -72,13 +73,11 @@ export const Dashboard = () => {
 
   return (
     <MainLayout>
+      <PageHeader
+        title="Dashboard"
+        description={`Welcome back, ${firstName}.`}
+      />
       <div className="space-y-6">
-        {/* Welcome */}
-        <div>
-          <h1 className="text-2xl font-bold">Welcome, {firstName}!</h1>
-          <p className="text-muted-foreground">{currentCompany?.name} &middot; Account Dashboard</p>
-        </div>
-
         <OverdueAlertBanner />
 
         {/* Top Row: Account Status (wide) + DataNet (narrow) */}
@@ -150,7 +149,23 @@ export const Dashboard = () => {
                 {totalOutstanding > 0 && canViewBilling && (
                   <Button
                     variant={accountStatus === 'overdue' ? 'destructive' : 'default'}
-                    onClick={() => setRenewalOpen(true)}
+                    onClick={() => {
+                      const first = overdueInvoices[0] || pendingInvoices[0];
+                      if (first) {
+                        navigate('/pay', {
+                          state: {
+                            source: 'invoice',
+                            invoiceId: first.id,
+                            subtotal: first.amount,
+                            tax: 0,
+                            totalAmount: first.amount,
+                            returnTo: '/dashboard',
+                          },
+                        });
+                      } else {
+                        setRenewalOpen(true);
+                      }
+                    }}
                   >
                     <CreditCard className="h-4 w-4 mr-2" />Pay Now
                   </Button>
@@ -160,20 +175,16 @@ export const Dashboard = () => {
           </Card>
 
           {/* DataNet Card */}
-          <Card className="cursor-pointer hover:shadow-md hover:border-primary/20 transition-all" onClick={() => window.open('#', '_blank')}>
+          <Card className="cursor-pointer hover:shadow-md hover:border-primary/20 transition-all" onClick={() => navigate('/datanet')}>
             <CardHeader className="pb-2">
               <CardTitle className="text-sm font-medium text-muted-foreground">DataNet</CardTitle>
             </CardHeader>
             <CardContent>
               <div className="space-y-3">
-                <a
-                  href="#"
-                  className="text-primary font-medium flex items-center gap-1 hover:underline"
-                  onClick={(e) => e.stopPropagation()}
-                >
+                <span className="text-primary font-medium inline-flex items-center gap-1 hover:underline">
                   Current DataNet
                   <ExternalLink className="h-3.5 w-3.5" />
-                </a>
+                </span>
                 <p className="text-xs text-muted-foreground">Access the latest industry data and alerts</p>
                 <div className="flex items-center gap-2 pt-2 border-t" onClick={(e) => e.stopPropagation()}>
                   <Switch
@@ -209,7 +220,7 @@ export const Dashboard = () => {
         {!isStandard && (
           <div className="space-y-3">
             <div className="flex items-center justify-between">
-              <h2 className="text-lg font-semibold">License Assignments</h2>
+              <h2 className="text-xl font-semibold">License Assignments</h2>
               <Button variant="ghost" size="sm" onClick={() => navigate('/licenses')}>
                 View All <ArrowRight className="h-4 w-4 ml-1" />
               </Button>
@@ -253,8 +264,7 @@ export const Dashboard = () => {
       <RenewalFlyout
         open={renewalOpen}
         onOpenChange={setRenewalOpen}
-        subscription={subscriptions[0] || null}
-        renewalPeriod="Jan 1, 2027 → Dec 31, 2027"
+        subscriptionId={subscriptions[0]?.id || ''}
       />
     </MainLayout>
   );

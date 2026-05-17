@@ -15,7 +15,7 @@ export const SubscriptionOverviewWidget = () => {
   const [expandedSubs, setExpandedSubs] = useState<string[]>([]);
 
   const subscriptions = getCompanySubscriptions();
-  const canManage = hasAccess(['owner', 'billing']);
+  const canManage = hasAccess(['account_owner', 'billing_admin']);
 
   const toggleExpand = (subId: string) => {
     setExpandedSubs(prev =>
