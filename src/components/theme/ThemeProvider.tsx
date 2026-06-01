@@ -12,11 +12,13 @@ const ThemeContext = createContext<ThemeContextValue | null>(null);
 const STORAGE_KEY = 'leimberg.theme';
 
 const readStored = (): Theme => {
-  if (typeof window === 'undefined') return 'system';
+  // Light mode is the default for everyone (foundational lock #1). We only
+  // depart from light when the user has explicitly stored a preference.
+  if (typeof window === 'undefined') return 'light';
   const stored = window.localStorage.getItem(STORAGE_KEY) as Theme | null;
   return stored && (stored === 'light' || stored === 'dark' || stored === 'system')
     ? stored
-    : 'system';
+    : 'light';
 };
 
 const systemPrefersDark = () =>

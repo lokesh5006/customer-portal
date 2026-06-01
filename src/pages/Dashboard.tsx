@@ -87,7 +87,7 @@ export const Dashboard = () => {
         title="Dashboard"
         description={`Welcome back, ${firstName}.`}
       />
-      <div className="space-y-6">
+      <div className="space-y-4">
         <OverdueAlertBanner />
 
         {/* Top Row: Account Status (wide) + DataNet (narrow) */}
@@ -235,9 +235,9 @@ export const Dashboard = () => {
               .map(p => ({ sub, prod: p }))
           );
           return (
-            <div className="space-y-3">
+            <div className="space-y-2">
               <div className="flex items-center justify-between">
-                <h2 className="text-xl font-semibold">License Assignments</h2>
+                <h2 className="text-base font-semibold">License Assignments</h2>
                 <Button variant="ghost" size="sm" onClick={() => navigate('/licenses')}>
                   View All <ArrowRight className="h-4 w-4 ml-1" />
                 </Button>

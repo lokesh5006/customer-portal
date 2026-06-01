@@ -26,8 +26,9 @@ import {
 import { useToast } from '@/hooks/use-toast';
 import { ToastAction } from '@/components/ui/toast';
 import { useReadOnlyGuard, READ_ONLY_TOOLTIP } from '@/hooks/useReadOnlyGuard';
+import { BulkImportDialog } from '@/components/users/BulkImportDialog';
 import {
-  Plus, MoreVertical, Download, Edit, UserX, UserCheck, ExternalLink, Clock,
+  Plus, MoreVertical, Download, Edit, UserX, UserCheck, ExternalLink, Clock, Upload,
 } from 'lucide-react';
 
 const statusColors: Record<string, string> = {
@@ -84,6 +85,7 @@ export const UsersPage = () => {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerMode, setDrawerMode] = useState<DrawerMode>('edit');
   const [drawerUser, setDrawerUser] = useState<User | null>(null);
+  const [bulkOpen, setBulkOpen] = useState(false);
 
   const allUsers = getCompanyUsers();
   const subscriptions = getCompanySubscriptions().filter(s => s.status !== 'cancelled' && s.status !== 'expired');
@@ -334,29 +336,27 @@ export const UsersPage = () => {
     },
   ];
 
-  const totalUsers = users.length;
-  const activeUsers = users.filter(u => u.status === 'active').length;
-  const inactiveUsers = users.filter(u => u.status === 'inactive').length;
-  const pendingUsers = users.filter(u => u.status === 'invited').length;
+  // Bulk Import + Add User are available to Account Owner and License Admin.
+  const canManageUsers = can('users.add');
 
-  const summaryCards = [
-    { label: 'Total Users', value: totalUsers, bg: 'bg-primary/10', color: 'text-primary', Icon: UserCheck },
-    { label: 'Active Users', value: activeUsers, bg: 'bg-success/10', color: 'text-success', Icon: UserCheck },
-    { label: 'Inactive Users', value: inactiveUsers, bg: 'bg-muted', color: 'text-muted-foreground', Icon: UserX },
-    { label: 'Pending Invitations', value: pendingUsers, bg: 'bg-warning/10', color: 'text-warning', Icon: Clock },
-  ];
-
-  const addUserButton = (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <span tabIndex={0}>
-          <Button onClick={() => openDrawer(null, 'add')} disabled={readOnly || !can('users.add')}>
-            <Plus className="h-4 w-4 mr-2" />Add User
-          </Button>
-        </span>
-      </TooltipTrigger>
-      {readOnly && <TooltipContent>{READ_ONLY_TOOLTIP}</TooltipContent>}
-    </Tooltip>
+  const headerActions = (
+    <div className="flex items-center gap-2">
+      {canManageUsers && (
+        <Button variant="outline" onClick={() => setBulkOpen(true)} disabled={readOnly}>
+          <Upload className="h-4 w-4 mr-2" />Bulk Import
+        </Button>
+      )}
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span tabIndex={0}>
+            <Button onClick={() => openDrawer(null, 'add')} disabled={readOnly || !canManageUsers}>
+              <Plus className="h-4 w-4 mr-2" />Add User
+            </Button>
+          </span>
+        </TooltipTrigger>
+        {readOnly && <TooltipContent>{READ_ONLY_TOOLTIP}</TooltipContent>}
+      </Tooltip>
+    </div>
   );
 
   return (
@@ -366,25 +366,8 @@ export const UsersPage = () => {
           title="Users & Contacts"
           description="Manage users and contacts for your company."
           showCompanyContext={false}
-          primaryAction={can('users.add') ? addUserButton : undefined}
-          secondaryAction={<Button variant="outline"><Download className="h-4 w-4 mr-2" />Export CSV</Button>}
+          primaryAction={canManageUsers ? headerActions : undefined}
         />
-
-        <div className="grid gap-4 md:grid-cols-4">
-          {summaryCards.map(s => (
-            <Card key={s.label}>
-              <CardContent className="p-4 flex items-center justify-between">
-                <div>
-                  <p className="text-sm text-muted-foreground">{s.label}</p>
-                  <p className="text-2xl font-bold mt-1">{s.value}</p>
-                </div>
-                <div className={`h-10 w-10 rounded-lg ${s.bg} flex items-center justify-center`}>
-                  <s.Icon className={`h-5 w-5 ${s.color}`} />
-                </div>
-              </CardContent>
-            </Card>
-          ))}
-        </div>
 
         <SearchFilterCard
           searchValue={searchQuery}
@@ -433,6 +416,8 @@ export const UsersPage = () => {
         readOnly={readOnly}
         onSaved={() => setDrawerOpen(false)}
       />
+
+      <BulkImportDialog open={bulkOpen} onOpenChange={setBulkOpen} />
     </MainLayout>
   );
 };

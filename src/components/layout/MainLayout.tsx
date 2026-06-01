@@ -4,6 +4,7 @@ import { Header } from './Header';
 import { Sidebar } from './Sidebar';
 import { ReadOnlyBanner } from './ReadOnlyBanner';
 import { TrialBanner } from './TrialBanner';
+import { AppBreadcrumbs } from './AppBreadcrumbs';
 import { useApp, Role } from '@/contexts/AppContext';
 import { useToast } from '@/hooks/use-toast';
 
@@ -85,6 +86,7 @@ export const MainLayout = ({ children }: MainLayoutProps) => {
         <Sidebar />
         <main className="flex-1 min-w-0">
           <div className="p-6 max-w-7xl mx-auto w-full animate-fade-in">
+            <AppBreadcrumbs />
             {children}
           </div>
         </main>

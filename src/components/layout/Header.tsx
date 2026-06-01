@@ -157,14 +157,13 @@ export const Header = () => {
         </div>
 
         <div className="flex items-center gap-2">
-          {/* Role Demo dropdown */}
+          {/* Role Demo dropdown — intentionally small / muted (demo affordance) */}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="outline" size="sm" className="gap-2 h-9">
-                <span className="text-xs text-muted-foreground mr-1">Demo:</span>
-                <Settings className="h-4 w-4" />
-                <span className="hidden sm:inline">Role</span>
-                <ChevronDown className="h-4 w-4" />
+              <Button variant="ghost" size="sm" className="gap-1 h-8 px-2 text-xs text-muted-foreground border border-dashed border-muted-foreground/30">
+                <span>Demo:</span>
+                <span className="hidden sm:inline font-medium text-foreground/70">Role</span>
+                <ChevronDown className="h-3.5 w-3.5" />
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-72">
@@ -212,15 +211,15 @@ export const Header = () => {
             </DropdownMenuContent>
           </DropdownMenu>
 
-          {/* Current Roles Display */}
-          <div className="hidden md:flex items-center gap-1">
+          {/* Current Roles Display — compact, secondary to the rest of the header */}
+          <div className="hidden lg:flex items-center gap-1 mr-1">
             {demoRoles.slice(0, 2).map(role => (
-              <Badge key={role} variant="outline" className={roleColors[role]}>
+              <Badge key={role} variant="outline" className={`${roleColors[role]} text-[10px] px-1.5 py-0`}>
                 {roleLabels[role]}
               </Badge>
             ))}
             {demoRoles.length > 2 && (
-              <Badge variant="outline" className="badge-standard">
+              <Badge variant="outline" className="badge-standard text-[10px] px-1.5 py-0">
                 +{demoRoles.length - 2}
               </Badge>
             )}
@@ -273,7 +272,7 @@ export const Header = () => {
                 <ChevronDown className="h-4 w-4 text-muted-foreground" />
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-64">
+            <DropdownMenuContent align="end" className="w-60">
               <DropdownMenuLabel className="font-normal">
                 <div className="flex items-center gap-3">
                   <Avatar className="h-9 w-9">
@@ -294,7 +293,7 @@ export const Header = () => {
               <DropdownMenuSeparator />
               <DropdownMenuItem onClick={openProfileSettings}>
                 <Settings className="h-4 w-4 mr-2" />
-                Settings / Profile
+                Profile Settings
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem

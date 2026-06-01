@@ -268,9 +268,24 @@ export const SubscriptionsPage = () => {
   };
   const formatStatus = (s: string) => s.replace(/_/g, ' ');
 
-  const lastPaid = subInvoices.find(i => i.status === 'paid');
-  const nextInvoice = subInvoices.find(i => i.status !== 'paid');
-  const outstanding = subInvoices.filter(i => i.balance > 0).reduce((a, i) => a + i.balance, 0);
+  // ---- KPI tiles (Section D1) — computed across all of the company's invoices ----
+  const invAmount = (i: Invoice) => i.totalAmount ?? i.amount;
+  // Next Invoice: soonest upcoming / awaiting-payment invoice by due date.
+  const nextInvoice = invoices
+    .filter(i => i.status === 'awaiting_payment' || i.status === 'upcoming')
+    .sort((a, b) => new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime())[0] || null;
+  // Last Payment: most recent paid invoice by paid date.
+  const lastPaid = invoices
+    .filter(i => i.status === 'paid')
+    .sort((a, b) => new Date(b.paidAt || b.date).getTime() - new Date(a.paidAt || a.date).getTime())[0] || null;
+  // Outstanding: sum of unpaid (awaiting payment + overdue) invoices.
+  const outstandingInvoices = invoices.filter(i => i.status === 'awaiting_payment' || i.status === 'overdue');
+  const outstanding = outstandingInvoices.reduce((a, i) => a + invAmount(i), 0);
+  // Products: unique product names across the company's active subscriptions.
+  const activeProductNames = new Set(
+    allSubscriptions.filter(s => s.status === 'active').flatMap(s => s.products.map(p => p.name)),
+  );
+  const productCount = activeProductNames.size;
 
   const paymentMethods: PaymentMethod[] = ['Direct ACH', 'Credit Card', 'ACH e-Check', 'Paper Check', 'Invoice Only (Net 30)'];
 
@@ -373,10 +388,10 @@ export const SubscriptionsPage = () => {
                                 <div className="min-w-0">
                                   <p className="text-sm text-muted-foreground">Next Invoice</p>
                                   <p className="text-2xl font-bold mt-1 tracking-tight">
-                                    {formatCurrency(nextInvoice?.amount || subTotal(currentSub))}
+                                    {nextInvoice ? formatCurrency(invAmount(nextInvoice)) : '—'}
                                   </p>
                                   <p className="text-xs text-muted-foreground mt-1">
-                                    due {nextInvoice ? new Date(nextInvoice.dueDate).toLocaleDateString() : new Date(currentSub.renewalDate).toLocaleDateString()}
+                                    {nextInvoice ? `Due on ${new Date(nextInvoice.dueDate).toLocaleDateString()}` : 'None scheduled'}
                                   </p>
                                 </div>
                                 <div className="h-10 w-10 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
@@ -390,14 +405,14 @@ export const SubscriptionsPage = () => {
                                 <div className="min-w-0">
                                   <p className="text-sm text-muted-foreground">Last Payment</p>
                                   <p className="text-2xl font-bold mt-1 tracking-tight">
-                                    {lastPaid ? formatCurrency(lastPaid.amount) : '—'}
+                                    {lastPaid ? formatCurrency(invAmount(lastPaid)) : '—'}
                                   </p>
                                   <p className="text-xs text-muted-foreground mt-1">
-                                    {lastPaid ? `${new Date(lastPaid.date).toLocaleDateString()} · ${paymentMethod}` : '—'}
+                                    {lastPaid ? `Paid on ${new Date(lastPaid.paidAt || lastPaid.date).toLocaleDateString()}` : 'No payments yet'}
                                   </p>
                                 </div>
                                 <div className="h-10 w-10 rounded-lg bg-info/10 flex items-center justify-center shrink-0">
-                                  <CreditCard className="h-5 w-5 text-info" />
+                                  <Check className="h-5 w-5 text-info" />
                                 </div>
                               </CardContent>
                             </Card>
@@ -405,12 +420,14 @@ export const SubscriptionsPage = () => {
                             <Card>
                               <CardContent className="p-4 flex items-center justify-between">
                                 <div className="min-w-0">
-                                  <p className="text-sm text-muted-foreground">Outstanding Balance</p>
+                                  <p className="text-sm text-muted-foreground">Outstanding</p>
                                   <p className={cn('text-2xl font-bold mt-1 tracking-tight', outstanding > 0 ? 'text-destructive' : 'text-success')}>
                                     {formatCurrency(outstanding)}
                                   </p>
                                   <p className={cn('text-xs mt-1', outstanding > 0 ? 'text-destructive' : 'text-muted-foreground')}>
-                                    {outstanding > 0 ? 'Action required' : 'Nothing due'}
+                                    {outstanding > 0
+                                      ? `${outstandingInvoices.length} unpaid invoice${outstandingInvoices.length > 1 ? 's' : ''}`
+                                      : 'All caught up'}
                                   </p>
                                 </div>
                                 <div className={cn(
@@ -426,8 +443,8 @@ export const SubscriptionsPage = () => {
                               <CardContent className="p-4 flex items-center justify-between">
                                 <div className="min-w-0">
                                   <p className="text-sm text-muted-foreground">Products</p>
-                                  <p className="text-2xl font-bold mt-1 tracking-tight">{currentSub.products.length}</p>
-                                  <p className="text-xs text-muted-foreground mt-1">in this subscription</p>
+                                  <p className="text-2xl font-bold mt-1 tracking-tight">{productCount}</p>
+                                  <p className="text-xs text-muted-foreground mt-1">Active subscriptions</p>
                                 </div>
                                 <div className="h-10 w-10 rounded-lg bg-warning/10 flex items-center justify-center shrink-0">
                                   <Package className="h-5 w-5 text-warning" />
