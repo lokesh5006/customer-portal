@@ -40,6 +40,8 @@ export type Permission =
   | 'manage_user_assignment'
   | 'manage_seat_renewal_status'
   | 'reactivate_license'
+  // Billing details editing (v15 — subscription detail page)
+  | 'edit_billing_details'
   // Owner-only capabilities (per discovery Q13)
   | 'owner_only_actions';
 
@@ -193,12 +195,25 @@ export interface User {
   notificationPrefs?: Record<NotificationType, NotificationChannelPrefs>;
 }
 
+export interface CompanyAddress {
+  line1?: string;
+  line2?: string;
+  city?: string;
+  state?: string;
+  postalCode?: string;
+  country?: string;
+}
+
 export interface Company {
   id: string;
   name: string;
   createdAt: string;
   /** Whether the company's active subscriptions auto-renew. Defaults to true. */
   autoRenewal?: boolean;
+  /** Billing address (v15 — editable from the subscription detail page). */
+  address?: CompanyAddress;
+  /** User IDs that serve as billing contacts for this company. */
+  billingContactUserIds?: string[];
 }
 
 export interface SubscriptionProduct {
@@ -451,6 +466,12 @@ interface AppContextType extends AppState {
   logout: () => void;
   selectCompany: (companyId: string) => void;
   updateCompany: (companyId: string, updates: Partial<Company>) => void;
+  updateCompanyBillingDetails: (input: {
+    companyId: string;
+    name: string;
+    address?: CompanyAddress;
+    contactUserIds: string[];
+  }) => void;
   setAutoRenewal: (companyId: string, value: boolean) => void;
   setDemoRoles: (roles: UserRole[]) => void;
   setBillingHasAdminAccess: (value: boolean) => void;
@@ -665,8 +686,16 @@ function parseDisplayNameFromEmail(email: string): { firstName: string; lastName
 }
 
 const initialCompanies: Company[] = [
-  { id: 'company-1', name: 'ABC Accounting', createdAt: '2023-01-15', autoRenewal: true },
-  { id: 'company-2', name: 'XYZ Consulting', createdAt: '2023-06-20', autoRenewal: true },
+  {
+    id: 'company-1', name: 'ABC Accounting', createdAt: '2023-01-15', autoRenewal: true,
+    address: { line1: '500 Madison Avenue', line2: 'Suite 1200', city: 'New York', state: 'NY', postalCode: '10022', country: 'United States' },
+    billingContactUserIds: ['user-2'],
+  },
+  {
+    id: 'company-2', name: 'XYZ Consulting', createdAt: '2023-06-20', autoRenewal: true,
+    address: { line1: '88 Market Street', city: 'San Francisco', state: 'CA', postalCode: '94105', country: 'United States' },
+    billingContactUserIds: ['user-21'],
+  },
 ];
 
 const initialUsers: User[] = [
@@ -1519,6 +1548,27 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     }));
   }, []);
 
+  const updateCompanyBillingDetails = useCallback((input: {
+    companyId: string;
+    name: string;
+    address?: CompanyAddress;
+    contactUserIds: string[];
+  }) => {
+    setState(prev => {
+      const apply = (c: Company): Company => ({
+        ...c,
+        name: input.name.trim() || c.name,
+        address: input.address,
+        billingContactUserIds: input.contactUserIds,
+      });
+      return {
+        ...prev,
+        companies: prev.companies.map(c => c.id === input.companyId ? apply(c) : c),
+        currentCompany: prev.currentCompany?.id === input.companyId ? apply(prev.currentCompany) : prev.currentCompany,
+      };
+    });
+  }, []);
+
   const setAutoRenewal = useCallback((companyId: string, value: boolean) => {
     setState(prev => ({
       ...prev,
@@ -1916,6 +1966,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       case 'manage_seats_count':
       case 'manage_seat_renewal_status':
       case 'reactivate_license':
+      case 'edit_billing_details':
         return has('billing_admin');
       case 'manage_user_assignment':
         return has('billing_admin') || has('license_admin');
@@ -3151,6 +3202,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       logout,
       selectCompany,
       updateCompany,
+      updateCompanyBillingDetails,
       setAutoRenewal,
       setDemoRoles,
       setBillingHasAdminAccess,

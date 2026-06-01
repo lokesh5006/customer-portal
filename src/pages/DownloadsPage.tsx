@@ -79,15 +79,25 @@ const releaseDates: Record<string, string> = {
 
 const downloadFormats: Record<string, { label: string; isDefault?: boolean }[]> = {
   'NumberCruncher Desktop': [
-    { label: 'EXE Installer', isDefault: true },
-    { label: 'MSI Installer' },
-    { label: 'ZIP Archive' },
+    { label: '.exe (recommended)', isDefault: true },
+    { label: '.msi (alternative)' },
+    { label: 'Previous version (v4.1)' },
   ],
   'QuickView Desktop': [
-    { label: 'EXE Installer', isDefault: true },
-    { label: 'MSI Installer' },
+    { label: '.exe (recommended)', isDefault: true },
+    { label: '.msi (alternative)' },
+    { label: 'Previous version (v2.0)' },
   ],
 };
+
+// Canonical Resources list shown in the product flyout (v15 Section D2).
+const RESOURCE_ITEMS = [
+  'Installation instructions',
+  'Quickstart Guide',
+  'Release Notes',
+  'Documentation',
+  'Product Info',
+];
 
 const getProductIcon = (type: string) => {
   switch (type) {
@@ -184,10 +194,10 @@ export const DownloadsPage = () => {
             const PrimaryIcon = isDesktop ? Download : ExternalLink;
             const disabledTooltip = isSuspendedProd
               ? 'Pay your renewal invoice to restore access.'
-              : (isDesktop ? 'Subscribe to download' : 'Subscribe to access');
+              : 'This product is not in your current subscription.';
 
             return (
-              <Card key={product.name} className={cn('transition-all', isSuspendedProd && 'opacity-80')}>
+              <Card key={product.name} className={cn('transition-all', isSuspendedProd && 'opacity-80', state === 'not_subscribed' && 'opacity-60')}>
                 <CardContent className="p-5">
                   <div className="flex items-start justify-between mb-3">
                     <div className={cn('flex items-center gap-3', state === 'not_subscribed' && 'opacity-70')}>
@@ -340,23 +350,26 @@ export const DownloadsPage = () => {
           <DialogHeader>
             <DialogTitle>{selectedProduct} Resources</DialogTitle>
           </DialogHeader>
-          <div className="space-y-1">
-            {(productResources[selectedProduct] || []).map((res, i) => (
-              <a
-                key={i}
-                href={res.url}
-                className="flex items-center gap-3 p-3 rounded-md hover:bg-muted/50 transition-colors group"
-                onClick={(e) => {
-                  e.preventDefault();
-                  toast({ title: 'Opening resource', description: `Opening ${res.label}...` });
-                }}
-              >
-                <FileText className="h-4 w-4 text-muted-foreground group-hover:text-primary" />
-                <span className="text-sm font-medium group-hover:text-primary">{res.label}</span>
-                <ExternalLink className="h-3 w-3 text-muted-foreground ml-auto opacity-0 group-hover:opacity-100" />
-              </a>
+          <ol className="space-y-1 list-none">
+            {RESOURCE_ITEMS.map((label, i) => (
+              <li key={label}>
+                <a
+                  href="#"
+                  className="flex items-center gap-3 p-3 rounded-md hover:bg-muted/50 transition-colors group"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    toast({ title: 'Opening resource', description: `Opening ${label}...` });
+                  }}
+                >
+                  <span className="h-5 w-5 rounded-full bg-muted text-muted-foreground text-xs font-semibold flex items-center justify-center group-hover:bg-primary group-hover:text-primary-foreground">
+                    {i + 1}
+                  </span>
+                  <span className="text-sm font-medium group-hover:text-primary">{label}</span>
+                  <ExternalLink className="h-3 w-3 text-muted-foreground ml-auto opacity-0 group-hover:opacity-100" />
+                </a>
+              </li>
             ))}
-          </div>
+          </ol>
         </DialogContent>
       </Dialog>
     </MainLayout>

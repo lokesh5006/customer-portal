@@ -1,4 +1,5 @@
 import { useLocation, useNavigate } from 'react-router-dom';
+import { useApp } from '@/contexts/AppContext';
 import {
   Breadcrumb, BreadcrumbList, BreadcrumbItem, BreadcrumbLink, BreadcrumbPage, BreadcrumbSeparator,
 } from '@/components/ui/breadcrumb';
@@ -30,7 +31,21 @@ const TRAILS: Record<string, Crumb[]> = {
 export const AppBreadcrumbs = () => {
   const location = useLocation();
   const navigate = useNavigate();
-  const trail = TRAILS[location.pathname];
+  const { subscriptions } = useApp();
+
+  let trail = TRAILS[location.pathname];
+
+  // Dynamic subscription detail route: Dashboard > Subscriptions > {name}
+  if (!trail && location.pathname.startsWith('/subscriptions/')) {
+    const id = location.pathname.split('/')[2];
+    const sub = subscriptions.find(s => s.id === id);
+    trail = [
+      { label: 'Dashboard', path: '/dashboard' },
+      { label: 'Subscriptions', path: '/subscriptions' },
+      { label: sub?.name || 'Subscription' },
+    ];
+  }
+
   if (!trail) return null;
 
   return (

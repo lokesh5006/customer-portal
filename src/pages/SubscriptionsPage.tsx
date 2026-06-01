@@ -363,20 +363,29 @@ export const SubscriptionsPage = () => {
                           <Card className="shadow-sm bg-gradient-to-br from-primary/5 via-card to-card border-primary/10">
                             <CardContent className="p-6">
                               <div className="flex items-start justify-between gap-4">
-                                <div className="flex items-start gap-3 min-w-0">
+                                <button
+                                  type="button"
+                                  onClick={() => navigate(`/subscriptions/${currentSub.id}`)}
+                                  className="flex items-start gap-3 min-w-0 text-left group focus:outline-none"
+                                >
                                   <div className="h-10 w-10 rounded-full bg-muted flex items-center justify-center shrink-0 text-sm font-semibold text-muted-foreground">
                                     {currentSub.name.charAt(0).toUpperCase()}
                                   </div>
                                   <div className="min-w-0">
-                                    <h3 className="text-base font-semibold truncate">{currentSub.name}</h3>
+                                    <h3 className="text-base font-semibold truncate group-hover:underline">{currentSub.name}</h3>
                                     <p className="text-xs text-muted-foreground">
                                       Renews {new Date(currentSub.renewalDate).toLocaleDateString()} · Billed {currentSub.planType} · Last paid by {paymentMethod}
                                     </p>
                                   </div>
+                                </button>
+                                <div className="flex flex-col items-end gap-2 shrink-0">
+                                  <Badge variant="outline" className={cn(summaryStatusClass)}>
+                                    {summaryStatusLabel}
+                                  </Badge>
+                                  <Button size="sm" variant="outline" onClick={() => navigate(`/subscriptions/${currentSub.id}`)}>
+                                    View details
+                                  </Button>
                                 </div>
-                                <Badge variant="outline" className={cn('shrink-0', summaryStatusClass)}>
-                                  {summaryStatusLabel}
-                                </Badge>
                               </div>
                             </CardContent>
                           </Card>

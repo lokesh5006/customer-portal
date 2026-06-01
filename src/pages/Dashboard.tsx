@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useApp, Subscription, SubscriptionProduct } from '@/contexts/AppContext';
+import { useApp, Subscription, SubscriptionProduct, Invoice } from '@/contexts/AppContext';
 import { MainLayout } from '@/components/layout/MainLayout';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -37,6 +37,41 @@ import { RenewalFlyout } from '@/components/billing/RenewalFlyout';
 import { ManageLicensesDrawer } from '@/components/subscriptions/QuoteDialogs';
 import { PageHeader } from '@/components/layout/PageHeader';
 
+// ---- Account Status semantic states (v15 Section A) ----
+type AccountStatusState =
+  | { state: 'account_current'; renewalDate: string }
+  | { state: 'additional_license_invoice_due'; invoiceAmount: number; invoiceId: string }
+  | { state: 'annual_fee_due'; invoiceAmount: number; renewalDate: string; invoiceId: string };
+
+const RENEWAL_WINDOW_DAYS = 30;
+const invAmount = (i: Invoice) => i.totalAmount ?? i.amount;
+
+export function computeAccountStatus(subscriptions: Subscription[], invoices: Invoice[]): AccountStatusState {
+  const activeSub = subscriptions.find(s => s.status === 'active');
+  const renewalDate = activeSub?.renewalDate || '';
+
+  // 1) Unpaid mid-cycle license invoice (source license_change) → additional license due.
+  const midCycle = invoices.find(i => i.source === 'license_change' && i.status === 'awaiting_payment');
+  if (midCycle) {
+    return { state: 'additional_license_invoice_due', invoiceAmount: invAmount(midCycle), invoiceId: midCycle.id };
+  }
+
+  // 2) Unpaid renewal invoice, or renewal within 30 days and not yet paid → annual fee due.
+  const unpaidRenewal = invoices.find(i =>
+    i.source === 'renewal' && ['awaiting_payment', 'overdue', 'upcoming', 'unpaid'].includes(i.status));
+  if (unpaidRenewal) {
+    return {
+      state: 'annual_fee_due',
+      invoiceAmount: invAmount(unpaidRenewal),
+      renewalDate: renewalDate || unpaidRenewal.dueDate,
+      invoiceId: unpaidRenewal.id,
+    };
+  }
+
+  // 3) Otherwise current.
+  return { state: 'account_current', renewalDate };
+}
+
 export const Dashboard = () => {
   const navigate = useNavigate();
   const { currentUser, currentCompany, hasAccess, demoRoles, getCompanySubscriptions, getCompanyInvoices, getAssignedLicenseCount } = useApp();
@@ -61,79 +96,82 @@ export const Dashboard = () => {
 
   const subscriptions = getCompanySubscriptions();
   const invoices = getCompanyInvoices();
-  const overdueInvoices = invoices.filter(i => i.status === 'overdue');
-  const pendingInvoices = invoices.filter(i => i.status === 'pending');
-  const totalOutstanding = [...overdueInvoices, ...pendingInvoices].reduce((a, i) => a + i.balance, 0);
 
-  // Determine account status
-  const getAccountStatus = () => {
-    if (overdueInvoices.length > 0) return 'overdue';
-    if (pendingInvoices.length > 0) return 'pending';
-    return 'current';
+  // Account Status semantic state (v15 Section A).
+  const acctStatus = computeAccountStatus(subscriptions, invoices);
+  const fmtDate = (iso: string) =>
+    iso ? new Date(iso).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }) : 'N/A';
+  const goToPay = (invoiceId: string) => {
+    const inv = invoices.find(i => i.id === invoiceId);
+    navigate('/pay', {
+      state: {
+        source: 'invoice',
+        invoiceId,
+        subtotal: inv?.subtotal ?? (inv ? invAmount(inv) : 0),
+        tax: inv?.tax ?? 0,
+        totalAmount: inv ? invAmount(inv) : 0,
+        returnTo: '/dashboard',
+      },
+    });
   };
-  const accountStatus = getAccountStatus();
-
-  // Get renewal date from first active subscription
-  const nextRenewal = subscriptions.find(s => s.status === 'active')?.renewalDate;
-  const renewalFormatted = nextRenewal
-    ? new Date(nextRenewal).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })
-    : 'N/A';
 
   const firstName = currentUser?.firstName || 'Customer';
 
   return (
     <MainLayout>
       <PageHeader
-        title="Dashboard"
-        description={`Welcome back, ${firstName}.`}
+        title={`Welcome, ${firstName}!`}
+        description={currentCompany?.name || ''}
       />
       <div className="space-y-4">
         <OverdueAlertBanner />
 
         {/* Top Row: Account Status (wide) + DataNet (narrow) */}
         <div className="grid gap-4 md:grid-cols-3">
-          {/* Account Status Card - spans 2 cols */}
-          <Card className={`md:col-span-2 ${
-            accountStatus === 'current' ? 'bg-success/5 border-success/20' :
-            accountStatus === 'pending' ? 'bg-warning/5 border-warning/20' :
-            'bg-destructive/5 border-destructive/20'
-          }`}>
+          {/* Account Status Card - spans LEFT + CENTER columns (Section A4) */}
+          <Card
+            className="md:col-span-2 border"
+            style={{
+              backgroundColor:
+                acctStatus.state === 'account_current' ? '#e6f5e6' :
+                acctStatus.state === 'additional_license_invoice_due' ? '#FFF8E1' :
+                '#FFF4E6',
+            }}
+          >
             <CardHeader className="pb-2">
               <CardTitle className="text-sm font-medium text-muted-foreground">Account Status</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="flex items-start justify-between">
+              <div className="flex items-start justify-between gap-4">
                 <div className="space-y-2">
-                  {accountStatus === 'current' && (
+                  {acctStatus.state === 'account_current' && (
                     <>
                       <div className="flex items-center gap-2">
                         <CheckCircle2 className="h-6 w-6 text-success" />
-                        <span className="text-xl font-bold text-success">Account is Current</span>
+                        <span className="text-xl font-bold text-foreground">Account is Current</span>
+                      </div>
+                      <p className="text-sm text-muted-foreground">Renews {fmtDate(acctStatus.renewalDate)}</p>
+                    </>
+                  )}
+                  {acctStatus.state === 'additional_license_invoice_due' && (
+                    <>
+                      <div className="flex items-center gap-2">
+                        <AlertCircle className="h-6 w-6 text-warning" />
+                        <span className="text-xl font-bold text-foreground">Additional License Invoice Due</span>
                       </div>
                       <p className="text-sm text-muted-foreground">
-                        Renews {renewalFormatted}
+                        ${acctStatus.invoiceAmount.toLocaleString(undefined, { minimumFractionDigits: 2 })} due — Pay now
                       </p>
                     </>
                   )}
-                  {accountStatus === 'pending' && (
+                  {acctStatus.state === 'annual_fee_due' && (
                     <>
                       <div className="flex items-center gap-2">
-                        <Clock className="h-6 w-6 text-warning" />
-                        <span className="text-xl font-bold text-warning">Additional License Invoice Due</span>
+                        <AlertCircle className="h-6 w-6 text-warning" />
+                        <span className="text-xl font-bold text-foreground">Annual Fee Due</span>
                       </div>
                       <p className="text-sm text-muted-foreground">
-                        ${totalOutstanding.toLocaleString()} outstanding
-                      </p>
-                    </>
-                  )}
-                  {accountStatus === 'overdue' && (
-                    <>
-                      <div className="flex items-center gap-2">
-                        <AlertCircle className="h-6 w-6 text-destructive" />
-                        <span className="text-xl font-bold text-destructive">Annual Fee Due</span>
-                      </div>
-                      <p className="text-sm text-muted-foreground">
-                        ${totalOutstanding.toLocaleString()} past due &middot; Renews {renewalFormatted}
+                        ${acctStatus.invoiceAmount.toLocaleString(undefined, { minimumFractionDigits: 2 })} due — Renews {fmtDate(acctStatus.renewalDate)}
                       </p>
                     </>
                   )}
@@ -156,27 +194,8 @@ export const Dashboard = () => {
                   </div>
                 </div>
 
-                {totalOutstanding > 0 && canViewBilling && (
-                  <Button
-                    variant={accountStatus === 'overdue' ? 'destructive' : 'default'}
-                    onClick={() => {
-                      const first = overdueInvoices[0] || pendingInvoices[0];
-                      if (first) {
-                        navigate('/pay', {
-                          state: {
-                            source: 'invoice',
-                            invoiceId: first.id,
-                            subtotal: first.amount,
-                            tax: 0,
-                            totalAmount: first.amount,
-                            returnTo: '/dashboard',
-                          },
-                        });
-                      } else {
-                        setRenewalOpen(true);
-                      }
-                    }}
-                  >
+                {acctStatus.state !== 'account_current' && canViewBilling && (
+                  <Button onClick={() => goToPay(acctStatus.invoiceId)}>
                     <CreditCard className="h-4 w-4 mr-2" />Pay Now
                   </Button>
                 )}
@@ -252,6 +271,7 @@ export const Dashboard = () => {
                 <div className="grid gap-3 md:grid-cols-2">
                   {seatProducts.map(({ sub, prod }) => {
                     const assigned = getAssignedLicenseCount(sub.id, prod.id);
+                    const available = Math.max(0, prod.licenseCount - assigned);
                     const hasScheduledChange = prod.scheduledLicenseCount !== undefined;
                     return (
                       <button
@@ -276,8 +296,8 @@ export const Dashboard = () => {
                                 </TooltipContent>
                               </Tooltip>
                             )}
-                            <span className="inline-flex items-center rounded-md border border-border px-2.5 py-1 text-sm font-semibold text-primary">
-                              {assigned}/{prod.licenseCount}
+                            <span className="inline-flex items-center rounded-md border border-border px-2.5 py-1 text-sm font-medium text-foreground whitespace-nowrap">
+                              {available}/{prod.licenseCount} seats available
                             </span>
                           </div>
                         </div>
