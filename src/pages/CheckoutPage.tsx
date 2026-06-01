@@ -268,8 +268,11 @@ export const CheckoutPage = () => {
     }
     if (paymentMethod === 'pay_on_receipt') {
       checkoutPurchase({ lineItems: buildLineItems(), paymentMethod: 'pay_on_receipt' });
-      toast({ title: 'Invoice generated.', description: 'Pay to activate your subscription.' });
-      navigate('/subscriptions');
+      toast({
+        title: 'Invoice generated',
+        description: 'Pay your invoice to activate your subscription.',
+      });
+      navigate('/invoices');
       return;
     }
     if (paymentMethod === 'pay_on_terms') {

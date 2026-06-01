@@ -84,9 +84,9 @@ export const PaymentPage = () => {
   const location = useLocation();
   const { toast } = useToast();
   const {
-    currentCompany, currentUser,
+    currentCompany, currentUser, users,
     invoices, checkoutPurchase, acceptQuote, markInvoicePaid, renewSubscription,
-    getCompanyPaymentMethods, addPaymentMethod,
+    getCompanyPaymentMethods, addPaymentMethod, notify, setInvoicePoNumber,
   } = useApp();
 
   const intent = location.state as PaymentIntent | null;
@@ -164,6 +164,19 @@ export const PaymentPage = () => {
   const [autoRenew, setAutoRenew] = useState(true);
   const [updateAddressFuture, setUpdateAddressFuture] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+
+  // PO Number (optional) — per discovery Q3. Pre-fills from an existing invoice's PO
+  // (e.g., when a quote-accept invoice already captured one) and remains editable.
+  const [poNumber, setPoNumber] = useState<string>(() => {
+    if (intent?.source === 'invoice') {
+      const inv = invoices.find(i => i.id === intent.invoiceId);
+      return inv?.poNumber || '';
+    }
+    if (intent?.source === 'quote') {
+      return intent.poNumber || '';
+    }
+    return '';
+  });
 
   const defaultBilling = useMemo(() => ({
     firstName: currentUser?.firstName || '',
@@ -283,18 +296,67 @@ export const PaymentPage = () => {
 
     await new Promise(r => setTimeout(r, 800));
 
+    const trimmedPo = poNumber.trim();
     try {
       if (intent.source === 'checkout') {
-        checkoutPurchase({ lineItems: intent.lineItems, paymentMethod: 'pay_immediately' });
+        checkoutPurchase({
+          lineItems: intent.lineItems,
+          paymentMethod: 'pay_immediately',
+          poNumber: trimmedPo || undefined,
+        });
       } else if (intent.source === 'quote') {
-        const result = acceptQuote(intent.quoteId, { poNumber: intent.poNumber, paymentMethod: 'pay_immediately' });
+        const result = acceptQuote(intent.quoteId, {
+          poNumber: trimmedPo || intent.poNumber || undefined,
+          paymentMethod: 'pay_immediately',
+        });
         if (!result) {
           toast({ title: 'Quote could not be processed', description: 'It may have expired.', variant: 'destructive' });
           setSubmitting(false);
           return;
         }
       } else if (intent.source === 'invoice') {
+        // Capture PO on the invoice (per discovery Q3). When it's a mid-cycle
+        // license-change invoice and the customer entered a PO, notify the
+        // admin team (per discovery Q4).
+        const inv = invoices.find(i => i.id === intent.invoiceId);
+        if (trimmedPo) setInvoicePoNumber(intent.invoiceId, trimmedPo);
         markInvoicePaid(intent.invoiceId);
+        if (inv && trimmedPo) {
+          const isMidCycle = inv.source === 'license_change';
+          if (isMidCycle) {
+            const customerCompanyName = currentCompany?.name || 'Customer';
+            const aoOfCompany = users.find(u =>
+              u.companyId === inv.companyId &&
+              u.status === 'active' &&
+              u.roles.includes('account_owner')
+            );
+            const leimbergAdmin = users.find(u =>
+              u.email?.toLowerCase() === 'lindsay@leimberg.com'
+            );
+            const title = 'PO entered on mid-cycle invoice';
+            const message = `${customerCompanyName} entered PO ${trimmedPo} on invoice ${inv.invoiceNumber} for ${formatMoney(inv.totalAmount ?? inv.amount)}.`;
+            if (aoOfCompany) {
+              notify({
+                userId: aoOfCompany.id,
+                type: 'admin.po_entered_on_invoice',
+                title,
+                message,
+                link: '/invoices',
+                linkLabel: 'View invoices',
+              });
+            }
+            if (leimbergAdmin && leimbergAdmin.id !== aoOfCompany?.id) {
+              notify({
+                userId: leimbergAdmin.id,
+                type: 'admin.po_entered_on_invoice',
+                title,
+                message,
+                link: '/invoices',
+                linkLabel: 'View invoices',
+              });
+            }
+          }
+        }
       } else if (intent.source === 'renewal') {
         renewSubscription(
           intent.subscriptionId,
@@ -302,6 +364,9 @@ export const PaymentPage = () => {
           intent.totalAmount,
           intent.invoiceId,
         );
+        if (trimmedPo && intent.invoiceId) {
+          setInvoicePoNumber(intent.invoiceId, trimmedPo);
+        }
       }
       toast({ title: 'Payment successful. Thank you!' });
       if (autoRenew) {
@@ -559,6 +624,29 @@ export const PaymentPage = () => {
                   </div>
                 </div>
                 <Switch checked={autoRenew} onCheckedChange={setAutoRenew} />
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* PO Number (optional) — per discovery Q3 */}
+          <Card>
+            <CardContent className="p-5 space-y-3">
+              <div>
+                <h2 className="text-base font-semibold">Purchase Order</h2>
+                <p className="text-xs text-muted-foreground mt-1">
+                  Optional. Include a PO number if required by your company. Leave blank to skip.
+                </p>
+              </div>
+              <div>
+                <Label htmlFor="po-number">PO Number (optional)</Label>
+                <Input
+                  id="po-number"
+                  value={poNumber}
+                  onChange={(e) => setPoNumber(e.target.value)}
+                  placeholder="Enter PO number if applicable"
+                  className="mt-1.5 max-w-sm"
+                  maxLength={64}
+                />
               </div>
             </CardContent>
           </Card>

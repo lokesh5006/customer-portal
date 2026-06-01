@@ -22,7 +22,7 @@ import { useToast } from '@/hooks/use-toast';
 import {
   CreditCard, Eye, Edit, CheckCircle2, Download, Check,
   FileText, Receipt, FileSignature, RefreshCw, X, MessageSquare,
-  Monitor, Globe, BarChart3, Database, Package, MoreVertical, Search, Clock,
+  Monitor, Globe, BarChart3, Database, Package, MoreVertical, Search, Clock, Trash2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import {
@@ -62,14 +62,19 @@ export const SubscriptionsPage = () => {
     getCompanyConfig,
     getAssignedLicenseCount,
     isFirstTimeCustomer,
+    isReadOnlyMode,
     renameSubscription,
+    cancelQuoteRequest,
     licenses,
   } = useApp();
   const { toast } = useToast();
   const { readOnly } = useReadOnlyGuard();
 
   useEffect(() => {
-    if (isFirstTimeCustomer()) navigate('/checkout');
+    // First-time customer gate: send to Checkout unless they're in read-only
+    // mode (pending_payment / suspended), in which case they should see their
+    // pending subscription with the read-only banner.
+    if (isFirstTimeCustomer() && !isReadOnlyMode()) navigate('/checkout');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -154,8 +159,10 @@ export const SubscriptionsPage = () => {
   // Sort/search helpers for quotes tab — quotes aren't sub-scoped because
   // the data model doesn't link quotes to subscriptions; we show all company quotes.
   const QUOTE_STATUS_ORDER: Record<Quote['status'], number> = {
-    active: 0, accepted: 1, declined: 2, expired: 3,
+    requested: 0, active: 1, accepted: 2, declined: 3, expired: 4,
   };
+  const REQUESTED_TOOLTIP =
+    "Awaiting sales team response. You'll see the formal quote here when it's ready.";
   const filteredQuotes = useMemo(() => {
     const q = quoteSearch.trim().toLowerCase();
     if (!q) return quotes;
@@ -504,6 +511,17 @@ export const SubscriptionsPage = () => {
                                           {prod.pendingLicenseCount} additional seats pending payment.
                                         </div>
                                       )}
+                                      {!isDataNet && prod.scheduledLicenseCount !== undefined && prod.scheduledEffectiveDate && (
+                                        <div className="text-xs rounded-md bg-info/10 text-info border border-info/20 px-2.5 py-1.5 flex items-start gap-1.5">
+                                          <Clock className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                                          <span>
+                                            Effective {new Date(prod.scheduledEffectiveDate).toLocaleDateString()}: {prod.licenseCount} → {prod.scheduledLicenseCount} seats
+                                            {(prod.scheduledUnassignedUserIds?.length || 0) > 0 && (
+                                              <> — {prod.scheduledUnassignedUserIds!.length} users will be unassigned</>
+                                            )}
+                                          </span>
+                                        </div>
+                                      )}
                                       {isDataNet ? (
                                         <div className="rounded-md bg-muted/40 border border-dashed p-3">
                                           <p className="text-xs text-muted-foreground leading-relaxed">
@@ -833,10 +851,12 @@ export const SubscriptionsPage = () => {
                                 ? `${productNames.slice(0, 2).join(', ')} +${productNames.length - 2}`
                                 : productNames.join(', ');
                               const statusClass =
+                                q.status === 'requested' ? 'bg-warning/10 text-warning border-warning/30' :
                                 q.status === 'active' ? 'bg-info/10 text-info border-info/30' :
                                 q.status === 'accepted' ? 'bg-success/10 text-success border-success/30' :
                                 q.status === 'declined' ? 'text-muted-foreground border-muted-foreground/40' :
                                 'bg-warning/10 text-warning border-warning/30';
+                              const statusLabel = q.status === 'requested' ? 'Requested' : q.status;
                               const expiresIn = daysUntil(q.expiryDate);
                               const isExpiringSoon = q.status === 'active' && expiresIn >= 0 && expiresIn <= 3;
                               const expiryShort = new Date(q.expiryDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
@@ -853,7 +873,20 @@ export const SubscriptionsPage = () => {
                                     </span>
                                   </TableCell>
                                   <TableCell className="text-right font-medium">{formatCurrency(q.amount)}</TableCell>
-                                  <TableCell><Badge variant="outline" className={statusClass}>{q.status}</Badge></TableCell>
+                                  <TableCell>
+                                    {q.status === 'requested' ? (
+                                      <Tooltip>
+                                        <TooltipTrigger asChild>
+                                          <span tabIndex={0}>
+                                            <Badge variant="outline" className={statusClass}>{statusLabel}</Badge>
+                                          </span>
+                                        </TooltipTrigger>
+                                        <TooltipContent>{REQUESTED_TOOLTIP}</TooltipContent>
+                                      </Tooltip>
+                                    ) : (
+                                      <Badge variant="outline" className={statusClass}>{statusLabel}</Badge>
+                                    )}
+                                  </TableCell>
                                   <TableCell className="text-right">
                                     <DropdownMenu>
                                       <DropdownMenuTrigger asChild>
@@ -885,14 +918,31 @@ export const SubscriptionsPage = () => {
                                             <RefreshCw className="h-4 w-4 mr-2" />Regenerate
                                           </DropdownMenuItem>
                                         )}
-                                        <DropdownMenuItem onClick={() => toast({ title: 'PDF download coming soon', description: q.quoteNumber })}>
-                                          <Download className="h-4 w-4 mr-2" />Download PDF
-                                        </DropdownMenuItem>
+                                        {q.status !== 'requested' && (
+                                          <DropdownMenuItem onClick={() => toast({ title: 'PDF download coming soon', description: q.quoteNumber })}>
+                                            <Download className="h-4 w-4 mr-2" />Download PDF
+                                          </DropdownMenuItem>
+                                        )}
                                         {q.status === 'active' && (
                                           <>
                                             <DropdownMenuSeparator />
                                             <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => setDeclineQuote(q)} disabled={readOnly}>
                                               <X className="h-4 w-4 mr-2" />Decline Quote
+                                            </DropdownMenuItem>
+                                          </>
+                                        )}
+                                        {q.status === 'requested' && (
+                                          <>
+                                            <DropdownMenuSeparator />
+                                            <DropdownMenuItem
+                                              className="text-destructive focus:text-destructive"
+                                              onClick={() => {
+                                                cancelQuoteRequest(q.id);
+                                                toast({ title: 'Quote request cancelled.', description: q.quoteNumber });
+                                              }}
+                                              disabled={readOnly}
+                                            >
+                                              <Trash2 className="h-4 w-4 mr-2" />Cancel Request
                                             </DropdownMenuItem>
                                           </>
                                         )}

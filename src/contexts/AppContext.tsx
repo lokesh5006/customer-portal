@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useCallback, useEffect, ReactNode } from 'react';
 import { formatCurrency } from '@/lib/format';
+import { calculateProratedAdd } from '@/lib/proration';
 
 // Types
 export type Role = 'account_owner' | 'billing_admin' | 'license_admin' | 'registered_contact';
@@ -33,7 +34,14 @@ export type Permission =
   | 'billing.view'
   | 'billing.pay'
   | 'billing.manage_methods'
-  | 'support.view_all_tickets';
+  | 'support.view_all_tickets'
+  // Manage Licenses drawer action gates (per discovery Q12)
+  | 'manage_seats_count'
+  | 'manage_user_assignment'
+  | 'manage_seat_renewal_status'
+  | 'reactivate_license'
+  // Owner-only capabilities (per discovery Q13)
+  | 'owner_only_actions';
 
 export type LicenseType = 'paid' | 'it_assistant' | 'trial';
 
@@ -73,7 +81,9 @@ export type NotificationType =
   // Account
   | 'account.role_changed'
   | 'account.password_changed'
-  | 'account.new_login';
+  | 'account.new_login'
+  // Admin team — internal notifications (per discovery Q4)
+  | 'admin.po_entered_on_invoice';
 
 export type NotificationCategoryKey =
   | 'billing'
@@ -128,6 +138,9 @@ export const NOTIFICATION_CATALOG: NotificationCatalogEntry[] = [
   { type: 'account.role_changed', category: 'account', label: 'Role changed', description: 'When your role on this account is changed.', rolesAllowed: [] },
   { type: 'account.password_changed', category: 'account', label: 'Password changed', description: 'When your password is changed.', rolesAllowed: [] },
   { type: 'account.new_login', category: 'account', label: 'New login from unrecognized device', description: 'Security notification when your account is accessed from a new device.', rolesAllowed: [] },
+  // Admin team (internal). rolesAllowed gates customer-side preference UI; this type
+  // is emitted directly to AO of the customer's company + any seeded Leimberg admin.
+  { type: 'admin.po_entered_on_invoice', category: 'account', label: 'PO entered on mid-cycle invoice', description: 'A customer entered a PO when paying a mid-cycle license-change invoice.', rolesAllowed: ['account_owner'] },
 ];
 
 export const NOTIFICATION_CATEGORIES: Array<{ key: NotificationCategoryKey; label: string }> = [
@@ -198,6 +211,12 @@ export interface SubscriptionProduct {
   status: 'active' | 'pending' | 'expired';
   /** Additional seats waiting on payment (Pay on Receipt) */
   pendingLicenseCount?: number;
+  /** Scheduled seat reduction: new (lower) seat count that activates on the renewal date */
+  scheduledLicenseCount?: number;
+  /** Effective date for the scheduled seat reduction (typically the subscription renewalDate) */
+  scheduledEffectiveDate?: string;
+  /** Users marked "Expire end of year" — their licenses drop when the scheduled change activates */
+  scheduledUnassignedUserIds?: string[];
 }
 
 export type PaymentMethod = 'pay_immediately' | 'pay_on_receipt' | 'pay_on_terms';
@@ -236,6 +255,19 @@ export interface License {
   licenseType?: LicenseType;
   /** Only for licenseType === 'trial'. */
   trialExpiresAt?: string;
+  /** ISO date the license was deactivated (released, not just unassigned). */
+  deactivatedAt?: string;
+  /** Optional human-readable reason for deactivation. */
+  deactivatedReason?: string;
+}
+
+/** Catalog product config — list price, maintenance split (admin-configurable). */
+export interface CatalogProduct {
+  name: string;
+  /** Annual list price per seat (total = license + maintenance). */
+  pricePerSeatPerYear: number;
+  /** Annual maintenance portion per seat. Default seed = 30% of total. */
+  maintenancePerSeatPerYear: number;
 }
 
 export interface InvoiceLineItem {
@@ -248,7 +280,12 @@ export interface InvoiceLineItem {
 
 export type InvoiceType = 'Initial Invoice' | 'Renewal Invoice' | 'Adjustment Invoice';
 
-export type InvoiceSource = 'checkout' | 'quote_acceptance' | 'license_change' | 'renewal';
+export type InvoiceSource =
+  | 'checkout'
+  | 'quote_acceptance'
+  | 'license_change'
+  | 'renewal'
+  | 'license_reactivation';
 
 export interface Invoice {
   id: string;
@@ -269,6 +306,8 @@ export interface Invoice {
   quoteNumber?: string;
   /** Pending product license change to be applied when invoice is paid */
   pendingLicenseChange?: { subscriptionId: string; productId: string; newCount: number };
+  /** Pending quote line-item application to be applied when invoice is paid. */
+  pendingQuoteApplication?: { quoteId: string; subscriptionId: string };
   /** Activates subscription from pending_payment when invoice is paid */
   activatesSubscription?: boolean;
   /** Optional human-friendly description for tabular display */
@@ -290,13 +329,18 @@ export interface QuoteLineItem {
   total: number;
 }
 
+export type QuoteRequestReason =
+  | 'Adding seats to a current product'
+  | 'Adding a new product'
+  | 'Other';
+
 export interface Quote {
   id: string;
   companyId: string;
   quoteNumber: string;
   createdDate: string;
   expiryDate: string;
-  status: 'active' | 'accepted' | 'declined' | 'expired';
+  status: 'requested' | 'active' | 'accepted' | 'declined' | 'expired';
   amount: number;
   note: string;
   lineItems: QuoteLineItem[];
@@ -305,6 +349,12 @@ export interface Quote {
   declineReason?: string;
   invoiceId?: string;
   recipients?: string[];
+  /** Optional reason captured when the customer submits a quote request. */
+  requestReason?: QuoteRequestReason;
+  /** ISO timestamp when sales formally responded (requested -> active). */
+  formallyQuotedAt?: string;
+  /** ISO timestamp when the customer accepted the quote. */
+  acceptedAt?: string;
 }
 
 export interface QuoteRequest {
@@ -380,6 +430,10 @@ interface AppState {
   savedPaymentMethods: SavedPaymentMethod[];
   dataNetUpdates: DataNetUpdate[];
   notifications: Notification[];
+  /** Editable product catalog — admin tool maintains the maintenance split per product. */
+  catalogProducts: CatalogProduct[];
+  /** Pricing Calculation Mode toggle (per discovery Q1 fallback). */
+  useLegacyProration: boolean;
   wizardData: {
     companyName: string;
     firstName: string;
@@ -436,7 +490,15 @@ interface AppContextType extends AppState {
   getCompanyTickets: () => SupportTicket[];
   getCompanyQuotes: () => Quote[];
   getCompanyQuoteRequests: () => QuoteRequest[];
-  createQuote: (input: { lineItems: QuoteLineItem[]; note: string; recipients?: string[] }) => Quote;
+  createQuote: (input: {
+    lineItems: QuoteLineItem[];
+    note: string;
+    recipients?: string[];
+    status?: Quote['status'];
+    requestReason?: QuoteRequestReason;
+  }) => Quote;
+  cancelQuoteRequest: (quoteId: string) => void;
+  approvePendingQuoteRequests: () => number;
   hasPaidInvoice: () => boolean;
   hasSentQuote: () => boolean;
   hasDeclinedQuote: () => boolean;
@@ -448,7 +510,22 @@ interface AppContextType extends AppState {
   updateCompanyConfig: (companyId: string, updates: Partial<CompanyBillingConfig>) => void;
   getAvailablePaymentMethods: (companyId?: string) => PaymentMethod[];
   requestLicenseChange: (subscriptionId: string, productId: string, newCount: number, paymentMethod: PaymentMethod) => { invoice?: Invoice; applied: boolean; pending: boolean };
+  /**
+   * Schedule a seat decrease that takes effect on the subscription's renewal date.
+   * - removeNowUserIds: licenses unassigned immediately (seat stays paid through the term).
+   * - expireEndOfYearUserIds: keep assignment now; drop on renewal when the schedule activates.
+   * The current paid licenseCount is NOT reduced.
+   */
+  scheduleLicenseDecrease: (
+    subscriptionId: string,
+    productId: string,
+    newCount: number,
+    removeNowUserIds: string[],
+    expireEndOfYearUserIds: string[],
+  ) => void;
   markInvoicePaid: (invoiceId: string) => void;
+  /** Persist an optional PO number on an existing invoice (per discovery Q3). */
+  setInvoicePoNumber: (invoiceId: string, poNumber: string | undefined) => void;
   checkoutPurchase: (input: { lineItems: QuoteLineItem[]; paymentMethod: PaymentMethod; poNumber?: string }) => Invoice;
   renewSubscription: (
     subscriptionId: string,
@@ -472,15 +549,39 @@ interface AppContextType extends AppState {
   getUserNotificationPrefs: (userId?: string) => Record<NotificationType, NotificationChannelPrefs>;
   updateUserNotificationPrefs: (userId: string, type: NotificationType, channel: 'email' | 'inApp', value: boolean) => void;
   resetUserNotificationPrefs: (userId: string) => void;
+  // Catalog config (admin tool — discovery Q5)
+  getCatalogProduct: (name: string) => CatalogProduct | undefined;
+  updateCatalogProductMaintenance: (name: string, maintenancePerSeatPerYear: number) => void;
+  setUseLegacyProration: (value: boolean) => void;
+  // Previously-held license reactivation (discovery Q6 + Q7)
+  getDeactivatedLicenses: (companyId?: string) => Array<{
+    license: License;
+    subscription: Subscription;
+    product: SubscriptionProduct;
+  }>;
+  reactivateLicense: (input: {
+    subscriptionId: string;
+    productId: string;
+    licenseAssignedAt: string;
+    paymentMethodId?: string;
+  }) => { invoice: Invoice } | null;
 }
 
-// Product catalog for reference
+// Product catalog for reference. Each entry carries the total list price AND the
+// maintenance portion (per discovery Q1). Maintenance defaults are ~30% of total
+// rounded to the nearest dollar; admins can override per product at runtime.
 export const PRODUCT_CATALOG = [
-  { name: 'NumberCruncher Desktop', defaultPrice: 349, description: 'Desktop tax and accounting application', type: 'desktop' as const, latestVersion: '4.2', hasInstaller: true },
-  { name: 'NumberCruncher Web', defaultPrice: 349, description: 'Browser-based NumberCruncher access', type: 'web' as const, latestVersion: '4.2', hasInstaller: false },
-  { name: 'QuickView Desktop', defaultPrice: 199, description: 'Desktop reporting and analytics app', type: 'desktop' as const, latestVersion: '2.1', hasInstaller: true },
-  { name: 'DataNet', defaultPrice: 29, description: 'Industry data network and alerts', type: 'service' as const, latestVersion: '1.0', hasInstaller: false },
+  { name: 'NumberCruncher Desktop', defaultPrice: 349, maintenancePerSeatPerYear: 105, description: 'Desktop tax and accounting application', type: 'desktop' as const, latestVersion: '4.2', hasInstaller: true },
+  { name: 'NumberCruncher Web', defaultPrice: 349, maintenancePerSeatPerYear: 105, description: 'Browser-based NumberCruncher access', type: 'web' as const, latestVersion: '4.2', hasInstaller: false },
+  { name: 'QuickView Desktop', defaultPrice: 199, maintenancePerSeatPerYear: 60, description: 'Desktop reporting and analytics app', type: 'desktop' as const, latestVersion: '2.1', hasInstaller: true },
+  { name: 'DataNet', defaultPrice: 29, maintenancePerSeatPerYear: 9, description: 'Industry data network and alerts', type: 'service' as const, latestVersion: '1.0', hasInstaller: false },
 ];
+
+const initialCatalogProducts: CatalogProduct[] = PRODUCT_CATALOG.map(p => ({
+  name: p.name,
+  pricePerSeatPerYear: p.defaultPrice,
+  maintenancePerSeatPerYear: p.maintenancePerSeatPerYear,
+}));
 
 // ============================================================
 // Seed date helpers — keep dates realistic relative to "today"
@@ -498,6 +599,54 @@ const _isoDaysAgoFull = (n: number): string =>
   new Date(_seedToday.getTime() - n * _DAY_MS).toISOString();
 
 // Initial mock data
+// Apply a quote's line items to an existing subscription as a mid-cycle change:
+// existing products get their seat counts increased; products not yet on the
+// subscription get added. DataNet is auto-included and has no seat math, so it
+// is ignored here.
+function applyQuoteToSubscription(sub: Subscription, quote: Quote): Subscription {
+  const updated = [...sub.products];
+  quote.lineItems.forEach(line => {
+    if (line.productName === 'DataNet') return;
+    const idx = updated.findIndex(p => p.name === line.productName);
+    if (idx >= 0) {
+      const current = updated[idx];
+      const purchased = current.purchasedLicenseCount ?? current.licenseCount;
+      updated[idx] = {
+        ...current,
+        licenseCount: current.licenseCount + line.licenseCount,
+        purchasedLicenseCount: purchased + line.licenseCount,
+      };
+    } else {
+      updated.push({
+        id: `prod-${sub.id}-${line.productName.toLowerCase().replace(/\s+/g, '-')}-${Date.now()}`,
+        name: line.productName,
+        licenseCount: line.licenseCount,
+        purchasedLicenseCount: line.licenseCount,
+        pricePerLicense: line.unitPrice,
+        status: 'active',
+      });
+    }
+  });
+  return { ...sub, products: updated };
+}
+
+function parseDisplayNameFromEmail(email: string): { firstName: string; lastName: string } {
+  const localPart = email.split('@')[0] || 'demo';
+  const parts = localPart.split(/[._\-\s+]/).filter(Boolean);
+  const titleCase = (s: string): string => {
+    if (!s) return '';
+    const stripped = s.replace(/\d+$/, '');
+    const word = stripped || s;
+    return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+  };
+  if (parts.length === 0) return { firstName: 'Demo', lastName: 'User' };
+  if (parts.length === 1) return { firstName: titleCase(parts[0]), lastName: 'User' };
+  return {
+    firstName: titleCase(parts[0]),
+    lastName: titleCase(parts.slice(1).join(' ')),
+  };
+}
+
 const initialCompanies: Company[] = [
   { id: 'company-1', name: 'ABC Accounting', createdAt: '2023-01-15', autoRenewal: true },
   { id: 'company-2', name: 'XYZ Consulting', createdAt: '2023-06-20', autoRenewal: true },
@@ -605,6 +754,11 @@ const initialLicenses: License[] = [
   // XYZ - NC Desktop (prod-desktop-2)
   ...['user-20','user-22','user-23']
     .map(uid => ({ userId: uid, subscriptionId: 'sub-3', productId: 'prod-desktop-2', assignedAt: '2026-01-15', licenseType: 'paid' as LicenseType })),
+  // ABC - Previously held (released) licenses available for reactivation. These have
+  // no userId assignment — the perpetual license is owned by the company but the
+  // seat is currently released. AO/BA can reactivate for the prorated maintenance.
+  { userId: '', subscriptionId: 'sub-1', productId: 'prod-desktop', assignedAt: '2025-04-10', licenseType: 'paid', deactivatedAt: _isoDaysAgo(120), deactivatedReason: 'Seat released after former staff departure' },
+  { userId: '', subscriptionId: 'sub-1', productId: 'prod-web', assignedAt: '2025-08-22', licenseType: 'paid', deactivatedAt: _isoDaysAgo(45), deactivatedReason: 'Seat released — role no longer requires access' },
 ];
 
 // ============================================================
@@ -950,6 +1104,17 @@ const initialQuotes: Quote[] = [
       { productName: 'NumberCruncher Web', licenseCount: 8, unitPrice: 349, total: 2792 },
     ],
   },
+  // quote-abc-007 — Requested by customer, awaiting formal sales response.
+  {
+    id: 'quote-abc-007', companyId: 'company-1', quoteNumber: 'QU-1007',
+    createdDate: _isoDaysAgo(2), expiryDate: _isoDaysAhead(30),
+    status: 'requested', amount: 1047,
+    requestReason: 'Adding seats to a current product',
+    note: 'Need 3 additional NumberCruncher Web seats for our new hires.',
+    lineItems: [
+      { productName: 'NumberCruncher Web', licenseCount: 3, unitPrice: 349, total: 1047 },
+    ],
+  },
 
   // ============ XYZ CONSULTING ============
   // quote-xyz-001 — Active, multi-product
@@ -1160,6 +1325,8 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     savedPaymentMethods: initialSavedPaymentMethods,
     dataNetUpdates: initialDataNetUpdates,
     notifications: initialNotifications,
+    catalogProducts: initialCatalogProducts,
+    useLegacyProration: false,
     wizardData: {
       companyName: '',
       firstName: '',
@@ -1292,39 +1459,41 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       return true;
     }
 
-    // Demo fallback — auto-create a fresh company + user for any unknown email
-    const localPart = normalized.split('@')[0] || 'demo';
-    const domainPart = (normalized.split('@')[1] || 'demo').split('.')[0];
-    const newCompanyId = `company-${Date.now()}`;
-    const newCompany: Company = {
-      id: newCompanyId,
-      name: `${domainPart.charAt(0).toUpperCase()}${domainPart.slice(1)} Inc.`,
-      createdAt: new Date().toISOString().split('T')[0],
-    };
-    const [firstRaw, lastRaw] = localPart.split('.');
-    const cap = (s: string) => s ? s.charAt(0).toUpperCase() + s.slice(1) : '';
-    const firstName = cap(firstRaw || 'Demo');
-    const lastName = cap(lastRaw || 'User');
+    // Unknown email — auto-join the seeded ABC Accounting demo company.
+    // Keeps the prototype feeling populated for first-time demo viewers.
+    const abcCompany = state.companies.find(c => c.id === 'company-1');
+    if (!abcCompany) return false;
+
+    const { firstName, lastName } = parseDisplayNameFromEmail(normalized);
+    const baseUsername =
+      `${firstName}${lastName}`.toLowerCase().replace(/[^a-z0-9]/g, '') || 'user';
+    let generatedUsername = baseUsername;
+    const inCompany = state.users.filter(u => u.companyId === abcCompany.id);
+    if (inCompany.some(u => u.username?.toLowerCase() === baseUsername)) {
+      let i = 1;
+      while (inCompany.some(u => u.username?.toLowerCase() === `${baseUsername}${i}`)) i++;
+      generatedUsername = `${baseUsername}${i}`;
+    }
+    const todayISO = new Date().toISOString().split('T')[0];
     const newUser: User = {
-      id: `user-${Date.now()}`,
+      id: `user-demo-${Date.now()}`,
       firstName,
       lastName,
       email: normalized,
-      username: `${firstName}${lastName}`.toLowerCase().replace(/[^a-z0-9]/g, '') || `user${Date.now()}`,
+      username: generatedUsername,
       roles: ['account_owner'],
       status: 'active',
-      lastLogin: new Date().toISOString().split('T')[0],
-      createdAt: new Date().toISOString().split('T')[0],
-      companyId: newCompanyId,
+      lastLogin: todayISO,
+      createdAt: todayISO,
+      companyId: abcCompany.id,
       dataNetEmailOptIn: true,
     };
     setState(prev => ({
       ...prev,
-      companies: [...prev.companies, newCompany],
       users: [...prev.users, newUser],
       isAuthenticated: true,
       currentUser: newUser,
-      currentCompany: newCompany,
+      currentCompany: abcCompany,
       demoRoles: ['account_owner'],
     }));
     return true;
@@ -1722,6 +1891,9 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   const can = useCallback((perm: Permission): boolean => {
     const roles = getEffectiveRoles();
     const has = (r: Role) => roles.includes(r);
+    // owner_only_actions is intentionally NOT auto-granted to AO via the early return —
+    // handled below explicitly so the rule is colocated with other Manage-Licenses gates.
+    if (perm === 'owner_only_actions') return has('account_owner');
     if (has('account_owner')) return true;
     switch (perm) {
       case 'users.add':
@@ -1744,6 +1916,13 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       case 'billing.manage_methods':
         return has('billing_admin');
       case 'support.view_all_tickets':
+        return has('billing_admin') || has('license_admin');
+      // Manage Licenses drawer gates (per discovery Q12)
+      case 'manage_seats_count':
+      case 'manage_seat_renewal_status':
+      case 'reactivate_license':
+        return has('billing_admin');
+      case 'manage_user_assignment':
         return has('billing_admin') || has('license_admin');
       default:
         return false;
@@ -1900,6 +2079,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   // Auto-expire active quotes whose expiryDate is in the past
   const getCompanyQuotes = useCallback((): Quote[] => {
     const today = new Date();
+    // Only auto-expire 'active' quotes. 'requested' quotes wait for sales response indefinitely.
     return state.quotes
       .filter(q => q.companyId === state.currentCompany?.id)
       .map(q => (q.status === 'active' && new Date(q.expiryDate) < today ? { ...q, status: 'expired' as const } : q));
@@ -1931,7 +2111,13 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     return !hasPaidInvoice();
   }, [hasPaidInvoice]);
 
-  const createQuote = useCallback((input: { lineItems: QuoteLineItem[]; note: string; recipients?: string[] }): Quote => {
+  const createQuote = useCallback((input: {
+    lineItems: QuoteLineItem[];
+    note: string;
+    recipients?: string[];
+    status?: Quote['status'];
+    requestReason?: QuoteRequestReason;
+  }): Quote => {
     const created = new Date();
     const expires = new Date(created.getTime() + 30 * 86400000);
     const amount = input.lineItems.reduce((a, li) => a + li.total, 0);
@@ -1941,11 +2127,12 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       quoteNumber: `Q-${String(1000 + Math.floor(Math.random() * 9000))}`,
       createdDate: created.toISOString().split('T')[0],
       expiryDate: expires.toISOString().split('T')[0],
-      status: 'active',
+      status: input.status || 'active',
       amount,
       note: input.note || '',
       lineItems: input.lineItems,
       recipients: input.recipients && input.recipients.length > 0 ? input.recipients : undefined,
+      requestReason: input.requestReason,
     };
     setState(prev => ({ ...prev, quotes: [newQuote, ...prev.quotes] }));
     return newQuote;
@@ -1954,6 +2141,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   const acceptQuote = useCallback((quoteId: string, input: { poNumber?: string; paymentMethod: PaymentMethod }) => {
     const quote = state.quotes.find(q => q.id === quoteId);
     if (!quote) return null;
+    if (quote.status !== 'active') return null;
     if (new Date(quote.expiryDate) < new Date()) return null;
 
     const today = new Date();
@@ -1963,43 +2151,24 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       input.paymentMethod === 'pay_immediately' ? 'paid' :
       input.paymentMethod === 'pay_on_terms' ? 'payment_terms_applied' : 'awaiting_payment';
 
-    // Build a fresh Subscription + Licenses from the quote line items (mirrors checkoutPurchase).
-    const baseId = Date.now();
-    const subId = `sub-${baseId}`;
-    const userId = state.currentUser?.id || 'user-1';
-    const products: SubscriptionProduct[] = quote.lineItems.map((l, i) => ({
-      id: `prod-${baseId}-${i}`,
-      name: l.productName,
-      licenseCount: l.licenseCount,
-      purchasedLicenseCount: l.licenseCount,
-      pricePerLicense: l.unitPrice,
-      status: 'active' as const,
-    }));
-    const subStatus: Subscription['status'] =
-      input.paymentMethod === 'pay_immediately' ? 'active' :
-      input.paymentMethod === 'pay_on_terms' ? 'active' : 'pending_payment';
-    const newSubscription: Subscription = {
-      id: subId,
-      companyId: quote.companyId,
-      name: 'Annual Plan',
-      planType: 'Annual',
-      billingFrequency: 'annual',
-      status: subStatus,
-      startDate: todayStr,
-      renewalDate: new Date(today.getTime() + 365 * 86400000).toISOString().split('T')[0],
-      baseFee: 1000,
-      perSeatCost: 10,
-      products,
-    };
-    const newLicenses: License[] = products.map(p => ({
-      userId,
-      subscriptionId: subId,
-      productId: p.id,
-      assignedAt: todayStr,
-    }));
+    // Mid-cycle: target the company's primary active Annual subscription.
+    // Falls back to any active subscription if no Annual one exists.
+    const targetSub =
+      state.subscriptions.find(s => s.companyId === quote.companyId && s.status === 'active' && s.planType === 'Annual') ||
+      state.subscriptions.find(s => s.companyId === quote.companyId && s.status === 'active') ||
+      null;
 
+    // Apply seat increases / new products immediately for pay_immediately
+    // (payment already happened at /pay before acceptQuote runs) and for
+    // pay_on_terms (seats provisioned on credit). For pay_on_receipt, defer
+    // until the invoice is paid via markInvoicePaid.
+    const applyImmediately =
+      input.paymentMethod === 'pay_immediately' || input.paymentMethod === 'pay_on_terms';
+
+    const baseId = Date.now();
+    const invoiceId = `inv-${baseId}`;
     const invoice: Invoice = {
-      id: `inv-${baseId}`,
+      id: invoiceId,
       companyId: quote.companyId,
       invoiceNumber: `INV-${String(2000 + Math.floor(Math.random() * 9000))}`,
       date: todayStr,
@@ -2007,28 +2176,41 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       status,
       amount: quote.amount,
       balance: input.paymentMethod === 'pay_immediately' ? 0 : quote.amount,
-      subscriptionId: subId,
-      subscriptionName: newSubscription.name,
+      subscriptionId: targetSub?.id || '',
+      subscriptionName: targetSub?.name || 'Annual Plan',
       invoiceType: 'Adjustment Invoice',
       source: 'quote_acceptance',
       quoteNumber: quote.quoteNumber,
       poNumber: input.poNumber,
       paymentMethod: input.paymentMethod,
-      activatesSubscription: input.paymentMethod === 'pay_on_receipt',
       lineItems: quote.lineItems.map(l => ({
         product: l.productName,
         quantity: l.licenseCount,
         unitPrice: l.unitPrice,
         total: l.total,
       })),
+      // Pay-on-receipt defers seat application until the invoice is paid.
+      pendingQuoteApplication:
+        !applyImmediately && targetSub
+          ? { quoteId: quote.id, subscriptionId: targetSub.id }
+          : undefined,
     };
-    const updatedQuote: Quote = { ...quote, status: 'accepted', poNumber: input.poNumber, paymentMethod: input.paymentMethod, invoiceId: invoice.id };
+    const updatedQuote: Quote = {
+      ...quote,
+      status: 'accepted',
+      poNumber: input.poNumber,
+      paymentMethod: input.paymentMethod,
+      invoiceId: invoice.id,
+      acceptedAt: today.toISOString(),
+    };
+
     setState(prev => ({
       ...prev,
       quotes: prev.quotes.map(q => q.id === quoteId ? updatedQuote : q),
       invoices: [invoice, ...prev.invoices],
-      subscriptions: [...prev.subscriptions, newSubscription],
-      licenses: [...prev.licenses, ...newLicenses],
+      subscriptions: applyImmediately && targetSub
+        ? prev.subscriptions.map(s => s.id === targetSub.id ? applyQuoteToSubscription(s, quote) : s)
+        : prev.subscriptions,
     }));
     notify({
       type: 'quote.accepted',
@@ -2037,8 +2219,8 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       link: '/invoices',
       linkLabel: 'View invoice',
     });
-    return { quote: updatedQuote, invoice, subscription: newSubscription };
-  }, [state.quotes, state.currentUser, notify]);
+    return { quote: updatedQuote, invoice, subscription: targetSub || undefined };
+  }, [state.quotes, state.subscriptions, notify]);
 
   const declineQuote = useCallback((quoteId: string, reason?: string) => {
     const quote = state.quotes.find(q => q.id === quoteId);
@@ -2056,6 +2238,54 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       });
     }
   }, [state.quotes, notify]);
+
+  const cancelQuoteRequest = useCallback((quoteId: string) => {
+    setState(prev => {
+      const quote = prev.quotes.find(q => q.id === quoteId);
+      if (!quote || quote.status !== 'requested') return prev;
+      return { ...prev, quotes: prev.quotes.filter(q => q.id !== quoteId) };
+    });
+  }, []);
+
+  const approvePendingQuoteRequests = useCallback((): number => {
+    let approved: Quote[] = [];
+    setState(prev => {
+      const pending = prev.quotes.filter(q => q.status === 'requested');
+      if (pending.length === 0) {
+        approved = [];
+        return prev;
+      }
+      const now = new Date();
+      const expiry = new Date(now.getTime() + 30 * 86400000).toISOString().split('T')[0];
+      approved = pending.map(q => ({
+        ...q,
+        status: 'active' as const,
+        expiryDate: expiry,
+        formallyQuotedAt: now.toISOString(),
+      }));
+      const byId = new Map(approved.map(q => [q.id, q]));
+      return {
+        ...prev,
+        quotes: prev.quotes.map(q => byId.get(q.id) || q),
+      };
+    });
+    approved.forEach(quote => {
+      const owner = state.users.find(u =>
+        u.companyId === quote.companyId &&
+        u.roles.includes('account_owner') &&
+        u.status === 'active'
+      );
+      notify({
+        userId: owner?.id,
+        type: 'quote.received',
+        title: 'Formal quote ready',
+        message: `Quote ${quote.quoteNumber} for ${formatCurrency(quote.amount)} is ready to review.`,
+        link: '/quotes',
+        linkLabel: 'Review quote',
+      });
+    });
+    return approved.length;
+  }, [state.users, notify]);
 
   const addQuoteRequest = useCallback((input: { products: { productName: string; desiredLicenseCount: number }[]; note: string }): QuoteRequest => {
     const req: QuoteRequest = {
@@ -2113,9 +2343,23 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       return { applied: true, pending: false };
     }
 
-    // Increase — generate invoice
-    const cost = delta * prod.pricePerLicense;
+    // Increase — generate invoice using the license/maintenance proration model
+    // (per discovery Q1). Fall back to legacy flat proration when the admin toggle is on.
     const today = new Date();
+    const catalog = state.catalogProducts.find(c => c.name === prod.name);
+    const totalPerSeat = catalog?.pricePerSeatPerYear ?? prod.pricePerLicense;
+    const maintenancePerSeat = catalog?.maintenancePerSeatPerYear ?? 0;
+    const proration = calculateProratedAdd({
+      product: {
+        pricePerSeatPerYear: totalPerSeat,
+        maintenancePerSeatPerYear: maintenancePerSeat,
+      },
+      seats: delta,
+      addDate: today,
+      renewalDate: new Date(sub.renewalDate),
+      useLegacyProration: state.useLegacyProration,
+    });
+    const cost = proration.totalCharge;
     const status: Invoice['status'] =
       paymentMethod === 'pay_immediately' ? 'paid' :
       paymentMethod === 'pay_on_terms' ? 'payment_terms_applied' : 'awaiting_payment';
@@ -2135,7 +2379,8 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       invoiceType: 'Adjustment Invoice',
       source: 'license_change',
       paymentMethod,
-      lineItems: [{ product: `Additional ${prod.name} Seats`, quantity: delta, unitPrice: prod.pricePerLicense, total: cost }],
+      // Customer-facing line item shows ONE total (license + prorated maintenance combined).
+      lineItems: [{ product: `Additional ${prod.name} Seats`, quantity: delta, unitPrice: Math.round((cost / Math.max(delta, 1)) * 100) / 100, total: cost }],
       pendingLicenseChange: applyImmediately ? undefined : { subscriptionId, productId, newCount },
     };
 
@@ -2152,7 +2397,46 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       } : s),
     }));
     return { invoice, applied: applyImmediately, pending: !applyImmediately };
-  }, [state.subscriptions]);
+  }, [state.subscriptions, state.catalogProducts, state.useLegacyProration]);
+
+  const scheduleLicenseDecrease = useCallback((
+    subscriptionId: string,
+    productId: string,
+    newCount: number,
+    removeNowUserIds: string[],
+    expireEndOfYearUserIds: string[],
+  ) => {
+    setState(prev => {
+      const sub = prev.subscriptions.find(s => s.id === subscriptionId);
+      if (!sub) return prev;
+      // Unassign "remove now" users immediately — seat remains paid for the term.
+      const licenses = prev.licenses.filter(l => !(
+        l.subscriptionId === subscriptionId &&
+        l.productId === productId &&
+        removeNowUserIds.includes(l.userId)
+      ));
+      const subscriptions = prev.subscriptions.map(s => s.id !== subscriptionId ? s : {
+        ...s,
+        products: s.products.map(p => p.id !== productId ? p : {
+          ...p,
+          // licenseCount is intentionally NOT reduced — change activates on the renewal date.
+          scheduledLicenseCount: newCount,
+          scheduledEffectiveDate: sub.renewalDate,
+          scheduledUnassignedUserIds: expireEndOfYearUserIds.slice(),
+        }),
+      });
+      return { ...prev, licenses, subscriptions };
+    });
+  }, []);
+
+  const setInvoicePoNumber = useCallback((invoiceId: string, poNumber: string | undefined) => {
+    setState(prev => ({
+      ...prev,
+      invoices: prev.invoices.map(i =>
+        i.id === invoiceId ? { ...i, poNumber: poNumber && poNumber.trim() ? poNumber.trim() : undefined } : i
+      ),
+    }));
+  }, []);
 
   const markInvoicePaid = useCallback((invoiceId: string) => {
     let paidInvoice: Invoice | undefined;
@@ -2173,6 +2457,16 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
             return { ...p, licenseCount: newCount, pendingLicenseCount: remainingPending };
           }),
         } : s);
+      }
+      // Apply pending quote line items if the invoice carries one
+      if (inv.pendingQuoteApplication) {
+        const { quoteId, subscriptionId } = inv.pendingQuoteApplication;
+        const quote = prev.quotes.find(q => q.id === quoteId);
+        if (quote) {
+          subscriptions = subscriptions.map(s =>
+            s.id === subscriptionId ? applyQuoteToSubscription(s, quote) : s
+          );
+        }
       }
       // Activate pending_payment subscription if linked
       if (inv.activatesSubscription) {
@@ -2590,9 +2884,182 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     });
   }, []);
 
+  // ============================================================
+  // Catalog config (per discovery Q5) — maintenance per product + global mode toggle
+  // ============================================================
+  const getCatalogProduct = useCallback((name: string): CatalogProduct | undefined => {
+    return state.catalogProducts.find(p => p.name === name);
+  }, [state.catalogProducts]);
+
+  const updateCatalogProductMaintenance = useCallback((name: string, maintenancePerSeatPerYear: number) => {
+    setState(prev => ({
+      ...prev,
+      catalogProducts: prev.catalogProducts.map(p =>
+        p.name === name ? { ...p, maintenancePerSeatPerYear } : p
+      ),
+    }));
+  }, []);
+
+  const setUseLegacyProration = useCallback((value: boolean) => {
+    setState(prev => ({ ...prev, useLegacyProration: value }));
+  }, []);
+
+  // ============================================================
+  // Previously-held license reactivation (per discovery Q6 + Q7)
+  // ============================================================
+  const getDeactivatedLicenses = useCallback((companyId?: string) => {
+    const cid = companyId || state.currentCompany?.id;
+    if (!cid) return [];
+    const subsById = new Map(state.subscriptions.map(s => [s.id, s] as const));
+    return state.licenses
+      .filter(l => !!l.deactivatedAt)
+      .map(license => {
+        const subscription = subsById.get(license.subscriptionId);
+        const product = subscription?.products.find(p => p.id === license.productId);
+        if (!subscription || subscription.companyId !== cid || !product) return null;
+        return { license, subscription, product };
+      })
+      .filter((x): x is { license: License; subscription: Subscription; product: SubscriptionProduct } => x !== null);
+  }, [state.licenses, state.subscriptions, state.currentCompany]);
+
+  const reactivateLicense = useCallback((input: {
+    subscriptionId: string;
+    productId: string;
+    licenseAssignedAt: string;
+    paymentMethodId?: string;
+  }): { invoice: Invoice } | null => {
+    const sub = state.subscriptions.find(s => s.id === input.subscriptionId);
+    const prod = sub?.products.find(p => p.id === input.productId);
+    if (!sub || !prod) return null;
+    const target = state.licenses.find(l =>
+      l.subscriptionId === input.subscriptionId &&
+      l.productId === input.productId &&
+      l.assignedAt === input.licenseAssignedAt &&
+      !!l.deactivatedAt
+    );
+    if (!target) return null;
+
+    const today = new Date();
+    const catalog = state.catalogProducts.find(c => c.name === prod.name);
+    const maintenancePerSeat = catalog?.maintenancePerSeatPerYear ?? 0;
+    const totalPerSeat = catalog?.pricePerSeatPerYear ?? prod.pricePerLicense;
+    // Reactivation charges ONLY the prorated maintenance portion — the license is
+    // already owned. In legacy proration mode the helper returns the full prorated
+    // total directly; in the new mode we want just the maintenance portion (license
+    // is excluded). We achieve "maintenance-only" by constructing an effective
+    // product where total = maintenance — then license portion = 0.
+    const proration = calculateProratedAdd({
+      product: {
+        pricePerSeatPerYear: maintenancePerSeat,
+        maintenancePerSeatPerYear: maintenancePerSeat,
+      },
+      seats: 1,
+      addDate: today,
+      renewalDate: new Date(sub.renewalDate),
+      useLegacyProration: state.useLegacyProration,
+    });
+    void totalPerSeat;
+    const subtotal = proration.totalCharge;
+    const tax = Math.round(subtotal * 0.07 * 100) / 100;
+    const total = Math.round((subtotal + tax) * 100) / 100;
+
+    const invoice: Invoice = {
+      id: `inv-${Date.now()}`,
+      companyId: sub.companyId,
+      invoiceNumber: `INV-RA-${String(7000 + Math.floor(Math.random() * 9000))}`,
+      date: today.toISOString().split('T')[0],
+      dueDate: today.toISOString().split('T')[0],
+      status: 'paid',
+      amount: total,
+      subtotal,
+      tax,
+      totalAmount: total,
+      balance: 0,
+      subscriptionId: sub.id,
+      subscriptionName: sub.name,
+      invoiceType: 'Adjustment Invoice',
+      source: 'license_reactivation',
+      paymentMethod: 'pay_immediately',
+      paidAt: today.toISOString(),
+      description: `License reactivation — ${prod.name}`,
+      lineItems: [{
+        product: `${prod.name} Reactivation (1 seat)`,
+        quantity: 1,
+        unitPrice: subtotal,
+        total: subtotal,
+      }],
+    };
+    // paymentMethodId is accepted for forward compatibility; the demo settles
+    // reactivation invoices as paid-immediately and does not persist the method.
+    void input.paymentMethodId;
+
+    setState(prev => ({
+      ...prev,
+      // Clear the deactivation on this specific license record (matched by assignedAt key).
+      licenses: prev.licenses.map(l => {
+        if (l.subscriptionId !== input.subscriptionId) return l;
+        if (l.productId !== input.productId) return l;
+        if (l.assignedAt !== input.licenseAssignedAt) return l;
+        if (!l.deactivatedAt) return l;
+        const { deactivatedAt: _da, deactivatedReason: _dr, ...rest } = l;
+        void _da; void _dr;
+        return { ...rest, userId: '' };
+      }),
+      // Increase the seat count on the subscription's product by 1.
+      subscriptions: prev.subscriptions.map(s => s.id === sub.id ? {
+        ...s,
+        products: s.products.map(p => p.id === prod.id ? {
+          ...p,
+          licenseCount: p.licenseCount + 1,
+          purchasedLicenseCount: (p.purchasedLicenseCount ?? p.licenseCount) + 1,
+        } : p),
+      } : s),
+      invoices: [invoice, ...prev.invoices],
+    }));
+    return { invoice };
+  }, [state.subscriptions, state.licenses, state.catalogProducts, state.useLegacyProration]);
+
   // Run once on provider mount — simulates a backend cron that emits 30-day-ahead renewal invoices.
   useEffect(() => {
     _generateRenewalInvoices(30);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Activate any scheduled seat reductions whose effective date has passed.
+  // Lowers licenseCount, drops the deferred ("expire end of year") license assignments,
+  // and clears the scheduled-change fields on the product.
+  useEffect(() => {
+    const todayStr = new Date().toISOString().split('T')[0];
+    setState(prev => {
+      const toUnassign: { subscriptionId: string; productId: string; userIds: string[] }[] = [];
+      let mutated = false;
+      const subscriptions = prev.subscriptions.map(sub => {
+        const products = sub.products.map(p => {
+          if (p.scheduledLicenseCount === undefined || !p.scheduledEffectiveDate) return p;
+          if (p.scheduledEffectiveDate > todayStr) return p;
+          mutated = true;
+          const expireIds = p.scheduledUnassignedUserIds || [];
+          if (expireIds.length) {
+            toUnassign.push({ subscriptionId: sub.id, productId: p.id, userIds: expireIds });
+          }
+          return {
+            ...p,
+            licenseCount: p.scheduledLicenseCount,
+            scheduledLicenseCount: undefined,
+            scheduledEffectiveDate: undefined,
+            scheduledUnassignedUserIds: undefined,
+          };
+        });
+        return products === sub.products ? sub : { ...sub, products };
+      });
+      if (!mutated) return prev;
+      const licenses = prev.licenses.filter(l => !toUnassign.some(t =>
+        t.subscriptionId === l.subscriptionId &&
+        t.productId === l.productId &&
+        t.userIds.includes(l.userId)
+      ));
+      return { ...prev, subscriptions, licenses };
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -2685,6 +3152,8 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       getCompanyQuotes,
       getCompanyQuoteRequests,
       createQuote,
+      cancelQuoteRequest,
+      approvePendingQuoteRequests,
       acceptQuote,
       declineQuote,
       addQuoteRequest,
@@ -2692,7 +3161,9 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       updateCompanyConfig,
       getAvailablePaymentMethods,
       requestLicenseChange,
+      scheduleLicenseDecrease,
       markInvoicePaid,
+      setInvoicePoNumber,
       checkoutPurchase,
       renewSubscription,
       getCompanyPaymentMethods,
@@ -2714,6 +3185,11 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       getUserNotificationPrefs,
       updateUserNotificationPrefs,
       resetUserNotificationPrefs,
+      getCatalogProduct,
+      updateCatalogProductMaintenance,
+      setUseLegacyProration,
+      getDeactivatedLicenses,
+      reactivateLicense,
     }}>
       {children}
     </AppContext.Provider>

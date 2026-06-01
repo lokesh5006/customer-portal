@@ -11,12 +11,9 @@ import {
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from '@/components/ui/dialog';
-import {
-  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
-} from '@/components/ui/dropdown-menu';
 import { PaginationControls } from '@/components/listing';
 import { useApp, DataNetUpdate } from '@/contexts/AppContext';
-import { Database, Eye, MoreVertical, Search } from 'lucide-react';
+import { Database, ExternalLink, Search } from 'lucide-react';
 
 export const DataNetPage = () => {
   const navigate = useNavigate();
@@ -98,7 +95,9 @@ export const DataNetPage = () => {
                       <TableHead className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
                         Month
                       </TableHead>
-                      <TableHead className="w-[60px] text-right" />
+                      <TableHead className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                        Action
+                      </TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -113,19 +112,16 @@ export const DataNetPage = () => {
                         <TableRow key={u.id}>
                           <TableCell className="text-sm">{u.year}</TableCell>
                           <TableCell className="text-sm">{u.monthName}</TableCell>
-                          <TableCell className="text-right">
-                            <DropdownMenu>
-                              <DropdownMenuTrigger asChild>
-                                <Button variant="ghost" size="icon" className="h-8 w-8" aria-label="Open menu">
-                                  <MoreVertical className="h-4 w-4" />
-                                </Button>
-                              </DropdownMenuTrigger>
-                              <DropdownMenuContent align="end" className="w-48">
-                                <DropdownMenuItem onClick={() => setViewUpdate(u)}>
-                                  <Eye className="h-4 w-4 mr-2" /> View
-                                </DropdownMenuItem>
-                              </DropdownMenuContent>
-                            </DropdownMenu>
+                          <TableCell>
+                            <Button
+                              variant="link"
+                              size="sm"
+                              onClick={() => setViewUpdate(u)}
+                              className="text-primary p-0 h-auto inline-flex items-center gap-1"
+                            >
+                              View
+                              <ExternalLink className="h-3 w-3" />
+                            </Button>
                           </TableCell>
                         </TableRow>
                       ))

@@ -13,7 +13,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { useApp, Quote } from '@/contexts/AppContext';
 import {
-  FileSignature, Eye, Check, X, RefreshCw, Plus, MessageSquare, MoreVertical, Download, Search, Clock,
+  FileSignature, Eye, Check, X, RefreshCw, Plus, MessageSquare, MoreVertical, Download, Search, Clock, Trash2,
 } from 'lucide-react';
 import {
   AcceptQuoteDrawer, DeclineQuoteDialog, ViewNoteDialog, ViewDeclineReasonDialog, RequestQuoteDialog,
@@ -25,8 +25,11 @@ import { formatCurrency } from '@/lib/format';
 import { cn } from '@/lib/utils';
 
 const QUOTE_STATUS_ORDER: Record<Quote['status'], number> = {
-  active: 0, accepted: 1, declined: 2, expired: 3,
+  requested: 0, active: 1, accepted: 2, declined: 3, expired: 4,
 };
+
+const REQUESTED_TOOLTIP =
+  "Awaiting sales team response. You'll see the formal quote here when it's ready.";
 
 const formatShortDate = (iso: string) =>
   new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
@@ -37,7 +40,7 @@ const daysUntil = (iso: string) =>
 export const QuotesPage = () => {
   const navigate = useNavigate();
   const { toast } = useToast();
-  const { getCompanyQuotes, getCompanyQuoteRequests, getCompanySubscriptions, hasAccess } = useApp();
+  const { getCompanyQuotes, getCompanyQuoteRequests, getCompanySubscriptions, hasAccess, cancelQuoteRequest } = useApp();
   const { readOnly } = useReadOnlyGuard();
   const quotes = getCompanyQuotes();
   const quoteRequests = getCompanyQuoteRequests();
@@ -92,11 +95,17 @@ export const QuotesPage = () => {
 
   const statusColor = (s: Quote['status']) => {
     switch (s) {
+      case 'requested': return 'bg-warning/10 text-warning border-warning/30';
       case 'active': return 'bg-info/10 text-info border-info/30';
       case 'accepted': return 'bg-success/10 text-success border-success/30';
       case 'declined': return 'text-muted-foreground border-muted-foreground/40';
       case 'expired': return 'bg-warning/10 text-warning border-warning/30';
     }
+  };
+
+  const handleCancelRequest = (q: Quote) => {
+    cancelQuoteRequest(q.id);
+    toast({ title: 'Quote request cancelled.', description: q.quoteNumber });
   };
 
   const handleRegenerate = (q: Quote) => {
@@ -146,7 +155,22 @@ export const QuotesPage = () => {
     {
       key: 'status',
       header: <SortableHeader label="Status" sortKey="status" sort={sort} onSortChange={setSort} />,
-      render: q => <Badge variant="outline" className={statusColor(q.status)}>{q.status}</Badge>,
+      render: q => {
+        const pill = (
+          <Badge variant="outline" className={statusColor(q.status)}>
+            {q.status === 'requested' ? 'Requested' : q.status}
+          </Badge>
+        );
+        if (q.status !== 'requested') return pill;
+        return (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span tabIndex={0}>{pill}</span>
+            </TooltipTrigger>
+            <TooltipContent>{REQUESTED_TOOLTIP}</TooltipContent>
+          </Tooltip>
+        );
+      },
     },
     {
       key: 'actions', header: '', className: 'w-[50px] text-right',
@@ -181,14 +205,24 @@ export const QuotesPage = () => {
                 <RefreshCw className="h-4 w-4 mr-2" />Regenerate
               </DropdownMenuItem>
             )}
-            <DropdownMenuItem onClick={() => toast({ title: 'PDF download coming soon', description: q.quoteNumber })}>
-              <Download className="h-4 w-4 mr-2" />Download PDF
-            </DropdownMenuItem>
+            {q.status !== 'requested' && (
+              <DropdownMenuItem onClick={() => toast({ title: 'PDF download coming soon', description: q.quoteNumber })}>
+                <Download className="h-4 w-4 mr-2" />Download PDF
+              </DropdownMenuItem>
+            )}
             {q.status === 'active' && canAccept && (
               <>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => setDeclineQuote(q)} disabled={readOnly}>
                   <X className="h-4 w-4 mr-2" />Decline Quote
+                </DropdownMenuItem>
+              </>
+            )}
+            {q.status === 'requested' && (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => handleCancelRequest(q)} disabled={readOnly}>
+                  <Trash2 className="h-4 w-4 mr-2" />Cancel Request
                 </DropdownMenuItem>
               </>
             )}

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useApp } from '@/contexts/AppContext';
+import { useApp, Subscription, SubscriptionProduct } from '@/contexts/AppContext';
 import { MainLayout } from '@/components/layout/MainLayout';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -34,6 +34,7 @@ import { UserOverviewWidget } from '@/components/dashboard/UserOverviewWidget';
 import { QuickActionsWidget } from '@/components/dashboard/QuickActionsWidget';
 import { MyTicketsWidget } from '@/components/dashboard/MyTicketsWidget';
 import { RenewalFlyout } from '@/components/billing/RenewalFlyout';
+import { ManageLicensesDrawer } from '@/components/subscriptions/QuoteDialogs';
 import { PageHeader } from '@/components/layout/PageHeader';
 
 export const Dashboard = () => {
@@ -41,6 +42,15 @@ export const Dashboard = () => {
   const { currentUser, currentCompany, hasAccess, demoRoles, getCompanySubscriptions, getCompanyInvoices, getAssignedLicenseCount } = useApp();
   const [dataNetOptOut, setDataNetOptOut] = useState(false);
   const [renewalOpen, setRenewalOpen] = useState(false);
+  const [manageOpen, setManageOpen] = useState(false);
+  const [manageSub, setManageSub] = useState<Subscription | null>(null);
+  const [manageProd, setManageProd] = useState<SubscriptionProduct | null>(null);
+
+  const openManageSeats = (sub: Subscription, prod: SubscriptionProduct) => {
+    setManageSub(sub);
+    setManageProd(prod);
+    setManageOpen(true);
+  };
 
   const isOwner = hasAccess(['account_owner']);
   const isBilling = hasAccess(['billing_admin']);
@@ -217,40 +227,68 @@ export const Dashboard = () => {
         </Card>
 
         {/* License Assignments Summary */}
-        {!isStandard && (
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <h2 className="text-xl font-semibold">License Assignments</h2>
-              <Button variant="ghost" size="sm" onClick={() => navigate('/licenses')}>
-                View All <ArrowRight className="h-4 w-4 ml-1" />
-              </Button>
-            </div>
-            <div className="grid gap-3 md:grid-cols-2">
-              {subscriptions.map(sub =>
-                sub.products.map(prod => {
-                  const assigned = getAssignedLicenseCount(sub.id, prod.id);
-                  const avail = prod.licenseCount - assigned;
-                  return (
-                    <Card key={`${sub.id}-${prod.id}`} className="cursor-pointer hover:shadow-md transition-all" onClick={() => navigate('/licenses')}>
-                      <CardContent className="p-4">
-                        <div className="flex items-center justify-between">
-                          <div>
-                            <div className="font-medium text-sm">{prod.name}</div>
-                            <div className="text-xs text-muted-foreground">{sub.name} &middot; {sub.planType}</div>
+        {!isStandard && (() => {
+          const activeSubs = subscriptions.filter(s => s.status === 'active');
+          const seatProducts = activeSubs.flatMap(sub =>
+            sub.products
+              .filter(p => p.name !== 'DataNet')
+              .map(p => ({ sub, prod: p }))
+          );
+          return (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <h2 className="text-xl font-semibold">License Assignments</h2>
+                <Button variant="ghost" size="sm" onClick={() => navigate('/licenses')}>
+                  View All <ArrowRight className="h-4 w-4 ml-1" />
+                </Button>
+              </div>
+              {seatProducts.length === 0 ? (
+                <Card>
+                  <CardContent className="p-6 text-center text-sm text-muted-foreground">
+                    No active products yet.
+                  </CardContent>
+                </Card>
+              ) : (
+                <div className="grid gap-3 md:grid-cols-2">
+                  {seatProducts.map(({ sub, prod }) => {
+                    const assigned = getAssignedLicenseCount(sub.id, prod.id);
+                    const hasScheduledChange = prod.scheduledLicenseCount !== undefined;
+                    return (
+                      <button
+                        key={`${sub.id}-${prod.id}`}
+                        onClick={() => openManageSeats(sub, prod)}
+                        aria-label={`Manage seats for ${prod.name}, ${assigned} of ${prod.licenseCount} assigned`}
+                        className="text-left rounded-md border bg-card hover:bg-muted/40 hover:shadow-sm transition-all p-4 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                      >
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="font-medium text-sm truncate">{prod.name}</div>
+                            <div className="text-xs text-muted-foreground truncate">{sub.name} &middot; {sub.planType}</div>
                           </div>
-                          <div className="text-right">
-                            <div className="font-semibold">{avail}/{prod.licenseCount}</div>
-                            <div className="text-xs text-muted-foreground">seats available</div>
+                          <div className="flex items-center gap-2 shrink-0">
+                            {hasScheduledChange && (
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <Clock className="h-4 w-4 text-info" aria-label="Scheduled renewal change pending" />
+                                </TooltipTrigger>
+                                <TooltipContent>
+                                  Scheduled change on renewal: {prod.licenseCount} → {prod.scheduledLicenseCount} seats
+                                </TooltipContent>
+                              </Tooltip>
+                            )}
+                            <span className="inline-flex items-center rounded-md border border-border px-2.5 py-1 text-sm font-semibold text-primary">
+                              {assigned}/{prod.licenseCount}
+                            </span>
                           </div>
                         </div>
-                      </CardContent>
-                    </Card>
-                  );
-                })
+                      </button>
+                    );
+                  })}
+                </div>
               )}
             </div>
-          </div>
-        )}
+          );
+        })()}
 
         {/* Bottom widgets */}
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
@@ -265,6 +303,12 @@ export const Dashboard = () => {
         open={renewalOpen}
         onOpenChange={setRenewalOpen}
         subscriptionId={subscriptions[0]?.id || ''}
+      />
+      <ManageLicensesDrawer
+        open={manageOpen}
+        onOpenChange={setManageOpen}
+        subscription={manageSub}
+        product={manageProd}
       />
     </MainLayout>
   );

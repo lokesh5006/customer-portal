@@ -460,6 +460,11 @@ const UserEditDrawer = ({ open, onOpenChange, mode, user, readOnly, onSaved }: U
 
   const editorIsAccountOwner = hasAccess(['account_owner']);
   const editorIsLicenseAdmin = hasAccess(['license_admin']);
+  // Q10: the expiring-seat assignment notice only shows when the EFFECTIVE role
+  // is License Admin alone — AO and BA can change the renewal status themselves
+  // from the Manage Licenses drawer, so the notice isn't relevant for them.
+  const editorIsOnlyLicenseAdmin =
+    editorIsLicenseAdmin && !hasAccess(['account_owner', 'billing_admin']);
 
   // Role checkboxes the editor is allowed to SEE/GRANT.
   const visibleRoles: Role[] = editorIsAccountOwner
@@ -768,33 +773,55 @@ const UserEditDrawer = ({ open, onOpenChange, mode, user, readOnly, onSaved }: U
                           ? licenses.some(l => l.userId === user.id && l.subscriptionId === sub.id && l.productId === prod.id)
                           : false;
                         const noSeats = !checked && available <= 0 && !alreadyHas;
+                        // Q10: a product has expiring seats when its scheduled (next-year)
+                        // seat count is lower than its current count. License Admin sees an
+                        // informational notice when assigning to such a product because they
+                        // can't toggle the seat's renewal status themselves.
+                        const hasExpiringSeats =
+                          prod.scheduledLicenseCount !== undefined &&
+                          prod.scheduledLicenseCount < prod.licenseCount;
+                        const showExpiringNotice =
+                          editorIsOnlyLicenseAdmin && checked && !alreadyHas && hasExpiringSeats;
+                        const endOfCycleDate = new Date(sub.renewalDate).toLocaleDateString('en-US', {
+                          month: 'long', day: 'numeric', year: 'numeric',
+                        });
                         return (
-                          <Tooltip key={key}>
-                            <TooltipTrigger asChild>
-                              <label className="flex items-center justify-between gap-2 py-1">
-                                <div className="flex items-center gap-2">
-                                  <Checkbox
-                                    checked={checked}
-                                    onCheckedChange={(v) =>
-                                      setProductCheck(prev => ({ ...prev, [key]: v as boolean }))
-                                    }
-                                    disabled={isReadOnlyView || noSeats}
-                                  />
-                                  <span className="text-sm">{prod.name}</span>
-                                </div>
-                                {!checked && (
-                                  <span className="text-xs text-muted-foreground">
-                                    {available} available
-                                  </span>
-                                )}
-                              </label>
-                            </TooltipTrigger>
-                            {noSeats && (
-                              <TooltipContent>
-                                No available seats for this product. Add seats in Manage Licenses.
-                              </TooltipContent>
+                          <div key={key}>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <label className="flex items-center justify-between gap-2 py-1">
+                                  <div className="flex items-center gap-2">
+                                    <Checkbox
+                                      checked={checked}
+                                      onCheckedChange={(v) =>
+                                        setProductCheck(prev => ({ ...prev, [key]: v as boolean }))
+                                      }
+                                      disabled={isReadOnlyView || noSeats}
+                                    />
+                                    <span className="text-sm">{prod.name}</span>
+                                  </div>
+                                  {!checked && (
+                                    <span className="text-xs text-muted-foreground">
+                                      {available} available
+                                    </span>
+                                  )}
+                                </label>
+                              </TooltipTrigger>
+                              {noSeats && (
+                                <TooltipContent>
+                                  No available seats for this product. Add seats in Manage Licenses.
+                                </TooltipContent>
+                              )}
+                            </Tooltip>
+                            {showExpiringNotice && (
+                              <div className="mt-1.5 flex items-start gap-2 rounded-md border border-warning/30 bg-warning/10 px-2.5 py-2 text-xs text-warning">
+                                <Clock className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                                <span>
+                                  This license is paid through {endOfCycleDate}. To continue this seat at renewal, your Billing Admin must mark it as renewing in Manage Licenses.
+                                </span>
+                              </div>
                             )}
-                          </Tooltip>
+                          </div>
                         );
                       })}
                       {sub.products.every(p => p.name === 'DataNet') && (
