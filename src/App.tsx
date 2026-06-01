@@ -13,6 +13,7 @@ import { Signup } from "./pages/Signup";
 import { Dashboard } from "./pages/Dashboard";
 import { UsersContactsPage } from "./pages/UsersContactsPage";
 import { SubscriptionsPage } from "./pages/SubscriptionsPage";
+import { SubscriptionDetailPage } from "./pages/SubscriptionDetailPage";
 import { CheckoutPage } from "./pages/CheckoutPage";
 import { LicenseReductionPage } from "./pages/LicenseReductionPage";
 import { BillingPage } from "./pages/BillingPage";
@@ -44,6 +45,7 @@ const App = () => (
               <Route path="/users" element={<UsersContactsPage />} />
               <Route path="/users-contacts" element={<UsersContactsPage />} />
               <Route path="/subscriptions" element={<SubscriptionsPage />} />
+              <Route path="/subscriptions/:subscriptionId" element={<SubscriptionDetailPage />} />
               <Route path="/licenses" element={<Navigate to="/subscriptions" replace />} />
               <Route path="/licenses/reduce" element={<LicenseReductionPage />} />
               <Route path="/checkout" element={<CheckoutPage />} />

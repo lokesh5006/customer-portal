@@ -40,6 +40,8 @@ export type Permission =
   | 'manage_user_assignment'
   | 'manage_seat_renewal_status'
   | 'reactivate_license'
+  // Billing details editing (v15 — subscription detail page)
+  | 'edit_billing_details'
   // Owner-only capabilities (per discovery Q13)
   | 'owner_only_actions';
 
@@ -193,12 +195,25 @@ export interface User {
   notificationPrefs?: Record<NotificationType, NotificationChannelPrefs>;
 }
 
+export interface CompanyAddress {
+  line1?: string;
+  line2?: string;
+  city?: string;
+  state?: string;
+  postalCode?: string;
+  country?: string;
+}
+
 export interface Company {
   id: string;
   name: string;
   createdAt: string;
   /** Whether the company's active subscriptions auto-renew. Defaults to true. */
   autoRenewal?: boolean;
+  /** Billing address (v15 — editable from the subscription detail page). */
+  address?: CompanyAddress;
+  /** User IDs that serve as billing contacts for this company. */
+  billingContactUserIds?: string[];
 }
 
 export interface SubscriptionProduct {
@@ -451,6 +466,12 @@ interface AppContextType extends AppState {
   logout: () => void;
   selectCompany: (companyId: string) => void;
   updateCompany: (companyId: string, updates: Partial<Company>) => void;
+  updateCompanyBillingDetails: (input: {
+    companyId: string;
+    name: string;
+    address?: CompanyAddress;
+    contactUserIds: string[];
+  }) => void;
   setAutoRenewal: (companyId: string, value: boolean) => void;
   setDemoRoles: (roles: UserRole[]) => void;
   setBillingHasAdminAccess: (value: boolean) => void;
@@ -523,6 +544,23 @@ interface AppContextType extends AppState {
     removeNowUserIds: string[],
     expireEndOfYearUserIds: string[],
   ) => void;
+  /**
+   * Apply a paid-license reduction (v14 Manage Licenses rework, Section C3/C4).
+   * - removeNowUserIds: license deactivated immediately (becomes a "previously held"
+   *   license) and the current paid count drops by one per user.
+   * - expireEndOfCycleUserIds: user keeps access now; license is flagged to drop on
+   *   the renewal date. Current paid count is unchanged; renewal count drops.
+   * newCurrentCount / newRenewalCount are the resulting paid counts (computed by the
+   * caller) so empty-seat releases (no users affected) are handled uniformly.
+   */
+  applyLicenseReduction: (input: {
+    subscriptionId: string;
+    productId: string;
+    newCurrentCount: number;
+    newRenewalCount: number;
+    removeNowUserIds: string[];
+    expireEndOfCycleUserIds: string[];
+  }) => void;
   markInvoicePaid: (invoiceId: string) => void;
   /** Persist an optional PO number on an existing invoice (per discovery Q3). */
   setInvoicePoNumber: (invoiceId: string, poNumber: string | undefined) => void;
@@ -648,8 +686,16 @@ function parseDisplayNameFromEmail(email: string): { firstName: string; lastName
 }
 
 const initialCompanies: Company[] = [
-  { id: 'company-1', name: 'ABC Accounting', createdAt: '2023-01-15', autoRenewal: true },
-  { id: 'company-2', name: 'XYZ Consulting', createdAt: '2023-06-20', autoRenewal: true },
+  {
+    id: 'company-1', name: 'ABC Accounting', createdAt: '2023-01-15', autoRenewal: true,
+    address: { line1: '500 Madison Avenue', line2: 'Suite 1200', city: 'New York', state: 'NY', postalCode: '10022', country: 'United States' },
+    billingContactUserIds: ['user-2'],
+  },
+  {
+    id: 'company-2', name: 'XYZ Consulting', createdAt: '2023-06-20', autoRenewal: true,
+    address: { line1: '88 Market Street', city: 'San Francisco', state: 'CA', postalCode: '94105', country: 'United States' },
+    billingContactUserIds: ['user-21'],
+  },
 ];
 
 const initialUsers: User[] = [
@@ -674,6 +720,11 @@ const initialUsers: User[] = [
   { id: 'user-25', firstName: 'Laura', lastName: 'Huang', email: 'laura.huang@xyzconsulting.com', username: 'laurahuang', roles: ['registered_contact'], status: 'invited', lastLogin: null, createdAt: '2024-01-15', companyId: 'company-2', jobTitle: 'Associate', dataNetEmailOptIn: true },
 ];
 
+// v14 reset (Section A2): exactly ONE active subscription per company.
+//   ABC  → NumberCruncher Desktop (5 seats) + NumberCruncher Web (3 seats).
+//          DataNet is included automatically and has no separate seat management.
+//          Renewal ~200 days out so mid-cycle proration math is interesting to demo.
+//   XYZ  → NumberCruncher Desktop (10 seats) only. Renewal ~150 days out.
 const initialSubscriptions: Subscription[] = [
   {
     id: 'sub-1',
@@ -682,16 +733,13 @@ const initialSubscriptions: Subscription[] = [
     planType: 'Annual',
     billingFrequency: 'annual',
     status: 'active',
-    startDate: '2026-01-01',
-    renewalDate: '2026-12-31',
+    startDate: _isoDaysAgo(165),
+    renewalDate: _isoDaysAhead(200),
     baseFee: 1000,
     perSeatCost: 10,
     products: [
-      { id: 'prod-web', name: 'NumberCruncher Web', licenseCount: 20, purchasedLicenseCount: 20, pricePerLicense: 10, status: 'active' },
-      { id: 'prod-desktop', name: 'NumberCruncher Desktop', licenseCount: 12, purchasedLicenseCount: 10, pricePerLicense: 10, status: 'active' },
-      // QuickView trial slot — drives the TrialBanner for John Smith on default login.
-      // pricePerLicense is 0 so renewal calculations are unaffected.
-      { id: 'prod-qv-trial', name: 'QuickView Desktop', licenseCount: 1, purchasedLicenseCount: 0, pricePerLicense: 0, status: 'active' },
+      { id: 'prod-desktop', name: 'NumberCruncher Desktop', licenseCount: 5, purchasedLicenseCount: 5, pricePerLicense: 10, status: 'active' },
+      { id: 'prod-web', name: 'NumberCruncher Web', licenseCount: 3, purchasedLicenseCount: 3, pricePerLicense: 10, status: 'active' },
     ],
   },
   {
@@ -701,64 +749,35 @@ const initialSubscriptions: Subscription[] = [
     planType: 'Annual',
     billingFrequency: 'annual',
     status: 'active',
-    startDate: '2026-01-01',
-    renewalDate: '2026-12-31',
+    startDate: _isoDaysAgo(215),
+    renewalDate: _isoDaysAhead(150),
     baseFee: 1000,
     perSeatCost: 10,
     products: [
-      { id: 'prod-web-2', name: 'NumberCruncher Web', licenseCount: 8, purchasedLicenseCount: 8, pricePerLicense: 10, status: 'active' },
-      { id: 'prod-desktop-2', name: 'NumberCruncher Desktop', licenseCount: 8, purchasedLicenseCount: 8, pricePerLicense: 10, status: 'active' },
-    ],
-  },
-  // ABC second subscription — a back-office-added top-up, demonstrating multi-subscription support
-  {
-    id: 'sub-abc-addon',
-    companyId: 'company-1',
-    name: 'NumberCruncher Web — Team Expansion',
-    planType: 'Annual',
-    billingFrequency: 'annual',
-    status: 'active',
-    startDate: '2026-03-01',
-    renewalDate: '2027-03-01',
-    baseFee: 0,
-    perSeatCost: 349,
-    products: [
-      { id: 'prod-abc-addon-web', name: 'NumberCruncher Web', licenseCount: 5, purchasedLicenseCount: 5, pricePerLicense: 349, status: 'active' },
+      { id: 'prod-desktop-2', name: 'NumberCruncher Desktop', licenseCount: 10, purchasedLicenseCount: 10, pricePerLicense: 10, status: 'active' },
     ],
   },
 ];
 
+// v14 reset (Section A3): ZERO deactivated licenses on first load. The
+// "Previously held licenses" scenario is created live during the demo by
+// decreasing seats with the "Remove now" option.
 const initialLicenses: License[] = [
-  // ABC - NumberCruncher Web (prod-web): 14 assigned of 20 — all 'paid' (default)
-  ...['user-1','user-2','user-3','user-4','user-5','user-6','user-8','user-10','user-11','user-12','user-13','user-7','user-9','user-20']
-    .filter((_,i) => i < 14)
-    .map(uid => ({ userId: uid, subscriptionId: 'sub-1', productId: 'prod-web', assignedAt: '2026-01-15', licenseType: 'paid' as LicenseType })),
-  // ABC - QuickView Desktop trial (prod-qv-trial): John Smith — drives the TrialBanner on default login (~12 days remaining).
-  { userId: 'user-1', subscriptionId: 'sub-1', productId: 'prod-qv-trial', assignedAt: _isoDaysAgo(18), licenseType: 'trial', trialExpiresAt: _isoDaysAhead(12) },
-  // ABC - NumberCruncher Desktop (prod-desktop): Mike Williams gets the IT Assistant slot; Lisa Miller is on Trial; others paid.
-  { userId: 'user-2', subscriptionId: 'sub-1', productId: 'prod-desktop', assignedAt: '2026-01-15', licenseType: 'paid' },
-  { userId: 'user-3', subscriptionId: 'sub-1', productId: 'prod-desktop', assignedAt: '2026-01-15', licenseType: 'it_assistant' },
-  { userId: 'user-4', subscriptionId: 'sub-1', productId: 'prod-desktop', assignedAt: '2026-01-15', licenseType: 'paid' },
-  { userId: 'user-5', subscriptionId: 'sub-1', productId: 'prod-desktop', assignedAt: '2026-01-15', licenseType: 'paid' },
-  { userId: 'user-6', subscriptionId: 'sub-1', productId: 'prod-desktop', assignedAt: '2026-01-15', licenseType: 'trial', trialExpiresAt: '2026-12-31' },
-  { userId: 'user-8', subscriptionId: 'sub-1', productId: 'prod-desktop', assignedAt: '2026-01-15', licenseType: 'paid' },
-  { userId: 'user-10', subscriptionId: 'sub-1', productId: 'prod-desktop', assignedAt: '2026-01-15', licenseType: 'paid' },
-  // ABC - Team Expansion add-on subscription: 3 of 5 assigned (NumberCruncher Web)
-  ...['user-1','user-11','user-13']
-    .map(uid => ({ userId: uid, subscriptionId: 'sub-abc-addon', productId: 'prod-abc-addon-web', assignedAt: '2026-03-05', licenseType: 'paid' as LicenseType })),
-  // XYZ - 4 of 8 assigned (NC Web) — Steven Liu is on Trial
-  { userId: 'user-20', subscriptionId: 'sub-3', productId: 'prod-web-2', assignedAt: '2026-01-15', licenseType: 'paid' },
-  { userId: 'user-21', subscriptionId: 'sub-3', productId: 'prod-web-2', assignedAt: '2026-01-15', licenseType: 'paid' },
-  { userId: 'user-22', subscriptionId: 'sub-3', productId: 'prod-web-2', assignedAt: '2026-01-15', licenseType: 'paid' },
-  { userId: 'user-24', subscriptionId: 'sub-3', productId: 'prod-web-2', assignedAt: '2026-01-15', licenseType: 'trial', trialExpiresAt: '2026-09-30' },
-  // XYZ - NC Desktop (prod-desktop-2)
-  ...['user-20','user-22','user-23']
-    .map(uid => ({ userId: uid, subscriptionId: 'sub-3', productId: 'prod-desktop-2', assignedAt: '2026-01-15', licenseType: 'paid' as LicenseType })),
-  // ABC - Previously held (released) licenses available for reactivation. These have
-  // no userId assignment — the perpetual license is owned by the company but the
-  // seat is currently released. AO/BA can reactivate for the prorated maintenance.
-  { userId: '', subscriptionId: 'sub-1', productId: 'prod-desktop', assignedAt: '2025-04-10', licenseType: 'paid', deactivatedAt: _isoDaysAgo(120), deactivatedReason: 'Seat released after former staff departure' },
-  { userId: '', subscriptionId: 'sub-1', productId: 'prod-web', assignedAt: '2025-08-22', licenseType: 'paid', deactivatedAt: _isoDaysAgo(45), deactivatedReason: 'Seat released — role no longer requires access' },
+  // ABC — NumberCruncher Desktop (prod-desktop): all 5 paid seats assigned. This is
+  // the product the demo decreases from 5 → 3, so every seat is filled to trigger
+  // the per-user removal prompt. John Smith + Sarah Johnson are the removable pair.
+  { userId: 'user-1', subscriptionId: 'sub-1', productId: 'prod-desktop', assignedAt: _isoDaysAgo(150), licenseType: 'paid' },
+  { userId: 'user-2', subscriptionId: 'sub-1', productId: 'prod-desktop', assignedAt: _isoDaysAgo(150), licenseType: 'paid' },
+  { userId: 'user-3', subscriptionId: 'sub-1', productId: 'prod-desktop', assignedAt: _isoDaysAgo(150), licenseType: 'paid' },
+  { userId: 'user-4', subscriptionId: 'sub-1', productId: 'prod-desktop', assignedAt: _isoDaysAgo(150), licenseType: 'paid' },
+  { userId: 'user-5', subscriptionId: 'sub-1', productId: 'prod-desktop', assignedAt: _isoDaysAgo(150), licenseType: 'paid' },
+  // ABC — NumberCruncher Web (prod-web): 2 of 3 paid seats assigned (one open slot
+  // to demo inline "Assign user").
+  { userId: 'user-1', subscriptionId: 'sub-1', productId: 'prod-web', assignedAt: _isoDaysAgo(150), licenseType: 'paid' },
+  { userId: 'user-6', subscriptionId: 'sub-1', productId: 'prod-web', assignedAt: _isoDaysAgo(150), licenseType: 'paid' },
+  // XYZ — NumberCruncher Desktop (prod-desktop-2): 5 of 10 paid seats assigned.
+  ...['user-20','user-21','user-22','user-23','user-24']
+    .map(uid => ({ userId: uid, subscriptionId: 'sub-3', productId: 'prod-desktop-2', assignedAt: _isoDaysAgo(150), licenseType: 'paid' as LicenseType })),
 ];
 
 // ============================================================
@@ -1529,6 +1548,27 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     }));
   }, []);
 
+  const updateCompanyBillingDetails = useCallback((input: {
+    companyId: string;
+    name: string;
+    address?: CompanyAddress;
+    contactUserIds: string[];
+  }) => {
+    setState(prev => {
+      const apply = (c: Company): Company => ({
+        ...c,
+        name: input.name.trim() || c.name,
+        address: input.address,
+        billingContactUserIds: input.contactUserIds,
+      });
+      return {
+        ...prev,
+        companies: prev.companies.map(c => c.id === input.companyId ? apply(c) : c),
+        currentCompany: prev.currentCompany?.id === input.companyId ? apply(prev.currentCompany) : prev.currentCompany,
+      };
+    });
+  }, []);
+
   const setAutoRenewal = useCallback((companyId: string, value: boolean) => {
     setState(prev => ({
       ...prev,
@@ -1727,8 +1767,13 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   }, []);
 
   const getAssignedLicenseCount = useCallback((subscriptionId: string, productId: string): number => {
+    // Count only live, user-assigned licenses. Deactivated ("previously held")
+    // licenses carry an empty userId + deactivatedAt and must not inflate the count.
     return state.licenses.filter(l =>
-      l.subscriptionId === subscriptionId && l.productId === productId
+      l.subscriptionId === subscriptionId &&
+      l.productId === productId &&
+      !!l.userId &&
+      !l.deactivatedAt
     ).length;
   }, [state.licenses]);
 
@@ -1921,6 +1966,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       case 'manage_seats_count':
       case 'manage_seat_renewal_status':
       case 'reactivate_license':
+      case 'edit_billing_details':
         return has('billing_admin');
       case 'manage_user_assignment':
         return has('billing_admin') || has('license_admin');
@@ -2424,6 +2470,50 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
           scheduledEffectiveDate: sub.renewalDate,
           scheduledUnassignedUserIds: expireEndOfYearUserIds.slice(),
         }),
+      });
+      return { ...prev, licenses, subscriptions };
+    });
+  }, []);
+
+  const applyLicenseReduction = useCallback((input: {
+    subscriptionId: string;
+    productId: string;
+    newCurrentCount: number;
+    newRenewalCount: number;
+    removeNowUserIds: string[];
+    expireEndOfCycleUserIds: string[];
+  }) => {
+    const nowIso = new Date().toISOString().split('T')[0];
+    const removeNowSet = new Set(input.removeNowUserIds);
+    setState(prev => {
+      const sub = prev.subscriptions.find(s => s.id === input.subscriptionId);
+      if (!sub) return prev;
+      // "Remove now" → deactivate the live license in place: clear the assignment,
+      // stamp deactivatedAt/reason so it surfaces under "Previously held licenses".
+      const licenses = prev.licenses.map(l => {
+        if (l.subscriptionId !== input.subscriptionId || l.productId !== input.productId) return l;
+        if (l.userId && removeNowSet.has(l.userId) && !l.deactivatedAt) {
+          return { ...l, userId: '', deactivatedAt: nowIso, deactivatedReason: 'Seat reduced by admin' };
+        }
+        return l;
+      });
+      const subscriptions = prev.subscriptions.map(s => {
+        if (s.id !== input.subscriptionId) return s;
+        return {
+          ...s,
+          products: s.products.map(p => {
+            if (p.id !== input.productId) return p;
+            const scheduled = input.newRenewalCount < input.newCurrentCount;
+            return {
+              ...p,
+              licenseCount: input.newCurrentCount,
+              purchasedLicenseCount: Math.min(p.purchasedLicenseCount ?? p.licenseCount, input.newCurrentCount),
+              scheduledLicenseCount: scheduled ? input.newRenewalCount : undefined,
+              scheduledEffectiveDate: scheduled ? s.renewalDate : undefined,
+              scheduledUnassignedUserIds: scheduled ? input.expireEndOfCycleUserIds.slice() : undefined,
+            };
+          }),
+        };
       });
       return { ...prev, licenses, subscriptions };
     });
@@ -3112,6 +3202,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       logout,
       selectCompany,
       updateCompany,
+      updateCompanyBillingDetails,
       setAutoRenewal,
       setDemoRoles,
       setBillingHasAdminAccess,
@@ -3162,6 +3253,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       getAvailablePaymentMethods,
       requestLicenseChange,
       scheduleLicenseDecrease,
+      applyLicenseReduction,
       markInvoicePaid,
       setInvoicePoNumber,
       checkoutPurchase,

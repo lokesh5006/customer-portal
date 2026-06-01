@@ -68,7 +68,7 @@ export const Sidebar = () => {
 
   return (
     <aside className="w-64 border-r bg-background h-[calc(100vh-4rem)] sticky top-16 flex flex-col">
-      <nav className="flex-1 p-3 space-y-1 overflow-y-auto">
+      <nav className="flex-1 p-2 space-y-0.5 overflow-y-auto">
         {visibleItems.map(item => {
           const isActive = location.pathname === item.path;
           return (
@@ -76,29 +76,30 @@ export const Sidebar = () => {
               key={item.path}
               variant="ghost"
               className={cn(
-                'w-full justify-start gap-3 h-10 text-sm font-medium transition-colors',
+                'w-full justify-start gap-2.5 h-9 text-sm font-medium transition-colors relative',
                 isActive
-                  ? 'bg-primary/10 text-primary hover:bg-primary/15 hover:text-primary'
-                  : 'text-foreground hover:bg-muted'
+                  ? 'bg-primary/10 text-primary hover:bg-primary/10 hover:text-primary before:absolute before:left-0 before:top-1.5 before:bottom-1.5 before:w-0.5 before:rounded-full before:bg-primary'
+                  : 'text-foreground/80 hover:bg-muted/50 hover:text-foreground'
               )}
               onClick={() => handleNav(item.path)}
             >
-              <item.icon className="h-4 w-4" />
+              <item.icon className="h-[18px] w-[18px]" />
               {item.label}
             </Button>
           );
         })}
       </nav>
 
-      <div className="p-3 border-t">
+      <div className="p-2 border-t">
         <Button
           variant="ghost"
-          className="w-full justify-start gap-3 h-10 text-muted-foreground hover:text-destructive"
+          className="w-full justify-start gap-2.5 h-9 text-sm text-muted-foreground hover:bg-muted/50 hover:text-destructive"
           onClick={handleLogout}
         >
-          <LogOut className="h-4 w-4" />
+          <LogOut className="h-[18px] w-[18px]" />
           Sign Out
         </Button>
+        <p className="text-[10px] text-muted-foreground/60 text-center mt-1.5">Customer Portal · v14</p>
       </div>
     </aside>
   );

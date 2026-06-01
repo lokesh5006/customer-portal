@@ -18,13 +18,16 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import {
+  Popover, PopoverContent, PopoverTrigger,
+} from '@/components/ui/popover';
+import {
   useApp, Subscription, SubscriptionProduct, Quote, PaymentMethod, QuoteRequestReason,
   PRODUCT_CATALOG, License, SavedPaymentMethod,
 } from '@/contexts/AppContext';
 import { calculateProratedAdd } from '@/lib/proration';
 import { useToast } from '@/hooks/use-toast';
 import { formatCurrency } from '@/lib/format';
-import { Plus, Minus, Info, ArrowUp, ArrowDown, ArrowLeft, RotateCcw, AlertCircle, CreditCard, Landmark } from 'lucide-react';
+import { Plus, Minus, Info, ArrowLeft, RotateCcw, AlertCircle, CreditCard, Landmark, UserPlus, UserMinus, Search, Check } from 'lucide-react';
 
 /* ============================================================
  * Payment Method Picker (radio cards)
@@ -60,9 +63,40 @@ const PaymentMethodPicker = ({
 };
 
 /* ============================================================
- * Manage Seats Drawer (Manage Licenses)
+ * Manage Licenses Drawer (v14 rework — Section C)
+ *
+ * Two count fields:
+ *   • "Current paid licenses"        → increase = add seats now (payment). Decrease
+ *                                       down to the assigned count releases empty seats.
+ *   • "Paid licenses at next renewal" → decrease below the assigned count triggers the
+ *                                       per-user removal prompt (remove now / end of cycle).
+ * Plus inline assign/unassign, available-seat pickers, and a "Previously held
+ * licenses" section that renders ONLY when deactivated licenses exist.
  * ========================================================== */
-type RemovalChoice = 'remove_now' | 'expire_end_of_year';
+type RemovalWhen = 'remove_now' | 'expire_end_of_cycle';
+
+// Hoisted to module scope so the number inputs don't remount (and lose focus)
+// on every parent re-render.
+const SeatStepper = ({
+  label, value, onChange, min, disabled,
+}: { label: string; value: number; onChange: (n: number) => void; min: number; disabled?: boolean }) => (
+  <div className="flex-1">
+    <Label className="text-xs text-muted-foreground">{label}</Label>
+    <div className="mt-1 flex items-center gap-1.5">
+      <Button variant="outline" size="icon" className="h-9 w-9 shrink-0" disabled={disabled || value <= min}
+        onClick={() => onChange(Math.max(min, value - 1))} aria-label={`Decrease ${label}`}>
+        <Minus className="h-4 w-4" />
+      </Button>
+      <Input type="number" min={min} value={value} disabled={disabled}
+        onChange={(e) => onChange(Math.max(min, parseInt(e.target.value) || min))}
+        className="h-9 text-center font-semibold" />
+      <Button variant="outline" size="icon" className="h-9 w-9 shrink-0" disabled={disabled}
+        onClick={() => onChange(value + 1)} aria-label={`Increase ${label}`}>
+        <Plus className="h-4 w-4" />
+      </Button>
+    </div>
+  </div>
+);
 
 export const ManageLicensesDrawer = ({
   open, onOpenChange, subscription, product,
@@ -76,27 +110,29 @@ export const ManageLicensesDrawer = ({
   const {
     getAssignedLicenseCount,
     requestLicenseChange,
-    scheduleLicenseDecrease,
+    applyLicenseReduction,
     getCompanyConfig,
     getAvailablePaymentMethods,
     getDeactivatedLicenses,
-    reactivateLicense,
+    getCatalogProduct,
+    useLegacyProration,
+    assignLicense,
+    unassignLicense,
     licenses,
     users,
     can,
   } = useApp();
   const { toast } = useToast();
 
-  // Manage Licenses drawer role gates (per discovery Q12):
-  //   - Account Owner + Billing Admin: change counts, expire/renew toggle, reactivate.
-  //   - License Admin: assign/unassign only.
-  //   - Registered Contact: no entry point — defensive guard below.
+  // Role gates (per discovery Q12):
+  //   - Account Owner + Billing Admin: change counts + reactivate.
+  //   - License Admin: assign/unassign only (count fields disabled).
   const canManageCounts = can('manage_seats_count');
   const canReactivate = can('reactivate_license');
+  const canAssign = can('manage_user_assignment');
 
-  const purchased = product?.purchasedLicenseCount ?? product?.licenseCount ?? 0;
   const currentSeats = product?.licenseCount ?? 0;
-  const perSeatCost = product?.pricePerLicense ?? 0;
+  const scheduledRenewalSeats = product?.scheduledLicenseCount ?? currentSeats;
   const assignedCount = subscription && product
     ? getAssignedLicenseCount(subscription.id, product.id)
     : 0;
@@ -105,24 +141,25 @@ export const ManageLicensesDrawer = ({
   const available = getAvailablePaymentMethods(subscription?.companyId);
   const defaultMethod: PaymentMethod = available.includes('pay_on_terms') ? 'pay_on_terms' : 'pay_on_receipt';
 
-  // input: live stepper/typing value. newSeats: committed-via-Apply value (shown in summary).
-  const [inputSeats, setInputSeats] = useState(currentSeats);
-  const [newSeats, setNewSeats] = useState(currentSeats);
+  const [currentInput, setCurrentInput] = useState(currentSeats);
+  const [renewalInput, setRenewalInput] = useState(scheduledRenewalSeats);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>(defaultMethod);
 
-  // Decrease-below-assigned overlay state
+  // Per-user removal prompt overlay state
   const [overlayOpen, setOverlayOpen] = useState(false);
-  const [overlayConfirmed, setOverlayConfirmed] = useState(false);
-  const [userChoices, setUserChoices] = useState<Record<string, RemovalChoice>>({});
+  const [choices, setChoices] = useState<Record<string, RemovalWhen>>({});
 
-  // Reactivation target — set when user clicks "Reactivate" on a previously-held license
+  // Reactivation target
   const [reactivateTarget, setReactivateTarget] = useState<{
     license: License;
     subscription: Subscription;
     product: SubscriptionProduct;
   } | null>(null);
 
-  // Deactivated licenses scoped to THIS drawer's subscription + product (Q7).
+  // Inline "assign user" picker
+  const [assignSearch, setAssignSearch] = useState('');
+  const [assignOpen, setAssignOpen] = useState(false);
+
   const deactivatedEntries = useMemo(() => {
     if (!subscription || !product) return [];
     return getDeactivatedLicenses(subscription.companyId).filter(e =>
@@ -132,138 +169,149 @@ export const ManageLicensesDrawer = ({
 
   useEffect(() => {
     if (!open) return;
-    setInputSeats(currentSeats);
-    setNewSeats(currentSeats);
+    setCurrentInput(currentSeats);
+    setRenewalInput(scheduledRenewalSeats);
     setPaymentMethod(defaultMethod);
     setOverlayOpen(false);
-    setOverlayConfirmed(false);
-    setUserChoices({});
-  }, [open, currentSeats, product?.id, defaultMethod]);
+    setChoices({});
+    setAssignSearch('');
+    setAssignOpen(false);
+  }, [open, currentSeats, scheduledRenewalSeats, product?.id, defaultMethod]);
 
-  // Currently-assigned users for this product (used for overlay + assigned-users list).
   const assignedUsers = useMemoAssignedUsers(licenses, users, subscription?.id, product?.id);
-
-  // Show every active company user in the drawer's user list — badge reflects current license state.
-  const companyUsersForList = useMemoCompanyUsers(users, subscription?.companyId);
+  const companyUsers = useMemoCompanyUsers(users, subscription?.companyId);
   const assignedUserIdSet = new Set(assignedUsers.map(u => u.id));
+  const assignableUsers = companyUsers.filter(u => !assignedUserIdSet.has(u.id));
+  const filteredAssignable = assignSearch.trim()
+    ? assignableUsers.filter(u =>
+        `${u.firstName} ${u.lastName} ${u.email}`.toLowerCase().includes(assignSearch.trim().toLowerCase()))
+    : assignableUsers;
 
-  const delta = newSeats - currentSeats;
-  const priceChangeYear = delta * perSeatCost;
-  const reductionCount = Math.max(0, assignedCount - newSeats);
-  const decreaseBelowAssigned = newSeats < assignedCount;
+  const emptySlots = Math.max(0, currentSeats - assignedCount);
 
-  // Apply is disabled when the input equals current seats (nothing to apply).
-  const applyDisabled = inputSeats === currentSeats || inputSeats < purchased;
+  // --- Pricing preview (catalog license/maintenance model) ---
+  const isIncrease = currentInput > currentSeats;
+  const addSeats = Math.max(0, currentInput - currentSeats);
+  const isReduction = renewalInput < currentSeats || currentInput < currentSeats;
+  const catalog = product ? getCatalogProduct(product.name) : undefined;
+  const proration = useMemo(() => {
+    if (!isIncrease || !subscription || !product) return null;
+    return calculateProratedAdd({
+      product: {
+        pricePerSeatPerYear: catalog?.pricePerSeatPerYear ?? product.pricePerLicense,
+        maintenancePerSeatPerYear: catalog?.maintenancePerSeatPerYear ?? 0,
+      },
+      seats: addSeats,
+      addDate: new Date(),
+      renewalDate: new Date(subscription.renewalDate),
+      useLegacyProration,
+    });
+  }, [isIncrease, addSeats, catalog, subscription, product, useLegacyProration]);
 
-  const selectedCount = Object.keys(userChoices).length;
-  const overlayMatched = selectedCount === reductionCount;
+  // Reduction prompt: how many assigned users can't keep a renewal-time seat.
+  const renewalExcess = Math.max(0, assignedCount - renewalInput);
+  const needsPrompt = renewalExcess > 0;
+  const selectedCount = Object.keys(choices).length;
+  const promptMatched = selectedCount === renewalExcess;
 
-  const handleApply = () => {
-    if (applyDisabled) return;
-    const next = Math.max(purchased, inputSeats);
-    setNewSeats(next);
-    setOverlayConfirmed(false);
-    if (next < assignedCount) {
-      // Reset choices for a fresh overlay session
-      setUserChoices({});
-      setOverlayOpen(true);
-    }
-  };
-
-  const toggleChoice = (userId: string, choice: RemovalChoice) => {
-    setUserChoices(prev => {
+  const toggleChoice = (userId: string, when: RemovalWhen) => {
+    setChoices(prev => {
       const next = { ...prev };
-      if (next[userId] === choice) delete next[userId];
-      else next[userId] = choice;
+      if (next[userId] === when) delete next[userId];
+      else next[userId] = when;
       return next;
     });
   };
 
-  const handleOverlayConfirm = () => {
-    if (!overlayMatched) return;
-    setOverlayOpen(false);
-    setOverlayConfirmed(true);
-  };
-
-  const handleOverlayBack = () => {
-    setOverlayOpen(false);
-    // overlayConfirmed remains false → Save stays disabled.
-    // newSeats and inputSeats remain at the attempted value so user can re-Apply.
-  };
-
-  const handleSaveIncrease = () => {
+  const handleAssign = (userId: string) => {
     if (!subscription || !product) return;
-    requestLicenseChange(subscription.id, product.id, newSeats, paymentMethod);
-    if (paymentMethod === 'pay_immediately') {
-      toast({ title: 'Payment successful', description: 'Paid license count updated.' });
-      onOpenChange(false);
-      return;
+    const ok = assignLicense(userId, subscription.id, product.id);
+    if (ok) {
+      const u = users.find(x => x.id === userId);
+      toast({ title: 'User assigned', description: `${u?.firstName} ${u?.lastName} now has a ${product.name} license.` });
+      setAssignOpen(false);
+      setAssignSearch('');
+    } else {
+      toast({ title: 'No available seats', description: 'Increase the paid license count first.', variant: 'destructive' });
     }
-    if (paymentMethod === 'pay_on_terms') {
-      toast({ title: 'Paid license count updated under approved payment terms.' });
-      onOpenChange(false);
-      return;
-    }
+  };
+
+  const handleUnassign = (userId: string) => {
+    if (!subscription || !product) return;
+    unassignLicense(userId, subscription.id, product.id);
+    const u = users.find(x => x.id === userId);
     toast({
-      title: 'Invoice generated for license change',
-      description: 'Pay your invoice to apply the change to your paid licenses.',
+      title: `Unassigned ${u?.firstName} ${u?.lastName} from ${product.name}`,
+      description: 'License remains paid — assign it to someone else.',
+    });
+  };
+
+  const handleApply = () => {
+    if (!subscription || !product) return;
+
+    // 1) Increase current paid licenses → payment flow.
+    if (isIncrease) {
+      const result = requestLicenseChange(subscription.id, product.id, currentInput, paymentMethod);
+      void result;
+      if (paymentMethod === 'pay_immediately') {
+        toast({ title: 'Payment successful', description: `Added ${addSeats} ${product.name} seat(s).` });
+        onOpenChange(false);
+      } else if (paymentMethod === 'pay_on_terms') {
+        toast({ title: 'Seats added under approved payment terms.' });
+        onOpenChange(false);
+      } else {
+        toast({ title: 'Invoice generated for license change', description: 'Pay your invoice to apply the new seats.' });
+        onOpenChange(false);
+        navigate('/invoices');
+      }
+      return;
+    }
+
+    // 2) Reduction below assigned → open per-user removal prompt.
+    if (needsPrompt) {
+      setChoices({});
+      setOverlayOpen(true);
+      return;
+    }
+
+    // 3) Plain reduction with no assigned users affected (release empty seats).
+    const newCurrent = Math.min(currentInput, currentSeats);
+    const newRenewal = Math.min(renewalInput, newCurrent);
+    if (newCurrent === currentSeats && newRenewal === scheduledRenewalSeats) return; // nothing to do
+    applyLicenseReduction({
+      subscriptionId: subscription.id,
+      productId: product.id,
+      newCurrentCount: newCurrent,
+      newRenewalCount: newRenewal,
+      removeNowUserIds: [],
+      expireEndOfCycleUserIds: [],
+    });
+    toast({ title: 'Paid licenses updated', description: 'No refund is issued for released seats.' });
+    onOpenChange(false);
+  };
+
+  const handlePromptApply = () => {
+    if (!subscription || !product || !promptMatched) return;
+    const removeNowIds = Object.entries(choices).filter(([, w]) => w === 'remove_now').map(([uid]) => uid);
+    const expireIds = Object.entries(choices).filter(([, w]) => w === 'expire_end_of_cycle').map(([uid]) => uid);
+    const newCurrent = Math.max(0, currentSeats - removeNowIds.length);
+    const newRenewal = renewalInput;
+    applyLicenseReduction({
+      subscriptionId: subscription.id,
+      productId: product.id,
+      newCurrentCount: newCurrent,
+      newRenewalCount: newRenewal,
+      removeNowUserIds: removeNowIds,
+      expireEndOfCycleUserIds: expireIds,
+    });
+    toast({
+      title: 'Licenses reduced',
+      description: `${removeNowIds.length} user(s) removed now, ${expireIds.length} will expire at renewal.`,
     });
     onOpenChange(false);
-    navigate('/invoices');
   };
 
-  const handleSaveDecrease = () => {
-    if (!subscription || !product) return;
-    const removeNowIds = Object.entries(userChoices)
-      .filter(([, c]) => c === 'remove_now')
-      .map(([uid]) => uid);
-    const expireIds = Object.entries(userChoices)
-      .filter(([, c]) => c === 'expire_end_of_year')
-      .map(([uid]) => uid);
-    scheduleLicenseDecrease(subscription.id, product.id, newSeats, removeNowIds, expireIds);
-    const effDate = new Date(subscription.renewalDate).toLocaleDateString();
-    toast({
-      title: 'Paid license reduction scheduled',
-      description: `Changes take effect on ${effDate}. Selected users were updated.`,
-    });
-    onOpenChange(false);
-  };
-
-  const handleSave = () => {
-    if (!subscription || !product) return;
-    if (delta === 0) return;
-    if (delta > 0) {
-      handleSaveIncrease();
-      return;
-    }
-    if (newSeats >= assignedCount) {
-      // Decrease but no overlay required — schedule with no user picks.
-      scheduleLicenseDecrease(subscription.id, product.id, newSeats, [], []);
-      const effDate = new Date(subscription.renewalDate).toLocaleDateString();
-      toast({
-        title: 'Paid license reduction scheduled',
-        description: `Changes take effect on ${effDate}.`,
-      });
-      onOpenChange(false);
-      return;
-    }
-    handleSaveDecrease();
-  };
-
-  const requiresPayment = delta > 0;
-  const saveDisabled =
-    delta === 0 ||
-    inputSeats !== newSeats ||  // user changed input again after Apply but hasn't re-applied
-    (decreaseBelowAssigned && !overlayConfirmed);
-
-  // Summary deltas
-  const seatDeltaLabel =
-    delta > 0 ? `+${delta} seats` :
-    delta < 0 ? `${delta} seats` :
-    '+0 seats';
-  const priceChangeLabel =
-    priceChangeYear === 0 ? '$0.00/year' :
-    `${priceChangeYear > 0 ? '+' : '−'}${formatCurrency(Math.abs(priceChangeYear))}/year`;
+  const hasPendingChange = isIncrease || isReduction;
 
   if (!subscription || !product) {
     return (
@@ -277,272 +325,221 @@ export const ManageLicensesDrawer = ({
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent side="right" className="w-full sm:max-w-lg overflow-y-auto p-0">
         <div className="relative">
-          <div className="p-6 space-y-5">
+          <div className="p-5 space-y-5">
             <SheetHeader className="space-y-1">
-              <SheetTitle className="text-xl">Manage seats</SheetTitle>
-              <SheetDescription>
-                <span className="font-normal">{product.name}</span>{' '}
-                <span className="text-muted-foreground">· {subscription.planType}</span>
-              </SheetDescription>
+              <SheetTitle className="text-lg">{product.name}</SheetTitle>
+              <SheetDescription>Manage Licenses · {subscription.planType}</SheetDescription>
             </SheetHeader>
 
-            {/* Purple summary card — uses canonical labels per discovery Q9 */}
-            <div className="rounded-lg bg-primary text-primary-foreground p-4 space-y-2 text-sm">
-              <div className="flex items-center justify-between">
-                <span className="opacity-90">Current paid licenses</span>
-                <span className="font-semibold">{currentSeats}</span>
+            {/* Counts */}
+            <div>
+              <div className="flex items-center gap-3">
+                <SeatStepper label="Current paid licenses" value={currentInput} min={assignedCount}
+                  onChange={setCurrentInput} disabled={!canManageCounts} />
+                <SeatStepper label="Paid licenses at next renewal" value={renewalInput} min={0}
+                  onChange={setRenewalInput} disabled={!canManageCounts} />
               </div>
-              <div className="flex items-center justify-between">
-                <span className="opacity-90">Paid licenses at next renewal</span>
-                <span className="font-semibold">{newSeats}</span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="opacity-90">Currently assigned</span>
-                <span className="font-semibold">{assignedCount}</span>
-              </div>
-              <div className="border-t border-primary-foreground/20 my-2" />
-              <div className="flex items-center justify-between">
-                <span className="opacity-90">Change</span>
-                <span className="font-semibold inline-flex items-center gap-1">
-                  {delta > 0 && <ArrowUp className="h-3.5 w-3.5" />}
-                  {delta < 0 && <ArrowDown className="h-3.5 w-3.5" />}
-                  {seatDeltaLabel}
-                </span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="opacity-90">Price change</span>
-                <span className="font-semibold">{priceChangeLabel}</span>
-              </div>
-              <div className="text-xs opacity-80 pt-1">
-                per seat cost +{formatCurrency(perSeatCost)}/year
-              </div>
+              {!canManageCounts && (
+                <p className="text-xs text-muted-foreground mt-2">
+                  Changing the paid license count requires Account Owner or Billing Admin. You can still assign or unassign users below.
+                </p>
+              )}
             </div>
 
-            {/* Seat editor — Q12: only AO + BA can change paid license counts */}
-            {canManageCounts ? (
-              <div>
-                <div className="text-center text-sm font-medium mb-2">Update paid licenses at next renewal</div>
-                <div className="flex items-center justify-center gap-2">
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    disabled={inputSeats <= purchased}
-                    onClick={() => setInputSeats(s => Math.max(purchased, s - 1))}
-                    aria-label="Decrease paid licenses"
-                  >
-                    <Minus className="h-4 w-4" />
-                  </Button>
-                  <Input
-                    type="number"
-                    min={purchased}
-                    value={inputSeats}
-                    onChange={(e) => setInputSeats(Math.max(purchased, parseInt(e.target.value) || purchased))}
-                    className="w-20 text-center text-lg font-semibold"
-                  />
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    onClick={() => setInputSeats(s => s + 1)}
-                    aria-label="Increase paid licenses"
-                  >
-                    <Plus className="h-4 w-4" />
-                  </Button>
-                  <Button
-                    onClick={handleApply}
-                    disabled={applyDisabled}
-                    className={applyDisabled ? 'bg-success/40 hover:bg-success/40 text-white' : 'bg-success hover:bg-success/90 text-white'}
-                  >
-                    Apply
-                  </Button>
-                </div>
-                {inputSeats <= purchased && inputSeats < currentSeats && (
-                  <p className="text-xs text-muted-foreground mt-2 text-center">
-                    Paid licenses at next renewal cannot be lower than the purchased license count ({purchased}).
-                  </p>
+            {/* Pricing preview */}
+            {canManageCounts && hasPendingChange && (
+              <div className="rounded-md border bg-muted/30 p-3 text-sm space-y-1.5">
+                {isIncrease && proration ? (
+                  <>
+                    <div className="flex justify-between"><span className="text-muted-foreground">Adding seats</span><span>{addSeats}</span></div>
+                    <div className="flex justify-between"><span className="text-muted-foreground">License charge</span><span>{formatCurrency(proration.licenseCharge)}</span></div>
+                    <div className="flex justify-between"><span className="text-muted-foreground">Prorated maintenance ({proration.daysRemaining}/365 days)</span><span>{formatCurrency(proration.maintenanceChargeProrated)}</span></div>
+                    <div className="flex justify-between border-t pt-1.5 font-semibold"><span>Charge today</span><span>{formatCurrency(proration.totalCharge)}</span></div>
+                  </>
+                ) : (
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted-foreground">Refund for reduced seats</span>
+                    <span className="font-semibold">$0.00 — no refund issued</span>
+                  </div>
                 )}
-              </div>
-            ) : (
-              <div className="rounded-md border bg-muted/40 p-3 text-xs text-muted-foreground">
-                Changing the paid license count requires Account Owner or Billing Admin. You can still assign or unassign users in existing seats below.
               </div>
             )}
 
-            {/* Payment method picker — only on an applied increase */}
-            {requiresPayment && (
+            {/* Payment method — only on increase */}
+            {canManageCounts && isIncrease && (
               <div>
                 <Label className="text-sm">Payment Method</Label>
                 <div className="mt-2">
-                  <PaymentMethodPicker
-                    value={paymentMethod}
-                    onChange={setPaymentMethod}
-                    available={available}
-                    terms={cfg.terms}
-                  />
+                  <PaymentMethodPicker value={paymentMethod} onChange={setPaymentMethod} available={available} terms={cfg.terms} />
                 </div>
               </div>
             )}
 
-            {/* Previously held licenses — Q7. Visible only to AO + BA (Q6) and scoped
-                 to the drawer's subscription/product. */}
-            {canReactivate && (
-              <section className="border-t pt-5">
-                <div className="flex items-start justify-between gap-3 mb-3">
-                  <h3 className="text-sm font-semibold">Previously held licenses</h3>
-                  <p className="text-xs text-muted-foreground text-right max-w-xs">
-                    Reactivate to add a seat back. You'll be charged a prorated maintenance fee for the remainder of the current year. The license itself is already owned.
-                  </p>
-                </div>
-                {deactivatedEntries.length === 0 ? (
-                  <p className="text-sm text-muted-foreground italic">No previously held licenses available to reactivate for {product.name}.</p>
-                ) : (
-                  <ul className="space-y-2">
-                    {deactivatedEntries.map(entry => {
-                      const key = `${entry.license.subscriptionId}-${entry.license.productId}-${entry.license.assignedAt}`;
-                      return (
-                        <li key={key} className="flex items-center justify-between p-3 rounded-md border bg-muted/30 gap-3">
-                          <div className="min-w-0">
-                            <div className="text-sm font-medium truncate">{entry.product.name}</div>
-                            <div className="text-xs text-muted-foreground">
-                              Assigned {new Date(entry.license.assignedAt).toLocaleDateString()} · Deactivated {entry.license.deactivatedAt ? new Date(entry.license.deactivatedAt).toLocaleDateString() : '—'}
-                              {entry.license.deactivatedReason && (
-                                <span className="block truncate">{entry.license.deactivatedReason}</span>
-                              )}
-                            </div>
-                          </div>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => setReactivateTarget(entry)}
-                          >
-                            <RotateCcw className="h-3.5 w-3.5 mr-1" />Reactivate
-                          </Button>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                )}
-              </section>
+            {canManageCounts && hasPendingChange && (
+              <Button className="w-full" onClick={handleApply}>
+                {isIncrease ? 'Review & apply increase' : 'Apply changes'}
+              </Button>
             )}
 
-            {/* Assigned users list */}
+            {/* Assigned users */}
             <div>
               <div className="flex items-center justify-between mb-2">
                 <span className="text-sm font-medium">Assigned users</span>
-                <span className="text-xs text-muted-foreground">
-                  {assignedCount} of {newSeats} paid licenses assigned
-                </span>
+                <span className="text-xs text-muted-foreground">{assignedCount} of {currentSeats} seats</span>
               </div>
-              <div className="border rounded-md max-h-64 overflow-y-auto divide-y">
-                {companyUsersForList.length === 0 ? (
-                  <div className="p-3 text-xs text-muted-foreground text-center">No users in this company.</div>
+              <div className="border rounded-md divide-y">
+                {assignedUsers.length === 0 ? (
+                  <div className="p-3 text-xs text-muted-foreground text-center">No users assigned yet.</div>
                 ) : (
-                  companyUsersForList.map(u => {
-                    const isAssigned = assignedUserIdSet.has(u.id);
+                  assignedUsers.map(u => {
                     const initials = `${u.firstName?.[0] || ''}${u.lastName?.[0] || ''}`.toUpperCase() || u.email[0].toUpperCase();
                     return (
                       <div key={u.id} className="flex items-center gap-3 p-2.5">
-                        <div className="h-7 w-7 rounded-full bg-muted text-muted-foreground flex items-center justify-center text-[11px] font-semibold shrink-0">
-                          {initials}
-                        </div>
+                        <div className="h-7 w-7 rounded-full bg-primary/10 text-primary flex items-center justify-center text-[11px] font-semibold shrink-0">{initials}</div>
                         <div className="min-w-0 flex-1">
                           <div className="text-sm font-medium truncate">{u.firstName} {u.lastName}</div>
                           <div className="text-xs text-muted-foreground truncate">{u.email}</div>
                         </div>
-                        <Badge variant="outline" className={isAssigned
-                          ? 'bg-success/10 text-success border-success/30'
-                          : 'text-muted-foreground border-muted-foreground/30'}>
-                          {isAssigned ? 'Assigned' : 'Unassigned'}
-                        </Badge>
+                        {canAssign && (
+                          <Button size="sm" variant="ghost" className="text-muted-foreground hover:text-destructive h-8"
+                            onClick={() => handleUnassign(u.id)}>
+                            <UserMinus className="h-3.5 w-3.5 mr-1" />Remove
+                          </Button>
+                        )}
                       </div>
                     );
                   })
                 )}
+
+                {/* Available (empty) seats */}
+                {emptySlots > 0 && canAssign && (
+                  <div className="p-2.5 flex items-center justify-between bg-muted/20">
+                    <span className="text-xs text-muted-foreground">{emptySlots} available seat{emptySlots > 1 ? 's' : ''}</span>
+                    <Popover open={assignOpen} onOpenChange={(o) => { setAssignOpen(o); if (!o) setAssignSearch(''); }}>
+                      <PopoverTrigger asChild>
+                        <Button size="sm" variant="outline" className="h-8"><UserPlus className="h-3.5 w-3.5 mr-1" />Assign user</Button>
+                      </PopoverTrigger>
+                      <PopoverContent align="end" className="w-72 p-0">
+                        <div className="p-2 border-b">
+                          <div className="relative">
+                            <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+                            <Input value={assignSearch} onChange={(e) => setAssignSearch(e.target.value)}
+                              placeholder="Search users…" className="h-8 pl-7 text-sm" autoFocus />
+                          </div>
+                        </div>
+                        <div className="max-h-56 overflow-y-auto py-1">
+                          {filteredAssignable.length === 0 ? (
+                            <div className="px-3 py-4 text-xs text-muted-foreground text-center">No users available to assign.</div>
+                          ) : filteredAssignable.map(u => (
+                            <button key={u.id} type="button" onClick={() => handleAssign(u.id)}
+                              className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-muted/60">
+                              <div className="min-w-0 flex-1">
+                                <div className="text-sm truncate">{u.firstName} {u.lastName}</div>
+                                <div className="text-xs text-muted-foreground truncate">{u.email}</div>
+                              </div>
+                              <Check className="h-3.5 w-3.5 text-muted-foreground opacity-0" />
+                            </button>
+                          ))}
+                        </div>
+                      </PopoverContent>
+                    </Popover>
+                  </div>
+                )}
               </div>
             </div>
+
+            {/* Previously held licenses — render ONLY when entries exist (Section C6) */}
+            {canReactivate && deactivatedEntries.length > 0 && (
+              <section className="border-t pt-4">
+                <h3 className="text-sm font-semibold">Previously held licenses</h3>
+                <p className="text-xs text-muted-foreground mb-3">
+                  Reactivate to add a seat back. You'll be charged a prorated maintenance fee for the remainder of this year.
+                </p>
+                <ul className="space-y-2">
+                  {deactivatedEntries.map((entry, idx) => {
+                    const key = `${entry.license.subscriptionId}-${entry.license.productId}-${entry.license.assignedAt}-${idx}`;
+                    return (
+                      <li key={key} className="flex items-center justify-between p-3 rounded-md border bg-muted/30 gap-3">
+                        <div className="min-w-0">
+                          <div className="text-sm font-medium truncate">{entry.product.name}</div>
+                          <div className="text-xs text-muted-foreground">
+                            Deactivated {entry.license.deactivatedAt ? new Date(entry.license.deactivatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : '—'}
+                            {entry.license.deactivatedReason && <span> · {entry.license.deactivatedReason}</span>}
+                          </div>
+                        </div>
+                        <Button size="sm" variant="outline" onClick={() => setReactivateTarget(entry)}>
+                          <RotateCcw className="h-3.5 w-3.5 mr-1" />Reactivate
+                        </Button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </section>
+            )}
           </div>
 
-          {/* Footer */}
-          <SheetFooter className="gap-2 px-6 pb-6">
-            <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-            <Button onClick={handleSave} disabled={saveDisabled}>Save changes</Button>
+          <SheetFooter className="gap-2 px-5 pb-5">
+            <Button variant="outline" onClick={() => onOpenChange(false)}>Close</Button>
           </SheetFooter>
 
-          {/* Reactivation dialog (Q7) — fires from "Previously held licenses" section */}
           <ReactivateLicenseDialog
             target={reactivateTarget}
-            onOpenChange={(open) => !open && setReactivateTarget(null)}
+            onOpenChange={(o) => !o && setReactivateTarget(null)}
           />
+        </div>
 
-          {/* Decrease-below-assigned overlay */}
-          {overlayOpen && (
-            <div
-              className={`absolute inset-0 z-10 overflow-y-auto p-6 ${overlayMatched ? 'bg-success/10' : 'bg-destructive/5'}`}
-            >
-              <div className="rounded-lg bg-card border shadow-md p-4 space-y-4">
-                <div>
-                  <h3 className="text-base font-semibold mb-1">Choose users to remove</h3>
-                  <p className="text-sm text-muted-foreground">
-                    The paid licenses you have already paid for will last through the year. Please select the{' '}
-                    <span className="font-semibold text-foreground">{reductionCount}</span> users you would
-                    like to remove now or at the end of the year.
-                  </p>
-                </div>
+        {/* Per-user removal prompt */}
+        <Dialog open={overlayOpen} onOpenChange={setOverlayOpen}>
+          <DialogContent className="max-w-lg">
+            <DialogHeader>
+              <DialogTitle>Reduce licenses</DialogTitle>
+              <DialogDescription>
+                You're reducing licenses at renewal to {renewalInput}. You currently have {assignedCount} users assigned.
+                Choose what to do with the {renewalExcess} excess user{renewalExcess > 1 ? 's' : ''}.
+              </DialogDescription>
+            </DialogHeader>
 
-                <div className="border rounded-md overflow-hidden">
-                  <div className="grid grid-cols-[1fr_auto_auto] gap-3 px-3 py-2 bg-muted/40 text-xs font-medium">
-                    <div>User</div>
-                    <div className="text-center w-24">Remove now</div>
-                    <div className="text-center w-32">Expire end of year</div>
-                  </div>
-                  <div className="divide-y max-h-64 overflow-y-auto">
-                    {assignedUsers.length === 0 ? (
-                      <div className="p-3 text-xs text-muted-foreground text-center">No assigned users.</div>
-                    ) : (
-                      assignedUsers.map(u => {
-                        const choice = userChoices[u.id];
-                        return (
-                          <div key={u.id} className="grid grid-cols-[1fr_auto_auto] gap-3 items-center px-3 py-2">
-                            <div className="min-w-0">
-                              <div className="text-sm font-medium truncate">{u.firstName} {u.lastName}</div>
-                              <div className="text-xs text-muted-foreground truncate">{u.email}</div>
-                            </div>
-                            <div className="text-center w-24">
-                              <Checkbox
-                                checked={choice === 'remove_now'}
-                                onCheckedChange={() => toggleChoice(u.id, 'remove_now')}
-                                aria-label={`Remove ${u.email} now`}
-                              />
-                            </div>
-                            <div className="text-center w-32">
-                              <Checkbox
-                                checked={choice === 'expire_end_of_year'}
-                                onCheckedChange={() => toggleChoice(u.id, 'expire_end_of_year')}
-                                aria-label={`Expire ${u.email} end of year`}
-                              />
-                            </div>
-                          </div>
-                        );
-                      })
-                    )}
-                  </div>
-                </div>
-
-                <div className={`text-sm font-medium ${overlayMatched ? 'text-success' : 'text-destructive'}`}>
-                  {selectedCount} of {reductionCount} required removals selected
-                </div>
-
-                <div className="flex justify-between gap-2 pt-2">
-                  <Button variant="outline" onClick={handleOverlayBack}>
-                    <ArrowLeft className="h-4 w-4 mr-1" />Back
-                  </Button>
-                  <Button onClick={handleOverlayConfirm} disabled={!overlayMatched}>
-                    Confirm
-                  </Button>
-                </div>
+            <div className="border rounded-md overflow-hidden">
+              <div className="grid grid-cols-[1fr_auto_auto] gap-3 px-3 py-2 bg-muted/40 text-xs font-medium">
+                <div>User</div>
+                <div className="text-center w-24">Remove now</div>
+                <div className="text-center w-32">Remove at end of cycle</div>
+              </div>
+              <div className="divide-y max-h-72 overflow-y-auto">
+                {assignedUsers.map(u => {
+                  const when = choices[u.id];
+                  return (
+                    <div key={u.id} className="grid grid-cols-[1fr_auto_auto] gap-3 items-center px-3 py-2">
+                      <div className="min-w-0">
+                        <div className="text-sm font-medium truncate">{u.firstName} {u.lastName}</div>
+                        <div className="text-xs text-muted-foreground truncate">{u.email}</div>
+                      </div>
+                      <div className="text-center w-24">
+                        <Checkbox checked={when === 'remove_now'} onCheckedChange={() => toggleChoice(u.id, 'remove_now')}
+                          aria-label={`Remove ${u.email} now`} />
+                      </div>
+                      <div className="text-center w-32">
+                        <Checkbox checked={when === 'expire_end_of_cycle'} onCheckedChange={() => toggleChoice(u.id, 'expire_end_of_cycle')}
+                          aria-label={`Remove ${u.email} at end of cycle`} />
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             </div>
-          )}
-        </div>
+
+            <div className={`text-sm font-medium ${promptMatched ? 'text-success' : 'text-destructive'}`}>
+              {selectedCount} of {renewalExcess} required selections made. The rest keep their license.
+            </div>
+
+            <DialogFooter className="gap-2">
+              <Button variant="outline" onClick={() => setOverlayOpen(false)}>
+                <ArrowLeft className="h-4 w-4 mr-1" />Cancel
+              </Button>
+              <Button onClick={handlePromptApply} disabled={!promptMatched}>Apply Changes</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </SheetContent>
     </Sheet>
   );
