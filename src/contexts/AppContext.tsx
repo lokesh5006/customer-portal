@@ -223,11 +223,17 @@ export interface SubscriptionProduct {
   /** Original purchased license count — current seat count cannot go below this */
   purchasedLicenseCount?: number;
   pricePerLicense: number;
-  status: 'active' | 'pending' | 'expired';
+  status: 'active' | 'pending' | 'expired' | 'pending_payment';
   /** Additional seats waiting on payment (Pay on Receipt) */
   pendingLicenseCount?: number;
   /** Scheduled seat reduction: new (lower) seat count that activates on the renewal date */
   scheduledLicenseCount?: number;
+  /**
+   * v16 Manage Licenses rebuild — the seat count the customer is committing to pay
+   * for at the next renewal. If undefined or equal to licenseCount, no renewal change
+   * is pending. Set to a different value when an admin adjusts "New seats at renewal".
+   */
+  renewalSeatCount?: number;
   /** Effective date for the scheduled seat reduction (typically the subscription renewalDate) */
   scheduledEffectiveDate?: string;
   /** Users marked "Expire end of year" — their licenses drop when the scheduled change activates */
@@ -274,6 +280,20 @@ export interface License {
   deactivatedAt?: string;
   /** Optional human-readable reason for deactivation. */
   deactivatedReason?: string;
+  /**
+   * v16 — true if the user is marked to lose this seat at the next renewal. The user
+   * keeps access through the current cycle; at renewal (future flow) they are
+   * auto-unassigned. Defaults to false/undefined.
+   */
+  expiringAtRenewal?: boolean;
+  /**
+   * v18 — mid-cycle seat adds are Pay on Receipt. A seat created this way is
+   * 'pending_payment' (greyed, unassignable) until its linked invoice is paid, then
+   * flips to 'active'. Undefined is treated as 'active' for backward compatibility.
+   */
+  status?: 'active' | 'pending_payment';
+  /** v18 — invoice whose payment activates this pending seat. */
+  pendingPaymentInvoiceId?: string;
 }
 
 /** Catalog product config — list price, maintenance split (admin-configurable). */
@@ -299,6 +319,7 @@ export type InvoiceSource =
   | 'checkout'
   | 'quote_acceptance'
   | 'license_change'
+  | 'mid_cycle_license'
   | 'renewal'
   | 'license_reactivation';
 
@@ -561,6 +582,79 @@ interface AppContextType extends AppState {
     removeNowUserIds: string[];
     expireEndOfCycleUserIds: string[];
   }) => void;
+  /**
+   * v16 Manage Licenses rebuild — mark the given users' licenses as expiring at the
+   * next renewal (they keep access this cycle). Keyed by subscription+product+userIds
+   * since License records have no standalone id.
+   */
+  markLicensesExpiringAtRenewal: (subscriptionId: string, productId: string, userIds: string[], expiring?: boolean) => void;
+  /**
+   * v16 — set the product's committed renewal seat count. This is the editable
+   * "New seats at renewal" target; it does NOT touch the current paid licenseCount.
+   */
+  updateRenewalSeatCount: (subscriptionId: string, productId: string, newCount: number) => void;
+  /**
+   * v16 — add seats immediately (mid-cycle). Increments the current paid licenseCount
+   * by additionalSeats and generates a prorated invoice using calculateProratedAdd.
+   * The invoice status follows the chosen payment method.
+   */
+  addSeatsImmediate: (input: {
+    subscriptionId: string;
+    productId: string;
+    additionalSeats: number;
+    paymentMethod: PaymentMethod;
+  }) => { invoiceId: string; invoice: Invoice; paymentMethod: PaymentMethod } | null;
+  /**
+   * v18 — add seats mid-cycle as Pay on Receipt. Increments the current paid
+   * licenseCount AND renewalSeatCount by additionalSeats, creates the new seats as
+   * 'pending_payment' licenses linked to a generated awaiting_payment invoice, and
+   * returns that invoice. The seats activate when the invoice is paid (markInvoicePaid).
+   */
+  addSeatsPendingPayment: (input: {
+    subscriptionId: string;
+    productId: string;
+    additionalSeats: number;
+  }) => { invoice: Invoice } | null;
+  /**
+   * v19 — pre-assign a user to an empty pending-payment seat. Fills the userId of an
+   * existing pending_payment license (preserving its status + pendingPaymentInvoiceId)
+   * so access activates only when the linked invoice is paid. Returns false if no empty
+   * pending seat exists.
+   */
+  assignUserToPendingSeat: (userId: string, subscriptionId: string, productId: string) => boolean;
+  /**
+   * v19 — undo a pending-seat pre-assignment. Clears the userId on the user's
+   * pending_payment license IN PLACE (keeps the paid seat + invoice link), reverting it
+   * to an empty pending seat rather than deleting it.
+   */
+  unassignUserFromPendingSeat: (userId: string, subscriptionId: string, productId: string) => void;
+  /**
+   * v19 — add a brand-new product to an existing subscription as Pay-on-Receipt. The
+   * product is created with status 'pending_payment' and co-terminates with the parent
+   * subscription (no separate renewal date). Seats are pending until the invoice is paid.
+   */
+  addProductToSubscriptionPendingPayment: (input: {
+    subscriptionId: string;
+    productName: string;
+    seats: number;
+  }) => { invoice: Invoice; productId: string } | null;
+  /**
+   * v20 — finalize the payment method for a provisional pending invoice (drawer Pay button).
+   * pay_on_receipt keeps it awaiting (7 days); pay_on_terms applies Net-30 and activates the
+   * seats now; pay_immediately is handled by the caller via the /pay route.
+   */
+  finalizePendingInvoice: (invoiceId: string, method: PaymentMethod) => void;
+  /**
+   * v20 — discard a provisional pending invoice and reverse its seat additions
+   * (drawer Cancel → Discard).
+   */
+  discardPendingInvoice: (invoiceId: string) => void;
+  /**
+   * v19 — does this user have DataNet access? True when the company has at least one
+   * active product license (excluding pending-payment) AND the user either holds an
+   * active license or is an AO/BA/LA admin. Mirrors the company-wide auto-inclusion rule.
+   */
+  getUserDataNetAccess: (userId?: string) => boolean;
   markInvoicePaid: (invoiceId: string) => void;
   /** Persist an optional PO number on an existing invoice (per discovery Q3). */
   setInvoicePoNumber: (invoiceId: string, poNumber: string | undefined) => void;
@@ -740,6 +834,10 @@ const initialSubscriptions: Subscription[] = [
     products: [
       { id: 'prod-desktop', name: 'NumberCruncher Desktop', licenseCount: 5, purchasedLicenseCount: 5, pricePerLicense: 10, status: 'active' },
       { id: 'prod-web', name: 'NumberCruncher Web', licenseCount: 3, purchasedLicenseCount: 3, pricePerLicense: 10, status: 'active' },
+      // DataNet rides along free with any subscription — no seats, no price, no
+      // license rows. Surfaces with seat math either special-case it (isDataNet)
+      // or are unaffected because all its counts are 0.
+      { id: 'prod-datanet', name: 'DataNet', licenseCount: 0, purchasedLicenseCount: 0, pricePerLicense: 0, status: 'active' },
     ],
   },
   {
@@ -1778,7 +1876,11 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   }, [state.licenses]);
 
   const getUserAssignedProducts = useCallback((userId: string): { subscriptionId: string; subscriptionName: string; productId: string; productName: string }[] => {
-    const userLicenses = state.licenses.filter(l => l.userId === userId);
+    // v19 — a pending-payment license grants NO access yet (and a deactivated one
+    // never does). Exclude both so this canonical "what does the user have access to?"
+    // helper drives correct visibility in the sidebar/dashboard/downloads surfaces.
+    const userLicenses = state.licenses.filter(l =>
+      l.userId === userId && l.status !== 'pending_payment' && !l.deactivatedAt);
     return userLicenses.map(l => {
       const sub = state.subscriptions.find(s => s.id === l.subscriptionId);
       const prod = sub?.products.find(p => p.id === l.productId);
@@ -2519,6 +2621,410 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     });
   }, []);
 
+  // --- v16 Manage Licenses rebuild ---------------------------------------
+  // The new model decouples user removal from seat-count reduction. Decreasing
+  // seats is always a renewal-time event (renewalSeatCount); the current paid
+  // licenseCount only ever changes via addSeatsImmediate (an increase).
+  const markLicensesExpiringAtRenewal = useCallback((subscriptionId: string, productId: string, userIds: string[], expiring: boolean = true) => {
+    if (userIds.length === 0) return;
+    const idSet = new Set(userIds);
+    setState(prev => ({
+      ...prev,
+      licenses: prev.licenses.map(l =>
+        l.subscriptionId === subscriptionId && l.productId === productId && !!l.userId && idSet.has(l.userId)
+          ? { ...l, expiringAtRenewal: expiring }
+          : l
+      ),
+    }));
+  }, []);
+
+  const updateRenewalSeatCount = useCallback((subscriptionId: string, productId: string, newCount: number) => {
+    setState(prev => ({
+      ...prev,
+      subscriptions: prev.subscriptions.map(s => s.id !== subscriptionId ? s : {
+        ...s,
+        products: s.products.map(p => p.id !== productId ? p : { ...p, renewalSeatCount: newCount }),
+      }),
+    }));
+  }, []);
+
+  const addSeatsImmediate = useCallback((input: {
+    subscriptionId: string;
+    productId: string;
+    additionalSeats: number;
+    paymentMethod: PaymentMethod;
+  }): { invoiceId: string; invoice: Invoice; paymentMethod: PaymentMethod } | null => {
+    const sub = state.subscriptions.find(s => s.id === input.subscriptionId);
+    const prod = sub?.products.find(p => p.id === input.productId);
+    if (!sub || !prod || input.additionalSeats <= 0) return null;
+
+    const today = new Date();
+    const catalog = state.catalogProducts.find(c => c.name === prod.name);
+    const totalPerSeat = catalog?.pricePerSeatPerYear ?? prod.pricePerLicense;
+    const maintenancePerSeat = catalog?.maintenancePerSeatPerYear ?? 0;
+    const proration = calculateProratedAdd({
+      product: { pricePerSeatPerYear: totalPerSeat, maintenancePerSeatPerYear: maintenancePerSeat },
+      seats: input.additionalSeats,
+      addDate: today,
+      renewalDate: new Date(sub.renewalDate),
+      useLegacyProration: state.useLegacyProration,
+    });
+    const cost = proration.totalCharge;
+    // Pay on Terms invoices apply their approved terms; everything else (Pay on Receipt
+    // and Pay Immediately) opens as awaiting_payment. Pay Immediately is settled by the
+    // caller routing to /pay; the seats are made available immediately either way.
+    const status: Invoice['status'] =
+      input.paymentMethod === 'pay_on_terms' ? 'payment_terms_applied' : 'awaiting_payment';
+
+    const invoice: Invoice = {
+      id: `inv-${Date.now()}`,
+      companyId: sub.companyId,
+      invoiceNumber: `INV-${String(3000 + Math.floor(Math.random() * 9000))}`,
+      date: today.toISOString().split('T')[0],
+      dueDate: new Date(today.getTime() + 30 * 86400000).toISOString().split('T')[0],
+      status,
+      amount: cost,
+      balance: cost,
+      subscriptionId: sub.id,
+      subscriptionName: sub.name,
+      invoiceType: 'Adjustment Invoice',
+      source: 'license_change',
+      paymentMethod: input.paymentMethod,
+      description: `License adjustment — added ${input.additionalSeats} seat(s)`,
+      lineItems: [{
+        product: `Additional ${prod.name} Seats`,
+        quantity: input.additionalSeats,
+        unitPrice: Math.round((cost / input.additionalSeats) * 100) / 100,
+        total: cost,
+      }],
+    };
+
+    setState(prev => ({
+      ...prev,
+      invoices: [invoice, ...prev.invoices],
+      subscriptions: prev.subscriptions.map(s => s.id !== input.subscriptionId ? s : {
+        ...s,
+        products: s.products.map(p => p.id !== input.productId ? p : {
+          ...p,
+          licenseCount: p.licenseCount + input.additionalSeats,
+          purchasedLicenseCount: (p.purchasedLicenseCount ?? p.licenseCount) + input.additionalSeats,
+        }),
+      }),
+    }));
+    return { invoiceId: invoice.id, invoice, paymentMethod: input.paymentMethod };
+  }, [state.subscriptions, state.catalogProducts, state.useLegacyProration]);
+
+  // v18 — mid-cycle adds are always Pay on Receipt. Seats are created as
+  // 'pending_payment' and only become assignable once the invoice is paid. Both the
+  // current paid count and the renewal count grow now so the seats renew with the rest.
+  const addSeatsPendingPayment = useCallback((input: {
+    subscriptionId: string;
+    productId: string;
+    additionalSeats: number;
+  }): { invoice: Invoice } | null => {
+    const sub = state.subscriptions.find(s => s.id === input.subscriptionId);
+    const prod = sub?.products.find(p => p.id === input.productId);
+    if (!sub || !prod || input.additionalSeats <= 0) return null;
+
+    const today = new Date();
+    const catalog = state.catalogProducts.find(c => c.name === prod.name);
+    const totalPerSeat = catalog?.pricePerSeatPerYear ?? prod.pricePerLicense;
+    const maintenancePerSeat = catalog?.maintenancePerSeatPerYear ?? 0;
+    const proration = calculateProratedAdd({
+      product: { pricePerSeatPerYear: totalPerSeat, maintenancePerSeatPerYear: maintenancePerSeat },
+      seats: input.additionalSeats,
+      addDate: today,
+      renewalDate: new Date(sub.renewalDate),
+      useLegacyProration: state.useLegacyProration,
+    });
+    const cost = proration.totalCharge;
+    const invoiceId = `inv-${Date.now()}`;
+    const invoice: Invoice = {
+      id: invoiceId,
+      companyId: sub.companyId,
+      invoiceNumber: `INV-${String(3000 + Math.floor(Math.random() * 9000))}`,
+      date: today.toISOString().split('T')[0],
+      dueDate: new Date(today.getTime() + 30 * 86400000).toISOString().split('T')[0],
+      status: 'awaiting_payment',
+      amount: cost,
+      balance: cost,
+      subscriptionId: sub.id,
+      subscriptionName: sub.name,
+      invoiceType: 'Adjustment Invoice',
+      source: 'mid_cycle_license',
+      paymentMethod: 'pay_on_receipt',
+      description: `License adjustment — added ${input.additionalSeats} seat(s) (pending payment)`,
+      lineItems: [{
+        product: `Additional ${prod.name} Seats`,
+        quantity: input.additionalSeats,
+        unitPrice: Math.round((cost / input.additionalSeats) * 100) / 100,
+        total: cost,
+      }],
+    };
+
+    const todayIso = today.toISOString().split('T')[0];
+    const pendingLicenses: License[] = Array.from({ length: input.additionalSeats }).map(() => ({
+      userId: '',
+      subscriptionId: sub.id,
+      productId: prod.id,
+      assignedAt: todayIso,
+      status: 'pending_payment' as const,
+      pendingPaymentInvoiceId: invoiceId,
+    }));
+
+    setState(prev => ({
+      ...prev,
+      invoices: [invoice, ...prev.invoices],
+      licenses: [...prev.licenses, ...pendingLicenses],
+      subscriptions: prev.subscriptions.map(s => s.id !== input.subscriptionId ? s : {
+        ...s,
+        products: s.products.map(p => p.id !== input.productId ? p : {
+          ...p,
+          licenseCount: p.licenseCount + input.additionalSeats,
+          purchasedLicenseCount: (p.purchasedLicenseCount ?? p.licenseCount) + input.additionalSeats,
+          renewalSeatCount: (p.renewalSeatCount ?? p.licenseCount) + input.additionalSeats,
+        }),
+      }),
+    }));
+    return { invoice };
+  }, [state.subscriptions, state.catalogProducts, state.useLegacyProration]);
+
+  // v19 — pre-assign a user to an existing empty pending-payment seat. Fills the first
+  // matching empty seat's userId in place, preserving status + pendingPaymentInvoiceId so
+  // access activates only when the invoice is paid.
+  const assignUserToPendingSeat = useCallback((userId: string, subscriptionId: string, productId: string): boolean => {
+    const exists = state.licenses.some(l =>
+      l.subscriptionId === subscriptionId && l.productId === productId &&
+      l.status === 'pending_payment' && !l.userId && !l.deactivatedAt);
+    if (!exists) return false;
+    const todayIso = new Date().toISOString().split('T')[0];
+    setState(prev => {
+      let done = false;
+      const licenses = prev.licenses.map(l => {
+        if (!done && l.subscriptionId === subscriptionId && l.productId === productId &&
+            l.status === 'pending_payment' && !l.userId && !l.deactivatedAt) {
+          done = true;
+          return { ...l, userId, assignedAt: todayIso };
+        }
+        return l;
+      });
+      return { ...prev, licenses };
+    });
+    return true;
+  }, [state.licenses]);
+
+  // v19 — undo a pending pre-assignment: clear the userId in place so the paid pending
+  // seat (and its invoice link) is preserved as an empty pending seat.
+  const unassignUserFromPendingSeat = useCallback((userId: string, subscriptionId: string, productId: string) => {
+    setState(prev => ({
+      ...prev,
+      licenses: prev.licenses.map(l =>
+        l.userId === userId && l.subscriptionId === subscriptionId && l.productId === productId &&
+        l.status === 'pending_payment' && !l.deactivatedAt
+          ? { ...l, userId: '' }
+          : l
+      ),
+    }));
+  }, []);
+
+  // v20 — finalize how a provisional (pending-payment) invoice will be paid. Called from
+  // the Manage Licenses drawer's Pay button.
+  //  • pay_on_receipt  → invoice stays awaiting_payment, due in 7 days. Seats stay pending.
+  //  • pay_on_terms    → invoice flips to payment_terms_applied (due in 30 days) AND the
+  //                      seats/products activate immediately (terms = credit granted).
+  //  • pay_immediately → handled by the caller routing to /pay → markInvoicePaid.
+  const finalizePendingInvoice = useCallback((invoiceId: string, method: PaymentMethod) => {
+    setState(prev => {
+      const inv = prev.invoices.find(i => i.id === invoiceId);
+      if (!inv) return prev;
+      const today = new Date();
+      if (method === 'pay_on_terms') {
+        const licenses = prev.licenses
+          .filter(l => !(l.pendingPaymentInvoiceId === invoiceId && !l.userId))
+          .map(l => l.pendingPaymentInvoiceId === invoiceId
+            ? { ...l, status: 'active' as const, pendingPaymentInvoiceId: undefined }
+            : l);
+        const activatedKeys = new Set(
+          prev.licenses.filter(l => l.pendingPaymentInvoiceId === invoiceId).map(l => `${l.subscriptionId}:${l.productId}`));
+        const subscriptions = prev.subscriptions.map(s => ({
+          ...s,
+          products: s.products.map(p =>
+            activatedKeys.has(`${s.id}:${p.id}`) && p.status === 'pending_payment'
+              ? { ...p, status: 'active' as const }
+              : p),
+        }));
+        return {
+          ...prev,
+          licenses,
+          subscriptions,
+          invoices: prev.invoices.map(i => i.id === invoiceId ? {
+            ...i,
+            status: 'payment_terms_applied' as const,
+            paymentMethod: 'pay_on_terms' as const,
+            dueDate: new Date(today.getTime() + 30 * 86400000).toISOString().split('T')[0],
+          } : i),
+        };
+      }
+      // pay_on_receipt — keep pending; due in 7 days.
+      return {
+        ...prev,
+        invoices: prev.invoices.map(i => i.id === invoiceId ? {
+          ...i,
+          status: 'awaiting_payment' as const,
+          paymentMethod: 'pay_on_receipt' as const,
+          dueDate: new Date(today.getTime() + 7 * 86400000).toISOString().split('T')[0],
+        } : i),
+      };
+    });
+  }, []);
+
+  // v20 — discard a provisional pending invoice (drawer Cancel → Discard). Reverses the
+  // seat additions: removes the pending license rows, decrements the product's seat counts,
+  // and deletes the invoice. Any pre-assignments to those seats are removed with the rows.
+  const discardPendingInvoice = useCallback((invoiceId: string) => {
+    setState(prev => {
+      const inv = prev.invoices.find(i => i.id === invoiceId);
+      if (!inv) return prev;
+      const tied = prev.licenses.filter(l => l.pendingPaymentInvoiceId === invoiceId);
+      const countByProduct = new Map<string, number>();
+      tied.forEach(l => {
+        const k = `${l.subscriptionId}:${l.productId}`;
+        countByProduct.set(k, (countByProduct.get(k) ?? 0) + 1);
+      });
+      const licenses = prev.licenses.filter(l => l.pendingPaymentInvoiceId !== invoiceId);
+      const subscriptions = prev.subscriptions.map(s => ({
+        ...s,
+        products: s.products.map(p => {
+          const n = countByProduct.get(`${s.id}:${p.id}`);
+          if (!n) return p;
+          return {
+            ...p,
+            licenseCount: Math.max(0, p.licenseCount - n),
+            purchasedLicenseCount: p.purchasedLicenseCount !== undefined ? Math.max(0, p.purchasedLicenseCount - n) : undefined,
+            renewalSeatCount: p.renewalSeatCount !== undefined ? Math.max(0, p.renewalSeatCount - n) : undefined,
+          };
+        }),
+      }));
+      return {
+        ...prev,
+        licenses,
+        subscriptions,
+        invoices: prev.invoices.filter(i => i.id !== invoiceId),
+      };
+    });
+  }, []);
+
+  // v19 — add a brand-new product to an existing subscription as Pay-on-Receipt. Product
+  // is created 'pending_payment', co-terminates with the parent subscription (no separate
+  // renewal date), and its seats stay pending until the generated invoice is paid.
+  const addProductToSubscriptionPendingPayment = useCallback((input: {
+    subscriptionId: string;
+    productName: string;
+    seats: number;
+  }): { invoice: Invoice; productId: string } | null => {
+    const sub = state.subscriptions.find(s => s.id === input.subscriptionId);
+    if (!sub || input.seats <= 0) return null;
+    if (sub.products.some(p => p.name === input.productName)) return null; // already on sub
+    const catalog = state.catalogProducts.find(c => c.name === input.productName);
+    if (!catalog) return null;
+
+    const today = new Date();
+    const totalPerSeat = catalog.pricePerSeatPerYear;
+    const maintenancePerSeat = catalog.maintenancePerSeatPerYear;
+    const proration = calculateProratedAdd({
+      product: { pricePerSeatPerYear: totalPerSeat, maintenancePerSeatPerYear: maintenancePerSeat },
+      seats: input.seats,
+      addDate: today,
+      renewalDate: new Date(sub.renewalDate),
+      useLegacyProration: state.useLegacyProration,
+    });
+    const subtotal = proration.totalCharge;
+    const tax = Math.round(subtotal * 0.07 * 100) / 100;
+    const total = Math.round((subtotal + tax) * 100) / 100;
+
+    const baseId = Date.now();
+    const invoiceId = `inv-${baseId}`;
+    const productId = `prod-${input.subscriptionId}-${input.productName.toLowerCase().replace(/\s+/g, '-')}-${baseId}`;
+    const todayIso = today.toISOString().split('T')[0];
+
+    const invoice: Invoice = {
+      id: invoiceId,
+      companyId: sub.companyId,
+      invoiceNumber: `INV-${String(3000 + Math.floor(Math.random() * 9000))}`,
+      date: todayIso,
+      dueDate: new Date(today.getTime() + 30 * 86400000).toISOString().split('T')[0],
+      status: 'awaiting_payment',
+      amount: total,
+      balance: total,
+      subtotal,
+      tax,
+      totalAmount: total,
+      subscriptionId: sub.id,
+      subscriptionName: sub.name,
+      invoiceType: 'Adjustment Invoice',
+      source: 'mid_cycle_license',
+      paymentMethod: 'pay_on_receipt',
+      description: `Added ${input.productName} (${input.seats} seat${input.seats === 1 ? '' : 's'}, pending payment)`,
+      lineItems: [{
+        product: `${input.productName} Seats`,
+        quantity: input.seats,
+        unitPrice: totalPerSeat,
+        proration: subtotal,
+        total: subtotal,
+      }],
+    };
+
+    const newProduct: SubscriptionProduct = {
+      id: productId,
+      name: input.productName,
+      licenseCount: input.seats,
+      purchasedLicenseCount: input.seats,
+      renewalSeatCount: input.seats,
+      pricePerLicense: totalPerSeat,
+      status: 'pending_payment',
+    };
+
+    const pendingLicenses: License[] = Array.from({ length: input.seats }).map(() => ({
+      userId: '',
+      subscriptionId: sub.id,
+      productId,
+      assignedAt: todayIso,
+      status: 'pending_payment' as const,
+      pendingPaymentInvoiceId: invoiceId,
+    }));
+
+    setState(prev => ({
+      ...prev,
+      invoices: [invoice, ...prev.invoices],
+      licenses: [...prev.licenses, ...pendingLicenses],
+      subscriptions: prev.subscriptions.map(s => s.id !== input.subscriptionId ? s : {
+        ...s,
+        products: [...s.products, newProduct],
+      }),
+    }));
+    return { invoice, productId };
+  }, [state.subscriptions, state.catalogProducts, state.useLegacyProration]);
+
+  // v19 — DataNet auto-inclusion. The company must carry at least one ACTIVE product
+  // license (pending-payment excluded). Within such a company, a user gets DataNet if
+  // they hold any active license OR are an AO/BA/LA admin.
+  const getUserDataNetAccess = useCallback((userId?: string): boolean => {
+    const user = userId ? state.users.find(u => u.id === userId) : state.currentUser;
+    if (!user) return false;
+    const companyId = user.companyId;
+    // Company must have an active subscription carrying a non-DataNet, non-pending product.
+    const companyHasActiveProduct = state.subscriptions.some(s =>
+      s.companyId === companyId && s.status === 'active' &&
+      s.products.some(p => p.name !== 'DataNet' && p.status !== 'pending_payment')
+    );
+    if (!companyHasActiveProduct) return false;
+    const isAdmin = user.roles.some(r => r === 'account_owner' || r === 'billing_admin' || r === 'license_admin');
+    if (isAdmin) return true;
+    // Otherwise the user needs at least one active (non-pending, non-deactivated) license.
+    return state.licenses.some(l =>
+      l.userId === user.id && l.status !== 'pending_payment' && !l.deactivatedAt);
+  }, [state.users, state.currentUser, state.subscriptions, state.licenses]);
+
   const setInvoicePoNumber = useCallback((invoiceId: string, poNumber: string | undefined) => {
     setState(prev => ({
       ...prev,
@@ -2536,6 +3042,35 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       if (!inv) return prev;
       paidInvoice = inv;
       let subscriptions = prev.subscriptions;
+      // v18/v19 — activate pending-payment seats tied to this invoice.
+      //  • Empty seats (no user) are DROPPED so they revert to implicit open seats; the
+      //    seat still counts via licenseCount, and assignLicense (which counts license
+      //    rows) would otherwise refuse new assignments if explicit empty rows lingered.
+      //  • Pre-assigned seats (have a user) activate in place, keeping the assignment.
+      const licenses = prev.licenses
+        .filter(l => !(l.pendingPaymentInvoiceId === invoiceId && !l.userId))
+        .map(l =>
+          l.pendingPaymentInvoiceId === invoiceId
+            ? { ...l, status: 'active' as const, pendingPaymentInvoiceId: undefined }
+            : l
+        );
+      // v19 — activate any pending-payment PRODUCTS whose seats were tied to this invoice
+      // (Add Product flow). The product becomes fully manageable once paid.
+      const activatedProductKeys = new Set(
+        prev.licenses
+          .filter(l => l.pendingPaymentInvoiceId === invoiceId)
+          .map(l => `${l.subscriptionId}:${l.productId}`)
+      );
+      if (activatedProductKeys.size > 0) {
+        subscriptions = subscriptions.map(s => ({
+          ...s,
+          products: s.products.map(p =>
+            activatedProductKeys.has(`${s.id}:${p.id}`) && p.status === 'pending_payment'
+              ? { ...p, status: 'active' as const }
+              : p
+          ),
+        }));
+      }
       // Apply pending license change if any
       if (inv.pendingLicenseChange) {
         const { subscriptionId, productId, newCount } = inv.pendingLicenseChange;
@@ -2577,6 +3112,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         ...prev,
         invoices: prev.invoices.map(i => i.id === invoiceId ? { ...i, status: 'paid', balance: 0 } : i),
         subscriptions,
+        licenses,
       };
     });
     if (paidInvoice) {
@@ -3254,6 +3790,16 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       requestLicenseChange,
       scheduleLicenseDecrease,
       applyLicenseReduction,
+      markLicensesExpiringAtRenewal,
+      updateRenewalSeatCount,
+      addSeatsImmediate,
+      addSeatsPendingPayment,
+      assignUserToPendingSeat,
+      unassignUserFromPendingSeat,
+      addProductToSubscriptionPendingPayment,
+      finalizePendingInvoice,
+      discardPendingInvoice,
+      getUserDataNetAccess,
       markInvoicePaid,
       setInvoicePoNumber,
       checkoutPurchase,

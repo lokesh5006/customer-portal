@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { useApp, Quote, SubscriptionProduct, Subscription, LicenseType, Invoice } from '@/contexts/AppContext';
+import { useApp, Quote, SubscriptionProduct, Subscription, LicenseType, Invoice, Role, PRODUCT_CATALOG } from '@/contexts/AppContext';
 import { MainLayout } from '@/components/layout/MainLayout';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -22,12 +22,14 @@ import { useToast } from '@/hooks/use-toast';
 import {
   CreditCard, Eye, Edit, CheckCircle2, Download, Check,
   FileText, Receipt, FileSignature, RefreshCw, X, MessageSquare,
-  Monitor, Globe, BarChart3, Database, Package, MoreVertical, Search, Clock, Trash2,
+  Monitor, Globe, BarChart3, Database, Package, MoreVertical, Search, Clock, Trash2, ChevronRight, Plus,
 } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import {
   ManageLicensesDrawer, AcceptQuoteDrawer, DeclineQuoteDialog, ViewNoteDialog, ViewDeclineReasonDialog, RequestQuoteDialog,
 } from '@/components/subscriptions/QuoteDialogs';
+import { AddProductDrawer } from '@/components/subscriptions/AddProductDrawer';
 import { RenewalFlyout } from '@/components/billing/RenewalFlyout';
 import { useReadOnlyGuard, READ_ONLY_TOOLTIP } from '@/hooks/useReadOnlyGuard';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
@@ -42,6 +44,25 @@ const formatCurrency = (n: number): string =>
     maximumFractionDigits: 2,
   }).format(n);
 
+// v21 — clickable status indicator chips surfaced on the subscription summary card.
+// v23 Section A4 — the card is a RENEWAL PREVIEW, so only renewal-related chips
+// remain. Current-state items (invoices awaiting payment, seats pending payment)
+// belong on the Invoices tab / product tiles instead.
+type IndicatorSeverity = 'info' | 'warning' | 'urgent';
+type CardIndicator = {
+  id: string;
+  type: 'renewal_change' | 'expiring_users' | 'renewal_invoice';
+  label: string;
+  link: string;
+  severity: IndicatorSeverity;
+  icon: LucideIcon;
+};
+const SEVERITY_CLASSES: Record<IndicatorSeverity, string> = {
+  info: 'bg-blue-50 text-blue-700 border border-blue-200 dark:bg-blue-950/40 dark:text-blue-300 dark:border-blue-800',
+  warning: 'bg-amber-50 text-amber-700 border border-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-800',
+  urgent: 'bg-red-50 text-red-700 border border-red-200 dark:bg-red-950/40 dark:text-red-300 dark:border-red-800',
+};
+
 const productIcon = (name: string) => {
   if (name === 'NumberCruncher Desktop') return Monitor;
   if (name === 'NumberCruncher Web') return Globe;
@@ -55,6 +76,9 @@ export const SubscriptionsPage = () => {
   const [params, setParams] = useSearchParams();
   const {
     currentCompany,
+    currentUser,
+    getEffectiveRoles,
+    can,
     getCompanySubscriptions,
     getCompanyInvoices,
     getCompanyQuotes,
@@ -100,6 +124,7 @@ export const SubscriptionsPage = () => {
   const [renameDraft, setRenameDraft] = useState('');
 
   // Drawer + dialogs state
+  const [addProductOpen, setAddProductOpen] = useState(false);
   const [manageOpen, setManageOpen] = useState(false);
   const [manageSub, setManageSub] = useState<Subscription | null>(null);
   const [manageProd, setManageProd] = useState<SubscriptionProduct | null>(null);
@@ -118,6 +143,88 @@ export const SubscriptionsPage = () => {
   const currentSub = subscriptions[selectedSubIndex] || null;
   const subInvoices = invoices.filter(i => currentSub && i.subscriptionId === currentSub.id);
   const hasActiveSubscription = subscriptions.some(s => s.status === 'active');
+
+  // v21 — Add Product (AO + BA). Catalog products not already on the current subscription.
+  const canManageSeats = can('manage_seats_count');
+  const availableToAdd = currentSub
+    ? PRODUCT_CATALOG.filter(c => c.name !== 'DataNet' && !currentSub.products.some(p => p.name === c.name))
+    : [];
+
+  // v21 Section A — role-gated, clickable status indicator chips for the summary card.
+  // v23 Section A4 — renewal-related chips ONLY: renewal change → expiring users →
+  // renewal invoice ready. Invoice/pending-seat chips were removed (current-state).
+  const cardIndicators = useMemo<CardIndicator[]>(() => {
+    if (!currentSub || !currentUser) return [];
+    // Use EFFECTIVE roles so demo role-switching (AO → LA → RC) re-gates the chips.
+    const roles = getEffectiveRoles();
+    const has = (allowed: Role[]) => allowed.some(r => roles.includes(r));
+    const subId = currentSub.id;
+    const out: CardIndicator[] = [];
+
+    // 1 — renewal seat-count change pending (one chip per changed product)
+    if (has(['account_owner', 'billing_admin'])) {
+      currentSub.products
+        .filter(p => p.renewalSeatCount !== undefined && p.renewalSeatCount !== p.licenseCount)
+        .forEach(p => {
+          out.push({
+            id: `renewal_change-${p.id}`,
+            type: 'renewal_change',
+            label: `Renewal change pending: ${p.licenseCount} → ${p.renewalSeatCount}`,
+            link: `/subscriptions/${subId}`,
+            severity: 'warning',
+            icon: RefreshCw,
+          });
+        });
+    }
+
+    // 2 — users expiring at renewal
+    const expiringCount = licenses.filter(l =>
+      l.subscriptionId === subId && l.expiringAtRenewal && !!l.userId && !l.deactivatedAt).length;
+    if (expiringCount > 0 && has(['account_owner', 'billing_admin', 'license_admin'])) {
+      out.push({
+        id: 'expiring_users',
+        type: 'expiring_users',
+        label: `${expiringCount} ${expiringCount === 1 ? 'user' : 'users'} expiring at renewal`,
+        link: `/subscriptions/${subId}`,
+        severity: 'warning',
+        icon: Clock,
+      });
+    }
+
+    // 3 — auto-generated renewal invoice ready (created ~30 days before renewal)
+    const hasAutoRenewalInvoice = invoices.some(i =>
+      i.subscriptionId === subId && i.source === 'renewal' && i.status === 'awaiting_payment');
+    if (hasAutoRenewalInvoice && has(['account_owner', 'billing_admin'])) {
+      out.push({
+        id: 'renewal_invoice',
+        type: 'renewal_invoice',
+        label: 'Renewal invoice ready',
+        link: `/subscriptions/${subId}?tab=invoices`,
+        severity: 'info',
+        icon: Receipt,
+      });
+    }
+
+    return out;
+  }, [currentSub, currentUser, getEffectiveRoles, invoices, licenses]);
+
+  // v23 Section A2 — the Annual Plan summary card is a renewal preview: hidden by
+  // default, shown only when there's a renewal-related action to surface.
+  const shouldShowRenewalCard = useMemo(() => {
+    if (!currentSub) return false;
+    // Any product has a renewal seat count change pending
+    const hasRenewalChange = currentSub.products.some(
+      p => p.renewalSeatCount !== undefined && p.renewalSeatCount !== p.licenseCount);
+    // Any license is tagged expiring at renewal for this subscription
+    const hasExpiringUsers = licenses.some(
+      l => l.subscriptionId === currentSub.id && l.expiringAtRenewal === true &&
+           !!l.userId && !l.deactivatedAt);
+    // Auto-generated renewal invoice exists (system creates this ~30 days before renewal)
+    const hasAutoRenewalInvoice = invoices.some(
+      i => i.subscriptionId === currentSub.id && i.source === 'renewal' &&
+           i.status === 'awaiting_payment');
+    return hasRenewalChange || hasExpiringUsers || hasAutoRenewalInvoice;
+  }, [currentSub, licenses, invoices]);
 
   const termsLabel = getCompanyConfig().terms || 'Net 30';
 
@@ -359,7 +466,9 @@ export const SubscriptionsPage = () => {
                       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
                         {/* LEFT COLUMN */}
                         <div className="lg:col-span-8 space-y-6">
-                          {/* Annual Plan summary card */}
+                          {/* Annual Plan summary card — v23 Section A: renewal preview,
+                              only rendered when a renewal-related action exists */}
+                          {shouldShowRenewalCard && (
                           <Card className="shadow-sm bg-gradient-to-br from-primary/5 via-card to-card border-primary/10">
                             <CardContent className="p-6">
                               <div className="flex items-start justify-between gap-4">
@@ -387,8 +496,32 @@ export const SubscriptionsPage = () => {
                                   </Button>
                                 </div>
                               </div>
+
+                              {/* v21 Section A — clickable status indicator chips */}
+                              {cardIndicators.length > 0 && (
+                                <div className="mt-4 flex flex-wrap gap-2">
+                                  {cardIndicators.map(ind => {
+                                    const Icon = ind.icon;
+                                    return (
+                                      <button
+                                        key={ind.id}
+                                        onClick={() => navigate(ind.link)}
+                                        className={cn(
+                                          'inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium cursor-pointer hover:opacity-80 transition-opacity',
+                                          SEVERITY_CLASSES[ind.severity],
+                                        )}
+                                      >
+                                        <Icon className="h-3 w-3" />
+                                        <span>{ind.label}</span>
+                                        <ChevronRight className="h-3 w-3" />
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              )}
                             </CardContent>
                           </Card>
+                          )}
 
                           {/* KPI tiles */}
                           <div className="grid gap-4 grid-cols-1 md:grid-cols-2 lg:grid-cols-4">
@@ -466,7 +599,28 @@ export const SubscriptionsPage = () => {
                           <Card>
                             <CardHeader className="flex flex-row items-center justify-between pb-4">
                               <CardTitle className="text-base font-semibold">Products in this subscription</CardTitle>
-                              <span className="text-xs text-muted-foreground">{currentSub.products.length} total</span>
+                              <div className="flex items-center gap-3">
+                                <span className="text-xs text-muted-foreground">{currentSub.products.length} total</span>
+                                {/* v21 — Add Product (AO + BA) */}
+                                {canManageSeats && (
+                                  availableToAdd.length === 0 ? (
+                                    <Tooltip>
+                                      <TooltipTrigger asChild>
+                                        <span tabIndex={0}>
+                                          <Button size="sm" disabled>
+                                            <Plus className="h-3.5 w-3.5 mr-1" />Add Product
+                                          </Button>
+                                        </span>
+                                      </TooltipTrigger>
+                                      <TooltipContent>Your subscription includes all available products.</TooltipContent>
+                                    </Tooltip>
+                                  ) : (
+                                    <Button size="sm" onClick={() => setAddProductOpen(true)} disabled={readOnly}>
+                                      <Plus className="h-3.5 w-3.5 mr-1" />Add Product
+                                    </Button>
+                                  )
+                                )}
+                              </div>
                             </CardHeader>
                             <CardContent className="p-6 pt-0">
                               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -532,6 +686,44 @@ export const SubscriptionsPage = () => {
                                           {typeSummary}
                                         </div>
                                       )}
+                                      {/* v23 Section B — inline indicator for "Add seats now" seats
+                                          still awaiting payment (active products only; a fully-pending
+                                          NEW product keeps its own v20 cue) */}
+                                      {!isDataNet && prod.status !== 'pending_payment' && (() => {
+                                        const pendingSeatLics = licenses.filter(l =>
+                                          l.subscriptionId === currentSub.id && l.productId === prod.id &&
+                                          l.status === 'pending_payment' && !l.deactivatedAt);
+                                        if (pendingSeatLics.length === 0) return null;
+                                        const pendingCount = pendingSeatLics.length;
+                                        const pendingInvoice = invoices.find(
+                                          i => i.id === pendingSeatLics[0]?.pendingPaymentInvoiceId);
+                                        return (
+                                          <div className="flex items-center gap-1.5 text-xs text-amber-600 dark:text-amber-400">
+                                            <Clock className="h-3 w-3 shrink-0" />
+                                            <span>
+                                              Pending payment: +{pendingCount} seat{pendingCount === 1 ? '' : 's'}
+                                            </span>
+                                            {pendingInvoice && (
+                                              <button
+                                                type="button"
+                                                className="underline hover:no-underline"
+                                                onClick={() => navigate('/pay', {
+                                                  state: {
+                                                    source: 'invoice',
+                                                    invoiceId: pendingInvoice.id,
+                                                    subtotal: pendingInvoice.subtotal ?? (pendingInvoice.totalAmount ?? pendingInvoice.amount),
+                                                    tax: pendingInvoice.tax ?? 0,
+                                                    totalAmount: pendingInvoice.totalAmount ?? pendingInvoice.amount,
+                                                    returnTo: '/subscriptions',
+                                                  },
+                                                })}
+                                              >
+                                                Pay {pendingInvoice.invoiceNumber} →
+                                              </button>
+                                            )}
+                                          </div>
+                                        );
+                                      })()}
                                       {!isDataNet && (prod.pendingLicenseCount || 0) > 0 && (
                                         <div className="text-xs text-warning">
                                           {prod.pendingLicenseCount} additional seats pending payment.
@@ -1078,6 +1270,7 @@ export const SubscriptionsPage = () => {
         subscription={manageSub}
         product={manageProd}
       />
+      <AddProductDrawer open={addProductOpen} onOpenChange={setAddProductOpen} subscription={currentSub} />
       <AcceptQuoteDrawer open={!!acceptQuote} onOpenChange={(v) => !v && setAcceptQuote(null)} quote={acceptQuote} />
       <RenewalFlyout
         open={renewOpen}

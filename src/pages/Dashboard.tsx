@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
+import { cn } from '@/lib/utils';
 import {
   Tooltip,
   TooltipContent,
@@ -74,7 +75,8 @@ export function computeAccountStatus(subscriptions: Subscription[], invoices: In
 
 export const Dashboard = () => {
   const navigate = useNavigate();
-  const { currentUser, currentCompany, hasAccess, demoRoles, getCompanySubscriptions, getCompanyInvoices, getAssignedLicenseCount } = useApp();
+  const { currentUser, currentCompany, hasAccess, demoRoles, getCompanySubscriptions, getCompanyInvoices, getAssignedLicenseCount, getUserDataNetAccess } = useApp();
+  const hasDataNet = getUserDataNetAccess();
   const [dataNetOptOut, setDataNetOptOut] = useState(false);
   const [renewalOpen, setRenewalOpen] = useState(false);
   const [manageOpen, setManageOpen] = useState(false);
@@ -204,28 +206,48 @@ export const Dashboard = () => {
           </Card>
 
           {/* DataNet Card */}
-          <Card className="cursor-pointer hover:shadow-md hover:border-primary/20 transition-all" onClick={() => navigate('/datanet')}>
+          <Card
+            className={cn(
+              'transition-all',
+              hasDataNet ? 'cursor-pointer hover:shadow-md hover:border-primary/20' : 'opacity-80',
+            )}
+            onClick={hasDataNet ? () => navigate('/datanet') : undefined}
+          >
             <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium text-muted-foreground">DataNet</CardTitle>
+              <CardTitle className="text-sm font-medium text-muted-foreground flex items-center justify-between">
+                DataNet
+                {hasDataNet && (
+                  <Badge className="bg-success/10 text-success border-success/20">Included</Badge>
+                )}
+              </CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="space-y-3">
-                <span className="text-primary font-medium inline-flex items-center gap-1 hover:underline">
-                  Current DataNet
-                  <ExternalLink className="h-3.5 w-3.5" />
-                </span>
-                <p className="text-xs text-muted-foreground">Access the latest industry data and alerts</p>
-                <div className="flex items-center gap-2 pt-2 border-t" onClick={(e) => e.stopPropagation()}>
-                  <Switch
-                    id="datanet-optout"
-                    checked={!dataNetOptOut}
-                    onCheckedChange={(v) => setDataNetOptOut(!v)}
-                  />
-                  <Label htmlFor="datanet-optout" className="text-xs text-muted-foreground cursor-pointer">
-                    Receive DataNet emails
-                  </Label>
+              {hasDataNet ? (
+                <div className="space-y-3">
+                  <span className="text-primary font-medium inline-flex items-center gap-1 hover:underline">
+                    Current DataNet
+                    <ExternalLink className="h-3.5 w-3.5" />
+                  </span>
+                  <p className="text-xs text-muted-foreground">Access the latest industry data and alerts</p>
+                  <div className="flex items-center gap-2 pt-2 border-t" onClick={(e) => e.stopPropagation()}>
+                    <Switch
+                      id="datanet-optout"
+                      checked={!dataNetOptOut}
+                      onCheckedChange={(v) => setDataNetOptOut(!v)}
+                    />
+                    <Label htmlFor="datanet-optout" className="text-xs text-muted-foreground cursor-pointer">
+                      Receive DataNet emails
+                    </Label>
+                  </div>
                 </div>
-              </div>
+              ) : (
+                <div className="space-y-2">
+                  <p className="text-sm text-muted-foreground">Not included</p>
+                  <p className="text-xs text-muted-foreground">
+                    DataNet is included automatically with any active product subscription.
+                  </p>
+                </div>
+              )}
             </CardContent>
           </Card>
         </div>

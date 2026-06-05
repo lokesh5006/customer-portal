@@ -21,13 +21,24 @@ import {
   Popover, PopoverContent, PopoverTrigger,
 } from '@/components/ui/popover';
 import {
+  Tooltip, TooltipContent, TooltipProvider, TooltipTrigger,
+} from '@/components/ui/tooltip';
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
+import {
   useApp, Subscription, SubscriptionProduct, Quote, PaymentMethod, QuoteRequestReason,
-  PRODUCT_CATALOG, License, SavedPaymentMethod,
+  PRODUCT_CATALOG, License, SavedPaymentMethod, User, Invoice,
+  ROLE_LABELS, ROLE_BADGE_CLASS,
 } from '@/contexts/AppContext';
 import { calculateProratedAdd } from '@/lib/proration';
 import { useToast } from '@/hooks/use-toast';
 import { formatCurrency } from '@/lib/format';
-import { Plus, Minus, Info, ArrowLeft, RotateCcw, AlertCircle, CreditCard, Landmark, UserPlus, UserMinus, Search, Check } from 'lucide-react';
+import { Plus, Minus, Info, ArrowLeft, AlertCircle, CreditCard, Landmark, UserPlus, UserMinus, Search, ArrowUp, ArrowDown, MoreVertical, RotateCw } from 'lucide-react';
 
 /* ============================================================
  * Payment Method Picker (radio cards)
@@ -63,40 +74,31 @@ const PaymentMethodPicker = ({
 };
 
 /* ============================================================
- * Manage Licenses Drawer (v14 rework — Section C)
+ * Manage Licenses Drawer (v18 rebuild)
  *
- * Two count fields:
- *   • "Current paid licenses"        → increase = add seats now (payment). Decrease
- *                                       down to the assigned count releases empty seats.
- *   • "Paid licenses at next renewal" → decrease below the assigned count triggers the
- *                                       per-user removal prompt (remove now / end of cycle).
- * Plus inline assign/unassign, available-seat pickers, and a "Previously held
- * licenses" section that renders ONLY when deactivated licenses exist.
+ * Conceptual model (locked):
+ *   • Current seats      — paid & active this cycle. READ-ONLY. Increases only via
+ *                          "Add seats now" (Pay on Receipt — seats are pending until
+ *                          the invoice is paid). Never decreases mid-cycle (no refund).
+ *   • Pending payment    — seats added mid-cycle whose invoice is not yet paid. They
+ *                          count toward the renewal but are not assignable until paid.
+ *   • New seats          — the seat count committed for the NEXT renewal. Editable in
+ *                          both directions via the stepper; Apply commits immediately
+ *                          to product.renewalSeatCount (no separate Save step).
+ *   • Currently assigned — live count of active assignments.
+ *
+ * All actions (assign / unassign / mark-renewing / Apply) commit to AppContext
+ * immediately. Because callers pass a snapshot product/subscription, the drawer
+ * re-derives the LIVE product/subscription from context by id so every render
+ * reflects current state (fixes the v17 prefill + state-inconsistency bugs).
  * ========================================================== */
-type RemovalWhen = 'remove_now' | 'expire_end_of_cycle';
+const userInitials = (u: { firstName?: string; lastName?: string; email: string }) =>
+  (`${u.firstName?.[0] || ''}${u.lastName?.[0] || ''}`.toUpperCase() || u.email[0]?.toUpperCase() || '?');
 
-// Hoisted to module scope so the number inputs don't remount (and lose focus)
-// on every parent re-render.
-const SeatStepper = ({
-  label, value, onChange, min, disabled,
-}: { label: string; value: number; onChange: (n: number) => void; min: number; disabled?: boolean }) => (
-  <div className="flex-1">
-    <Label className="text-xs text-muted-foreground">{label}</Label>
-    <div className="mt-1 flex items-center gap-1.5">
-      <Button variant="outline" size="icon" className="h-9 w-9 shrink-0" disabled={disabled || value <= min}
-        onClick={() => onChange(Math.max(min, value - 1))} aria-label={`Decrease ${label}`}>
-        <Minus className="h-4 w-4" />
-      </Button>
-      <Input type="number" min={min} value={value} disabled={disabled}
-        onChange={(e) => onChange(Math.max(min, parseInt(e.target.value) || min))}
-        className="h-9 text-center font-semibold" />
-      <Button variant="outline" size="icon" className="h-9 w-9 shrink-0" disabled={disabled}
-        onClick={() => onChange(value + 1)} aria-label={`Increase ${label}`}>
-        <Plus className="h-4 w-4" />
-      </Button>
-    </div>
-  </div>
-);
+type AssignedRecord = { license: License; user: User };
+
+const byUserName = (a: { user: User }, b: { user: User }) =>
+  `${a.user.firstName} ${a.user.lastName}`.localeCompare(`${b.user.firstName} ${b.user.lastName}`);
 
 export const ManageLicensesDrawer = ({
   open, onOpenChange, subscription, product,
@@ -108,419 +110,688 @@ export const ManageLicensesDrawer = ({
 }) => {
   const navigate = useNavigate();
   const {
-    getAssignedLicenseCount,
-    requestLicenseChange,
-    applyLicenseReduction,
-    getCompanyConfig,
-    getAvailablePaymentMethods,
-    getDeactivatedLicenses,
     getCatalogProduct,
     useLegacyProration,
     assignLicense,
     unassignLicense,
+    markLicensesExpiringAtRenewal,
+    updateRenewalSeatCount,
+    addSeatsPendingPayment,
+    assignUserToPendingSeat,
+    unassignUserFromPendingSeat,
+    finalizePendingInvoice,
+    discardPendingInvoice,
+    getAvailablePaymentMethods,
+    subscriptions,
     licenses,
+    invoices,
     users,
     can,
   } = useApp();
   const { toast } = useToast();
 
-  // Role gates (per discovery Q12):
-  //   - Account Owner + Billing Admin: change counts + reactivate.
-  //   - License Admin: assign/unassign only (count fields disabled).
-  const canManageCounts = can('manage_seats_count');
-  const canReactivate = can('reactivate_license');
+  const canManageSeats = can('manage_seats_count');
   const canAssign = can('manage_user_assignment');
+  const canRenewalStatus = can('manage_seat_renewal_status');
 
-  const currentSeats = product?.licenseCount ?? 0;
-  const scheduledRenewalSeats = product?.scheduledLicenseCount ?? currentSeats;
-  const assignedCount = subscription && product
-    ? getAssignedLicenseCount(subscription.id, product.id)
+  // Re-derive LIVE product/subscription from context (props are a stale snapshot).
+  const liveSub = useMemo(
+    () => (subscription ? subscriptions.find(s => s.id === subscription.id) ?? subscription : null),
+    [subscriptions, subscription],
+  );
+  const liveProduct = useMemo(
+    () => (liveSub && product ? liveSub.products.find(p => p.id === product.id) ?? product : null),
+    [liveSub, product],
+  );
+
+  // Live licenses for this product (excludes deactivated "previously held" rows).
+  const productLicenses = useMemo(() => {
+    if (!liveSub || !liveProduct) return [] as License[];
+    return licenses.filter(l =>
+      l.subscriptionId === liveSub.id && l.productId === liveProduct.id && !l.deactivatedAt);
+  }, [licenses, liveSub, liveProduct]);
+
+  // v20 — pending state is INVISIBLE. Every user with a license (active OR pre-assigned
+  // pending) renders uniformly in the assigned list; pending seats count as normal seats.
+  const assignedRecords = useMemo<AssignedRecord[]>(() => {
+    return productLicenses
+      .filter(l => !!l.userId)
+      .map(l => ({ license: l, user: users.find(u => u.id === l.userId)! }))
+      .filter(x => !!x.user);
+  }, [productLicenses, users]);
+
+  // Empty pending-payment seats are still tracked internally (so a new assignment lands on
+  // one and stays tied to the invoice, and so the Pay button can appear) — never rendered.
+  const emptyPendingSeats = useMemo(
+    () => productLicenses.filter(l => l.status === 'pending_payment' && !l.userId),
+    [productLicenses],
+  );
+  const pendingSeats = useMemo(
+    () => productLicenses.filter(l => l.status === 'pending_payment'),
+    [productLicenses],
+  );
+
+  // ---- Derived counts (all from live context) ----
+  const licenseCount = liveProduct?.licenseCount ?? 0;          // total seats incl. added-now
+  const pendingTotalCount = pendingSeats.length;
+  const assignedCount = assignedRecords.length;                 // active + pre-assigned
+  const activeAssignedCount = assignedRecords.filter(r => r.license.status !== 'pending_payment').length;
+  // A free ACTIVE seat exists when active-assigned is below the non-pending capacity.
+  const freeActiveSeats = Math.max(0, (licenseCount - pendingTotalCount) - activeAssignedCount);
+  const renewalCount = liveProduct?.renewalSeatCount ?? licenseCount;       // committed renewal target
+  const initialRenewalCount = renewalCount;
+
+  // ---- Stepper (Section A/D — single source of truth, re-synced from live state) ----
+  const [stepperInput, setStepperInput] = useState(initialRenewalCount);
+
+  // ---- Dialog / overlay state ----
+  const [overlayOpen, setOverlayOpen] = useState(false);
+  const [overlayChoices, setOverlayChoices] = useState<Record<string, 'now' | 'expire'>>({});
+  const [reduceConfirmOpen, setReduceConfirmOpen] = useState(false);
+  const [increaseOpen, setIncreaseOpen] = useState(false);
+  const [increaseMode, setIncreaseMode] = useState<'now' | 'renewal'>('now');
+  const [unassignTarget, setUnassignTarget] = useState<AssignedRecord | null>(null);
+  const [assignWarningUser, setAssignWarningUser] = useState<User | null>(null);
+  // v20 — shopping-cart footer state.
+  const [dirty, setDirty] = useState(false);                 // any committed in-session change
+  const [payOpen, setPayOpen] = useState(false);             // PaymentMethodDialog
+  const [payMethod, setPayMethod] = useState<PaymentMethod>('pay_immediately');
+  const [discardConfirmOpen, setDiscardConfirmOpen] = useState(false);
+
+  // Section A2/D3 — full reset ONLY on open / product switch. v22: this effect must NOT
+  // depend on initialRenewalCount — Apply commits update the live renewal count, and a
+  // reset here was wiping `dirty` right after the handlers set it (Save never enabled).
+  useEffect(() => {
+    setStepperInput(initialRenewalCount);
+    setOverlayOpen(false);
+    setOverlayChoices({});
+    setReduceConfirmOpen(false);
+    setIncreaseOpen(false);
+    setIncreaseMode('now');
+    setUnassignTarget(null);
+    setAssignWarningUser(null);
+    setDirty(false);
+    setPayOpen(false);
+    setDiscardConfirmOpen(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, liveProduct?.id]);
+
+  // Re-snap the stepper to the new committed baseline whenever the live renewal count
+  // changes (e.g. after an Apply commits) — WITHOUT resetting the in-session dirty flag,
+  // so Save changes stays enabled after "Add at renewal only" / per-user removal.
+  useEffect(() => {
+    setStepperInput(initialRenewalCount);
+  }, [initialRenewalCount]);
+
+  // ---- Pricing helpers ----
+  const catalog = liveProduct ? getCatalogProduct(liveProduct.name) : undefined;
+  const pricePerSeatPerYear = catalog?.pricePerSeatPerYear ?? liveProduct?.pricePerLicense ?? 0;
+  const maintenancePerSeatPerYear = catalog?.maintenancePerSeatPerYear ?? 0;
+
+  const prorate = (seats: number): number => {
+    if (seats <= 0 || !liveSub) return 0;
+    return calculateProratedAdd({
+      product: { pricePerSeatPerYear, maintenancePerSeatPerYear },
+      seats,
+      addDate: new Date(),
+      renewalDate: new Date(liveSub.renewalDate),
+      useLegacyProration,
+    }).totalCharge;
+  };
+
+  // ---- Pending-change preview (stepper vs committed renewal) ----
+  const delta = stepperInput - renewalCount;
+  const annualDelta = delta * pricePerSeatPerYear;          // only shown when delta > 0
+  const proratedToday = delta > 0 ? prorate(delta) : 0;     // never negative
+  const applyDisabled = !canManageSeats || delta === 0;
+  // Show the "no refund" note while actively reducing OR when a committed renewal
+  // reduction is standing (renewal below the current paid count, no active edit).
+  const showReductionNote = delta < 0 || (delta === 0 && renewalCount < licenseCount);
+
+  // Section B — checkout-style order summary (Subtotal / Tax (7%) / Total) for an increase.
+  const orderSubtotal = proratedToday;
+  const orderTax = round2(orderSubtotal * TAX_RATE);
+  const orderTotal = round2(orderSubtotal + orderTax);
+  const daysRemaining = liveSub
+    ? Math.max(0, Math.ceil((new Date(liveSub.renewalDate).getTime() - Date.now()) / 86400000))
     : 0;
 
-  const cfg = getCompanyConfig(subscription?.companyId);
-  const available = getAvailablePaymentMethods(subscription?.companyId);
-  const defaultMethod: PaymentMethod = available.includes('pay_on_terms') ? 'pay_on_terms' : 'pay_on_receipt';
+  const renewalDateLabel = liveSub
+    ? new Date(liveSub.renewalDate).toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' })
+    : '';
 
-  const [currentInput, setCurrentInput] = useState(currentSeats);
-  const [renewalInput, setRenewalInput] = useState(scheduledRenewalSeats);
-  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>(defaultMethod);
+  // v20 — the provisional pending invoice for THIS product drives the footer Pay button.
+  const pendingInvoice = useMemo(() => {
+    const lic = pendingSeats.find(l => l.pendingPaymentInvoiceId);
+    if (!lic) return null;
+    const inv = invoices.find(i => i.id === lic.pendingPaymentInvoiceId);
+    return inv && (inv.status === 'awaiting_payment' || inv.status === 'unpaid') ? inv : null;
+  }, [pendingSeats, invoices]);
+  const pendingAmount = pendingInvoice ? (pendingInvoice.totalAmount ?? pendingInvoice.amount) : 0;
+  const availableMethods = getAvailablePaymentMethods(liveSub?.companyId);
 
-  // Per-user removal prompt overlay state
-  const [overlayOpen, setOverlayOpen] = useState(false);
-  const [choices, setChoices] = useState<Record<string, RemovalWhen>>({});
+  // ---- Apply: branch by direction ----
+  const alreadyExpiringCount = assignedRecords.filter(r => !!r.license.expiringAtRenewal).length;
+  const overlayRequired = Math.max(0, assignedCount - stepperInput - alreadyExpiringCount);
 
-  // Reactivation target
-  const [reactivateTarget, setReactivateTarget] = useState<{
-    license: License;
-    subscription: Subscription;
-    product: SubscriptionProduct;
-  } | null>(null);
+  const handleApply = () => {
+    if (applyDisabled || !liveSub || !liveProduct) return;
+    if (delta > 0) {
+      setIncreaseMode('now');
+      setIncreaseOpen(true);
+    } else if (overlayRequired > 0) {
+      setOverlayChoices({});
+      setOverlayOpen(true);
+    } else {
+      setReduceConfirmOpen(true);
+    }
+  };
 
-  // Inline "assign user" picker
-  const [assignSearch, setAssignSearch] = useState('');
-  const [assignOpen, setAssignOpen] = useState(false);
+  // ---- Increase choice (Section G2) ----
+  const increaseN = Math.max(0, stepperInput - renewalCount);
+  const increaseProrated = prorate(increaseN);
+  const handleIncreaseConfirm = () => {
+    if (!liveSub || !liveProduct) return;
+    if (increaseMode === 'now') {
+      // v20 — add the seats now (provisional). The drawer STAYS open so the admin can
+      // pre-assign users; the footer Pay button is where they pick how to pay.
+      const res = addSeatsPendingPayment({
+        subscriptionId: liveSub.id,
+        productId: liveProduct.id,
+        additionalSeats: increaseN,
+      });
+      setIncreaseOpen(false);
+      if (res) {
+        setDirty(true);
+        toast({
+          title: `${increaseN} seat${increaseN === 1 ? '' : 's'} added.`,
+          description: 'Assign users below, then choose how to pay.',
+        });
+      }
+    } else {
+      updateRenewalSeatCount(liveSub.id, liveProduct.id, renewalCount + increaseN);
+      setIncreaseOpen(false);
+      setDirty(true);
+      toast({
+        title: 'Renewal count updated.',
+        description: `${increaseN} seat${increaseN === 1 ? '' : 's'} will be added at renewal on ${renewalDateLabel}.`,
+      });
+    }
+  };
 
-  const deactivatedEntries = useMemo(() => {
-    if (!subscription || !product) return [];
-    return getDeactivatedLicenses(subscription.companyId).filter(e =>
-      e.subscription.id === subscription.id && e.product.id === product.id
-    );
-  }, [getDeactivatedLicenses, subscription, product]);
-
-  useEffect(() => {
-    if (!open) return;
-    setCurrentInput(currentSeats);
-    setRenewalInput(scheduledRenewalSeats);
-    setPaymentMethod(defaultMethod);
-    setOverlayOpen(false);
-    setChoices({});
-    setAssignSearch('');
-    setAssignOpen(false);
-  }, [open, currentSeats, scheduledRenewalSeats, product?.id, defaultMethod]);
-
-  const assignedUsers = useMemoAssignedUsers(licenses, users, subscription?.id, product?.id);
-  const companyUsers = useMemoCompanyUsers(users, subscription?.companyId);
-  const assignedUserIdSet = new Set(assignedUsers.map(u => u.id));
-  const assignableUsers = companyUsers.filter(u => !assignedUserIdSet.has(u.id));
-  const filteredAssignable = assignSearch.trim()
-    ? assignableUsers.filter(u =>
-        `${u.firstName} ${u.lastName} ${u.email}`.toLowerCase().includes(assignSearch.trim().toLowerCase()))
-    : assignableUsers;
-
-  const emptySlots = Math.max(0, currentSeats - assignedCount);
-
-  // --- Pricing preview (catalog license/maintenance model) ---
-  const isIncrease = currentInput > currentSeats;
-  const addSeats = Math.max(0, currentInput - currentSeats);
-  const isReduction = renewalInput < currentSeats || currentInput < currentSeats;
-  const catalog = product ? getCatalogProduct(product.name) : undefined;
-  const proration = useMemo(() => {
-    if (!isIncrease || !subscription || !product) return null;
-    return calculateProratedAdd({
-      product: {
-        pricePerSeatPerYear: catalog?.pricePerSeatPerYear ?? product.pricePerLicense,
-        maintenancePerSeatPerYear: catalog?.maintenancePerSeatPerYear ?? 0,
-      },
-      seats: addSeats,
-      addDate: new Date(),
-      renewalDate: new Date(subscription.renewalDate),
-      useLegacyProration,
+  // ---- Simple reduce confirmation (no users affected) ----
+  const reduceDelta = (renewalCount - stepperInput) * pricePerSeatPerYear;
+  const handleReduceConfirm = () => {
+    if (!liveSub || !liveProduct) return;
+    updateRenewalSeatCount(liveSub.id, liveProduct.id, stepperInput);
+    setReduceConfirmOpen(false);
+    setDirty(true);
+    toast({
+      title: 'Renewal count updated.',
+      description: 'Reducing renewal seat count. No refund issued for current cycle.',
     });
-  }, [isIncrease, addSeats, catalog, subscription, product, useLegacyProration]);
+  };
 
-  // Reduction prompt: how many assigned users can't keep a renewal-time seat.
-  const renewalExcess = Math.max(0, assignedCount - renewalInput);
-  const needsPrompt = renewalExcess > 0;
-  const selectedCount = Object.keys(choices).length;
-  const promptMatched = selectedCount === renewalExcess;
-
-  const toggleChoice = (userId: string, when: RemovalWhen) => {
-    setChoices(prev => {
+  // ---- Per-user removal overlay (reduce below assigned) ----
+  const overlayUsers = assignedRecords.filter(r => !r.license.expiringAtRenewal);
+  const overlaySelected = Object.keys(overlayChoices).length;
+  const overlayMatched = overlaySelected === overlayRequired;
+  const toggleOverlayChoice = (userId: string, choice: 'now' | 'expire') => {
+    setOverlayChoices(prev => {
       const next = { ...prev };
-      if (next[userId] === when) delete next[userId];
-      else next[userId] = when;
+      if (next[userId] === choice) delete next[userId];
+      else next[userId] = choice;
       return next;
     });
   };
+  const handleOverlayConfirm = () => {
+    if (!overlayMatched || !liveSub || !liveProduct) return;
+    const removeNow: string[] = [];
+    const expire: string[] = [];
+    Object.entries(overlayChoices).forEach(([uid, c]) => {
+      if (c === 'now') removeNow.push(uid);
+      else expire.push(uid);
+    });
+    removeNow.forEach(uid => unassignLicense(uid, liveSub.id, liveProduct.id));
+    if (expire.length) markLicensesExpiringAtRenewal(liveSub.id, liveProduct.id, expire, true);
+    updateRenewalSeatCount(liveSub.id, liveProduct.id, stepperInput);
+    setOverlayOpen(false);
+    setOverlayChoices({});
+    setDirty(true);
+    toast({
+      title: 'Renewal change applied.',
+      description: 'Reducing renewal seat count. No refund issued for current cycle.',
+    });
+  };
 
-  const handleAssign = (userId: string) => {
-    if (!subscription || !product) return;
-    const ok = assignLicense(userId, subscription.id, product.id);
-    if (ok) {
-      const u = users.find(x => x.id === userId);
-      toast({ title: 'User assigned', description: `${u?.firstName} ${u?.lastName} now has a ${product.name} license.` });
-      setAssignOpen(false);
-      setAssignSearch('');
+  // ============================================================
+  // EXPIRING SEAT ASSIGNMENT — STATE & HANDLER (v25, Section F)
+  // ============================================================
+  // Helper that does the actual assignment + optional expiring tag (performAssignment).
+  const doAssign = (user: User, asExpiring: boolean) => {
+    if (!liveSub || !liveProduct) return;
+    // Prefer a free ACTIVE seat (immediate access). Otherwise fill an empty pending seat
+    // (the assignment stays tied to the unpaid invoice — invisible to the admin, but the
+    // user won't see access until the invoice is paid).
+    let ok = false;
+    if (freeActiveSeats > 0) {
+      ok = assignLicense(user.id, liveSub.id, liveProduct.id);
+    } else if (emptyPendingSeats.length > 0) {
+      ok = assignUserToPendingSeat(user.id, liveSub.id, liveProduct.id);
+    }
+    if (!ok) {
+      toast({ title: 'No available seats', description: 'Add seats before assigning more users.', variant: 'destructive' });
+      return;
+    }
+    setDirty(true);
+    if (asExpiring) {
+      // Tag the newly-created license as expiring at renewal. Licenses in this model
+      // are keyed by (userId, subscriptionId, productId) — there are no license ids.
+      markLicensesExpiringAtRenewal(liveSub.id, liveProduct.id, [user.id], true);
+      toast({
+        title: 'Assigned to expiring seat',
+        description: `${user.firstName} ${user.lastName} is assigned to a seat that expires at renewal. They'll lose access unless the seat is marked as renewing before then.`,
+      });
     } else {
-      toast({ title: 'No available seats', description: 'Increase the paid license count first.', variant: 'destructive' });
+      toast({ title: 'Assigned', description: `${user.firstName} ${user.lastName} assigned to ${liveProduct.name}.` });
     }
   };
 
-  const handleUnassign = (userId: string) => {
-    if (!subscription || !product) return;
-    unassignLicense(userId, subscription.id, product.id);
-    const u = users.find(x => x.id === userId);
-    toast({
-      title: `Unassigned ${u?.firstName} ${u?.lastName} from ${product.name}`,
-      description: 'License remains paid — assign it to someone else.',
+  const handleAssignClick = (user: User) => {
+    if (!liveSub || !liveProduct) return;
+    if (assignedCount >= licenseCount) return; // button is disabled anyway
+
+    // Compute the "going-away seat" check (v25):
+    //   pendingRenewalCount    = the value the admin has chosen for next renewal
+    //                          = renewalSeatCount (if set) OR licenseCount (fallback)
+    //   currentlyAssignedCount = users CURRENTLY assigned to this product
+    //                          (active licenses only — excludes pending-payment and
+    //                          released "previously held" rows)
+    // If currentlyAssignedCount + 1 > pendingRenewalCount, this new assignment is
+    // filling a seat that's going away at renewal — fire the warning.
+    const pendingRenewalCount = liveProduct.renewalSeatCount ?? liveProduct.licenseCount;
+
+    const currentlyAssignedCount = licenses.filter(l =>
+      l.subscriptionId === liveSub.id &&
+      l.productId === liveProduct.id &&
+      !!l.userId &&                       // must have a user
+      l.status !== 'pending_payment' &&   // exclude pending-payment licenses
+      !l.deactivatedAt                    // exclude deactivated rows
+    ).length;
+
+    const willFillExpiringSeat = currentlyAssignedCount + 1 > pendingRenewalCount;
+
+    // Debug log — remove after verification
+    console.log('[Assign Check]', {
+      userId: user.id,
+      productId: liveProduct.id,
+      pendingRenewalCount,
+      currentlyAssignedCount,
+      willFillExpiringSeat,
     });
-  };
 
-  const handleApply = () => {
-    if (!subscription || !product) return;
-
-    // 1) Increase current paid licenses → payment flow.
-    if (isIncrease) {
-      const result = requestLicenseChange(subscription.id, product.id, currentInput, paymentMethod);
-      void result;
-      if (paymentMethod === 'pay_immediately') {
-        toast({ title: 'Payment successful', description: `Added ${addSeats} ${product.name} seat(s).` });
-        onOpenChange(false);
-      } else if (paymentMethod === 'pay_on_terms') {
-        toast({ title: 'Seats added under approved payment terms.' });
-        onOpenChange(false);
-      } else {
-        toast({ title: 'Invoice generated for license change', description: 'Pay your invoice to apply the new seats.' });
-        onOpenChange(false);
-        navigate('/invoices');
-      }
+    if (willFillExpiringSeat) {
+      // Fire the warning dialog — STOP, do not assign yet.
+      setAssignWarningUser(user);
       return;
     }
 
-    // 2) Reduction below assigned → open per-user removal prompt.
-    if (needsPrompt) {
-      setChoices({});
-      setOverlayOpen(true);
+    // Normal assignment path (not a going-away seat).
+    doAssign(user, false);
+  };
+
+  // "Assign anyway" on the warning dialog.
+  const confirmAssignExpiring = () => {
+    if (!assignWarningUser) return;
+    doAssign(assignWarningUser, true); // true = expiring
+    setAssignWarningUser(null);
+  };
+
+  const confirmUnassign = () => {
+    if (!unassignTarget || !liveSub || !liveProduct) return;
+    const u = unassignTarget.user;
+    const isPending = unassignTarget.license.status === 'pending_payment';
+    if (isPending) {
+      // Revert to an empty pending seat (keep the paid seat + invoice link).
+      unassignUserFromPendingSeat(u.id, liveSub.id, liveProduct.id);
+    } else {
+      unassignLicense(u.id, liveSub.id, liveProduct.id);
+    }
+    setDirty(true);
+    toast({ title: `Unassigned ${u.firstName} ${u.lastName}.`, description: 'Seat is available for reassignment.' });
+    setUnassignTarget(null);
+  };
+
+  const handleMarkRenewing = (rec: AssignedRecord) => {
+    if (!liveSub || !liveProduct) return;
+    // Flip the flag to false, then increment the renewal seat count by 1
+    // (we just decided to keep this seat).
+    markLicensesExpiringAtRenewal(liveSub.id, liveProduct.id, [rec.user.id], false);
+    updateRenewalSeatCount(liveSub.id, liveProduct.id, renewalCount + 1);
+    setDirty(true);
+    toast({
+      title: 'Marked as renewing',
+      description: `Seat will renew at ${renewalDateLabel}. Renewal count updated.`,
+    });
+  };
+
+  // ---- v20 Pay button flow ----
+  const handlePayConfirm = () => {
+    if (!pendingInvoice) return;
+    setPayOpen(false);
+    if (payMethod === 'pay_immediately') {
+      onOpenChange(false);
+      navigate('/pay', {
+        state: {
+          source: 'invoice',
+          invoiceId: pendingInvoice.id,
+          subtotal: pendingInvoice.subtotal ?? pendingInvoice.amount,
+          tax: pendingInvoice.tax ?? 0,
+          totalAmount: pendingInvoice.totalAmount ?? pendingInvoice.amount,
+          returnTo: '/subscriptions',
+        },
+      });
       return;
     }
-
-    // 3) Plain reduction with no assigned users affected (release empty seats).
-    const newCurrent = Math.min(currentInput, currentSeats);
-    const newRenewal = Math.min(renewalInput, newCurrent);
-    if (newCurrent === currentSeats && newRenewal === scheduledRenewalSeats) return; // nothing to do
-    applyLicenseReduction({
-      subscriptionId: subscription.id,
-      productId: product.id,
-      newCurrentCount: newCurrent,
-      newRenewalCount: newRenewal,
-      removeNowUserIds: [],
-      expireEndOfCycleUserIds: [],
-    });
-    toast({ title: 'Paid licenses updated', description: 'No refund is issued for released seats.' });
+    finalizePendingInvoice(pendingInvoice.id, payMethod);
+    if (payMethod === 'pay_on_terms') {
+      toast({ title: `Invoice ${pendingInvoice.invoiceNumber} created with Net 30 terms.`, description: 'Seats are active now.' });
+    } else {
+      toast({ title: `Invoice ${pendingInvoice.invoiceNumber} created.`, description: 'Pay within 7 days to activate the seats.' });
+    }
     onOpenChange(false);
   };
 
-  const handlePromptApply = () => {
-    if (!subscription || !product || !promptMatched) return;
-    const removeNowIds = Object.entries(choices).filter(([, w]) => w === 'remove_now').map(([uid]) => uid);
-    const expireIds = Object.entries(choices).filter(([, w]) => w === 'expire_end_of_cycle').map(([uid]) => uid);
-    const newCurrent = Math.max(0, currentSeats - removeNowIds.length);
-    const newRenewal = renewalInput;
-    applyLicenseReduction({
-      subscriptionId: subscription.id,
-      productId: product.id,
-      newCurrentCount: newCurrent,
-      newRenewalCount: newRenewal,
-      removeNowUserIds: removeNowIds,
-      expireEndOfCycleUserIds: expireIds,
-    });
-    toast({
-      title: 'Licenses reduced',
-      description: `${removeNowIds.length} user(s) removed now, ${expireIds.length} will expire at renewal.`,
-    });
+  // Cancel: with a provisional pending invoice, confirm discard first.
+  const handleCancelClick = () => {
+    if (pendingInvoice) {
+      setDiscardConfirmOpen(true);
+    } else {
+      onOpenChange(false);
+    }
+  };
+  const handleDiscard = () => {
+    if (pendingInvoice) discardPendingInvoice(pendingInvoice.id);
+    setDiscardConfirmOpen(false);
     onOpenChange(false);
   };
 
-  const hasPendingChange = isIncrease || isReduction;
-
-  if (!subscription || !product) {
+  if (!liveSub || !liveProduct) {
     return (
       <Sheet open={open} onOpenChange={onOpenChange}>
-        <SheetContent side="right" className="w-full sm:max-w-md" />
+        <SheetContent side="right" className="w-full sm:max-w-2xl" />
       </Sheet>
     );
   }
 
+  // ---- Unified Users list — pending is invisible; everyone renders uniformly (Section A) ----
+  const assignedActive = assignedRecords.filter(r => !r.license.expiringAtRenewal).sort(byUserName);
+  const assignedExpiring = assignedRecords.filter(r => !!r.license.expiringAtRenewal).sort(byUserName);
+  const assignedUserIds = new Set(assignedRecords.map(r => r.user.id));
+  const notAssigned = users
+    .filter(u => u.companyId === liveSub.companyId && u.status === 'active' && !assignedUserIds.has(u.id))
+    .sort((a, b) => `${a.firstName} ${a.lastName}`.localeCompare(`${b.firstName} ${b.lastName}`));
+
+  const noSeatsAvailable = assignedCount >= licenseCount;
+
+  const ActivePill = () => <Badge className="bg-success/10 text-success border-success/20">Active</Badge>;
+  const ExpiringPill = () => <Badge className="bg-warning/10 text-warning border-warning/20">Expiring at renewal</Badge>;
+
+  const AssignedRow = ({ rec, expiring }: { rec: AssignedRecord; expiring?: boolean }) => (
+    <div className="flex items-start gap-3 p-3 hover:bg-muted/40">
+      <div className="h-9 w-9 rounded-full bg-primary/10 text-primary flex items-center justify-center text-[11px] font-semibold shrink-0">
+        {userInitials(rec.user)}
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="text-sm font-medium truncate">{rec.user.firstName} {rec.user.lastName}</div>
+        <div className="text-xs text-muted-foreground truncate">
+          {rec.user.email} · {rec.user.roles[0] ? ROLE_LABELS[rec.user.roles[0]] : 'User'}
+        </div>
+        <div className="mt-1.5">{expiring ? <ExpiringPill /> : <ActivePill />}</div>
+      </div>
+      {canAssign && (
+        <div className="flex flex-col items-end gap-1.5 shrink-0">
+          <Button size="sm" variant="outline" className="h-7" onClick={() => setUnassignTarget(rec)}>
+            <UserMinus className="h-3.5 w-3.5 mr-1" />Unassign
+          </Button>
+          {expiring && canRenewalStatus && (
+            <Button size="sm" variant="outline" className="h-7" onClick={() => handleMarkRenewing(rec)}>
+              <RotateCw className="h-3.5 w-3.5 mr-1" />Mark as renewing
+            </Button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent side="right" className="w-full sm:max-w-lg overflow-y-auto p-0">
-        <div className="relative">
-          <div className="p-5 space-y-5">
-            <SheetHeader className="space-y-1">
-              <SheetTitle className="text-lg">{product.name}</SheetTitle>
-              <SheetDescription>Manage Licenses · {subscription.planType}</SheetDescription>
-            </SheetHeader>
+      <SheetContent side="right" className="w-full sm:max-w-2xl flex flex-col p-0">
+        <SheetHeader className="px-5 pt-5 pb-3 space-y-1">
+          <SheetTitle className="text-lg">Manage Licenses</SheetTitle>
+          <SheetDescription>{liveProduct.name} · {liveSub.planType}</SheetDescription>
+        </SheetHeader>
 
-            {/* Counts */}
-            <div>
-              <div className="flex items-center gap-3">
-                <SeatStepper label="Current paid licenses" value={currentInput} min={assignedCount}
-                  onChange={setCurrentInput} disabled={!canManageCounts} />
-                <SeatStepper label="Paid licenses at next renewal" value={renewalInput} min={0}
-                  onChange={setRenewalInput} disabled={!canManageCounts} />
+        <div className="flex-1 overflow-y-auto px-5 pb-5 space-y-6">
+          {/* Summary card */}
+          <div className="rounded-lg bg-primary text-primary-foreground p-4 space-y-3">
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-primary-foreground/80">Current seats</span>
+                <span className="text-lg font-bold">{licenseCount}</span>
               </div>
-              {!canManageCounts && (
-                <p className="text-xs text-muted-foreground mt-2">
-                  Changing the paid license count requires Account Owner or Billing Admin. You can still assign or unassign users below.
-                </p>
-              )}
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-primary-foreground/80">New seats</span>
+                <span className="text-lg font-bold">{stepperInput}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-primary-foreground/80">Currently assigned</span>
+                <span className="text-lg font-bold">{assignedCount}</span>
+              </div>
             </div>
 
-            {/* Pricing preview */}
-            {canManageCounts && hasPendingChange && (
-              <div className="rounded-md border bg-muted/30 p-3 text-sm space-y-1.5">
-                {isIncrease && proration ? (
-                  <>
-                    <div className="flex justify-between"><span className="text-muted-foreground">Adding seats</span><span>{addSeats}</span></div>
-                    <div className="flex justify-between"><span className="text-muted-foreground">License charge</span><span>{formatCurrency(proration.licenseCharge)}</span></div>
-                    <div className="flex justify-between"><span className="text-muted-foreground">Prorated maintenance ({proration.daysRemaining}/365 days)</span><span>{formatCurrency(proration.maintenanceChargeProrated)}</span></div>
-                    <div className="flex justify-between border-t pt-1.5 font-semibold"><span>Charge today</span><span>{formatCurrency(proration.totalCharge)}</span></div>
-                  </>
-                ) : (
-                  <div className="flex items-center justify-between">
-                    <span className="text-muted-foreground">Refund for reduced seats</span>
-                    <span className="font-semibold">$0.00 — no refund issued</span>
+            {/* Section B — checkout-style Order Summary (only on a pending increase) */}
+            {delta > 0 && (
+              <>
+                <div className="border-t border-primary-foreground/20" />
+                <div className="space-y-1.5">
+                  <div className="text-xs uppercase tracking-wide text-primary-foreground/70">Order Summary</div>
+                  <div className="flex justify-between text-sm">
+                    <span className="text-primary-foreground/90">{liveProduct.name} × {delta}</span>
+                    <span className="font-medium">{formatCurrency(orderSubtotal)}</span>
                   </div>
-                )}
-              </div>
-            )}
-
-            {/* Payment method — only on increase */}
-            {canManageCounts && isIncrease && (
-              <div>
-                <Label className="text-sm">Payment Method</Label>
-                <div className="mt-2">
-                  <PaymentMethodPicker value={paymentMethod} onChange={setPaymentMethod} available={available} terms={cfg.terms} />
+                  <div className="text-[11px] text-primary-foreground/60">
+                    Prorated for {daysRemaining} of 365 days
+                  </div>
+                  <div className="flex justify-between text-sm pt-1">
+                    <span className="text-primary-foreground/80">Subtotal</span>
+                    <span>{formatCurrency(orderSubtotal)}</span>
+                  </div>
+                  <div className="flex justify-between text-sm">
+                    <span className="text-primary-foreground/80">Tax (7%)</span>
+                    <span>{formatCurrency(orderTax)}</span>
+                  </div>
+                  <div className="flex justify-between text-base font-semibold pt-1.5 border-t border-primary-foreground/20">
+                    <span>Total</span>
+                    <span>{formatCurrency(orderTotal)}</span>
+                  </div>
                 </div>
-              </div>
+              </>
             )}
 
-            {canManageCounts && hasPendingChange && (
-              <Button className="w-full" onClick={handleApply}>
-                {isIncrease ? 'Review & apply increase' : 'Apply changes'}
-              </Button>
+            {/* Pending decrease: no charge today (Section B3 — no negative amounts) */}
+            {delta < 0 && (
+              <>
+                <div className="border-t border-primary-foreground/20" />
+                <div className="text-sm text-primary-foreground/90">
+                  No charge today — changes apply at next renewal.
+                </div>
+              </>
             )}
 
-            {/* Assigned users */}
-            <div>
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-sm font-medium">Assigned users</span>
-                <span className="text-xs text-muted-foreground">{assignedCount} of {currentSeats} seats</span>
-              </div>
-              <div className="border rounded-md divide-y">
-                {assignedUsers.length === 0 ? (
-                  <div className="p-3 text-xs text-muted-foreground text-center">No users assigned yet.</div>
-                ) : (
-                  assignedUsers.map(u => {
-                    const initials = `${u.firstName?.[0] || ''}${u.lastName?.[0] || ''}`.toUpperCase() || u.email[0].toUpperCase();
-                    return (
-                      <div key={u.id} className="flex items-center gap-3 p-2.5">
-                        <div className="h-7 w-7 rounded-full bg-primary/10 text-primary flex items-center justify-center text-[11px] font-semibold shrink-0">{initials}</div>
-                        <div className="min-w-0 flex-1">
-                          <div className="text-sm font-medium truncate">{u.firstName} {u.lastName}</div>
-                          <div className="text-xs text-muted-foreground truncate">{u.email}</div>
-                        </div>
-                        {canAssign && (
-                          <Button size="sm" variant="ghost" className="text-muted-foreground hover:text-destructive h-8"
-                            onClick={() => handleUnassign(u.id)}>
-                            <UserMinus className="h-3.5 w-3.5 mr-1" />Remove
-                          </Button>
-                        )}
-                      </div>
-                    );
-                  })
-                )}
-
-                {/* Available (empty) seats */}
-                {emptySlots > 0 && canAssign && (
-                  <div className="p-2.5 flex items-center justify-between bg-muted/20">
-                    <span className="text-xs text-muted-foreground">{emptySlots} available seat{emptySlots > 1 ? 's' : ''}</span>
-                    <Popover open={assignOpen} onOpenChange={(o) => { setAssignOpen(o); if (!o) setAssignSearch(''); }}>
-                      <PopoverTrigger asChild>
-                        <Button size="sm" variant="outline" className="h-8"><UserPlus className="h-3.5 w-3.5 mr-1" />Assign user</Button>
-                      </PopoverTrigger>
-                      <PopoverContent align="end" className="w-72 p-0">
-                        <div className="p-2 border-b">
-                          <div className="relative">
-                            <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
-                            <Input value={assignSearch} onChange={(e) => setAssignSearch(e.target.value)}
-                              placeholder="Search users…" className="h-8 pl-7 text-sm" autoFocus />
-                          </div>
-                        </div>
-                        <div className="max-h-56 overflow-y-auto py-1">
-                          {filteredAssignable.length === 0 ? (
-                            <div className="px-3 py-4 text-xs text-muted-foreground text-center">No users available to assign.</div>
-                          ) : filteredAssignable.map(u => (
-                            <button key={u.id} type="button" onClick={() => handleAssign(u.id)}
-                              className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-muted/60">
-                              <div className="min-w-0 flex-1">
-                                <div className="text-sm truncate">{u.firstName} {u.lastName}</div>
-                                <div className="text-xs text-muted-foreground truncate">{u.email}</div>
-                              </div>
-                              <Check className="h-3.5 w-3.5 text-muted-foreground opacity-0" />
-                            </button>
-                          ))}
-                        </div>
-                      </PopoverContent>
-                    </Popover>
-                  </div>
-                )}
-              </div>
+            <div className="text-xs text-primary-foreground/70">
+              per seat cost {formatCurrency(pricePerSeatPerYear)}/year
             </div>
-
-            {/* Previously held licenses — render ONLY when entries exist (Section C6) */}
-            {canReactivate && deactivatedEntries.length > 0 && (
-              <section className="border-t pt-4">
-                <h3 className="text-sm font-semibold">Previously held licenses</h3>
-                <p className="text-xs text-muted-foreground mb-3">
-                  Reactivate to add a seat back. You'll be charged a prorated maintenance fee for the remainder of this year.
-                </p>
-                <ul className="space-y-2">
-                  {deactivatedEntries.map((entry, idx) => {
-                    const key = `${entry.license.subscriptionId}-${entry.license.productId}-${entry.license.assignedAt}-${idx}`;
-                    return (
-                      <li key={key} className="flex items-center justify-between p-3 rounded-md border bg-muted/30 gap-3">
-                        <div className="min-w-0">
-                          <div className="text-sm font-medium truncate">{entry.product.name}</div>
-                          <div className="text-xs text-muted-foreground">
-                            Deactivated {entry.license.deactivatedAt ? new Date(entry.license.deactivatedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : '—'}
-                            {entry.license.deactivatedReason && <span> · {entry.license.deactivatedReason}</span>}
-                          </div>
-                        </div>
-                        <Button size="sm" variant="outline" onClick={() => setReactivateTarget(entry)}>
-                          <RotateCcw className="h-3.5 w-3.5 mr-1" />Reactivate
-                        </Button>
-                      </li>
-                    );
-                  })}
-                </ul>
-              </section>
-            )}
           </div>
 
-          <SheetFooter className="gap-2 px-5 pb-5">
-            <Button variant="outline" onClick={() => onOpenChange(false)}>Close</Button>
-          </SheetFooter>
+          {/* Decrease info note (Section C2 — State 3) */}
+          {showReductionNote && (
+            <Alert>
+              <Info className="h-4 w-4" />
+              <AlertDescription>
+                Reducing renewal seat count. No refund issued for current cycle.
+              </AlertDescription>
+            </Alert>
+          )}
 
-          <ReactivateLicenseDialog
-            target={reactivateTarget}
-            onOpenChange={(o) => !o && setReactivateTarget(null)}
-          />
+          {/* Stepper */}
+          <div>
+            <h3 className="text-sm font-medium text-center">Update seats at renewal</h3>
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <div className="mt-3 flex items-center justify-center gap-2">
+                    <Button variant="default" size="icon" disabled={!canManageSeats || stepperInput <= 0}
+                      onClick={() => setStepperInput(v => Math.max(0, v - 1))} aria-label="Decrease renewal seats">
+                      <Minus className="h-4 w-4" />
+                    </Button>
+                    <Input type="number" min={0} value={stepperInput} disabled={!canManageSeats}
+                      onChange={(e) => setStepperInput(Math.max(0, parseInt(e.target.value) || 0))}
+                      className="h-10 w-20 text-center text-lg font-semibold" />
+                    <Button variant="default" size="icon" disabled={!canManageSeats}
+                      onClick={() => setStepperInput(v => v + 1)} aria-label="Increase renewal seats">
+                      <Plus className="h-4 w-4" />
+                    </Button>
+                    <Button variant="default" className="ml-2" disabled={applyDisabled} onClick={handleApply}>
+                      Apply
+                    </Button>
+                  </div>
+                </TooltipTrigger>
+                {!canManageSeats && (
+                  <TooltipContent>Contact your Billing Admin to change seat counts.</TooltipContent>
+                )}
+              </Tooltip>
+            </TooltipProvider>
+          </div>
+
+          {/* Unified Users list (Section B) */}
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-sm font-semibold">Users</span>
+              <span className="text-xs text-muted-foreground">{assignedCount} of {licenseCount} assigned</span>
+            </div>
+            <div className="border rounded-md divide-y max-h-[420px] overflow-y-auto">
+              {assignedActive.length === 0 && assignedExpiring.length === 0 && notAssigned.length === 0 ? (
+                <div className="p-3 text-xs text-muted-foreground text-center">No active users in this company.</div>
+              ) : (
+                <>
+                  {assignedActive.map(rec => <AssignedRow key={rec.user.id} rec={rec} expiring={false} />)}
+                  {assignedExpiring.map(rec => <AssignedRow key={rec.user.id} rec={rec} expiring={true} />)}
+
+                  {/* Not-assigned users */}
+                  {notAssigned.map(u => (
+                    <div key={u.id} className="flex items-start gap-3 p-3 hover:bg-muted/40">
+                      <div className="h-9 w-9 rounded-full bg-primary/10 text-primary flex items-center justify-center text-[11px] font-semibold shrink-0">
+                        {userInitials(u)}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm font-medium truncate">{u.firstName} {u.lastName}</div>
+                        <div className="text-xs text-muted-foreground truncate">
+                          {u.email} · {u.roles[0] ? ROLE_LABELS[u.roles[0]] : 'User'}
+                        </div>
+                        <div className="mt-1.5">
+                          <Badge variant="secondary" className="bg-muted text-muted-foreground">Not assigned</Badge>
+                        </div>
+                      </div>
+                      {canAssign && (
+                        <div className="shrink-0">
+                          {noSeatsAvailable ? (
+                            <TooltipProvider>
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <span tabIndex={0}>
+                                    <Button size="sm" className="h-7" disabled>
+                                      <UserPlus className="h-3.5 w-3.5 mr-1" />Assign
+                                    </Button>
+                                  </span>
+                                </TooltipTrigger>
+                                <TooltipContent className="max-w-[240px]">
+                                  All paid seats are assigned. Increase seats at renewal or add seats now to assign more users.
+                                </TooltipContent>
+                              </Tooltip>
+                            </TooltipProvider>
+                          ) : (
+                            <Button size="sm" className="h-7" onClick={() => handleAssignClick(u)}>
+                              <UserPlus className="h-3.5 w-3.5 mr-1" />Assign
+                            </Button>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </>
+              )}
+            </div>
+          </div>
         </div>
 
-        {/* Per-user removal prompt */}
+        {/* Footer — Pay button appears when a provisional charge is pending (Section B) */}
+        <SheetFooter className="border-t px-5 py-4 sm:flex-col sm:items-stretch sm:space-x-0 gap-2">
+          {pendingInvoice ? (
+            <>
+              <div className="text-xs text-muted-foreground">Pending charge from added seats</div>
+              <div className="flex flex-row justify-end gap-2">
+                <Button variant="outline" onClick={handleCancelClick}>Cancel</Button>
+                <Button onClick={() => { setPayMethod(availableMethods[0] ?? 'pay_immediately'); setPayOpen(true); }}>
+                  Pay {formatCurrency(pendingAmount)}
+                </Button>
+              </div>
+            </>
+          ) : (
+            <div className="flex flex-row justify-end gap-2">
+              <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+              <Button onClick={() => onOpenChange(false)} disabled={!dirty}>Save changes</Button>
+            </div>
+          )}
+        </SheetFooter>
+
+        {/* Per-user removal overlay */}
         <Dialog open={overlayOpen} onOpenChange={setOverlayOpen}>
-          <DialogContent className="max-w-lg">
+          <DialogContent className="max-w-lg bg-amber-50 dark:bg-amber-950/30 border-primary">
             <DialogHeader>
-              <DialogTitle>Reduce licenses</DialogTitle>
-              <DialogDescription>
-                You're reducing licenses at renewal to {renewalInput}. You currently have {assignedCount} users assigned.
-                Choose what to do with the {renewalExcess} excess user{renewalExcess > 1 ? 's' : ''}.
+              <DialogTitle>Reduce seats at renewal</DialogTitle>
+              <DialogDescription className="text-sm">
+                The licenses you have paid for last through the current cycle. Select the {overlayRequired} user{overlayRequired === 1 ? '' : 's'} to remove now or expire at the next renewal.
               </DialogDescription>
             </DialogHeader>
 
-            <div className="border rounded-md overflow-hidden">
-              <div className="grid grid-cols-[1fr_auto_auto] gap-3 px-3 py-2 bg-muted/40 text-xs font-medium">
+            <div className="border rounded-md overflow-hidden bg-background">
+              <div className="grid grid-cols-[1fr_auto_auto] gap-3 px-3 py-2 bg-muted/40 text-xs font-medium text-muted-foreground">
                 <div>User</div>
-                <div className="text-center w-24">Remove now</div>
-                <div className="text-center w-32">Remove at end of cycle</div>
+                <div className="text-center w-20">Remove now</div>
+                <div className="text-center w-28">Expire at renewal</div>
               </div>
-              <div className="divide-y max-h-72 overflow-y-auto">
-                {assignedUsers.map(u => {
-                  const when = choices[u.id];
+              <div className="divide-y max-h-[240px] overflow-y-auto">
+                {overlayUsers.map(rec => {
+                  const choice = overlayChoices[rec.user.id];
                   return (
-                    <div key={u.id} className="grid grid-cols-[1fr_auto_auto] gap-3 items-center px-3 py-2">
-                      <div className="min-w-0">
-                        <div className="text-sm font-medium truncate">{u.firstName} {u.lastName}</div>
-                        <div className="text-xs text-muted-foreground truncate">{u.email}</div>
+                    <div key={rec.user.id} className="grid grid-cols-[1fr_auto_auto] gap-3 items-center px-3 py-2">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <div className="h-7 w-7 rounded-full bg-primary/10 text-primary flex items-center justify-center text-[11px] font-semibold shrink-0">
+                          {userInitials(rec.user)}
+                        </div>
+                        <div className="min-w-0">
+                          <div className="text-sm font-medium truncate">{rec.user.firstName} {rec.user.lastName}</div>
+                          <div className="text-xs text-muted-foreground truncate">{rec.user.email}</div>
+                        </div>
                       </div>
-                      <div className="text-center w-24">
-                        <Checkbox checked={when === 'remove_now'} onCheckedChange={() => toggleChoice(u.id, 'remove_now')}
-                          aria-label={`Remove ${u.email} now`} />
+                      <div className="text-center w-20">
+                        <Checkbox checked={choice === 'now'} onCheckedChange={() => toggleOverlayChoice(rec.user.id, 'now')}
+                          aria-label={`Remove ${rec.user.email} now`} />
                       </div>
-                      <div className="text-center w-32">
-                        <Checkbox checked={when === 'expire_end_of_cycle'} onCheckedChange={() => toggleChoice(u.id, 'expire_end_of_cycle')}
-                          aria-label={`Remove ${u.email} at end of cycle`} />
+                      <div className="text-center w-28">
+                        <Checkbox checked={choice === 'expire'} onCheckedChange={() => toggleOverlayChoice(rec.user.id, 'expire')}
+                          aria-label={`Expire ${rec.user.email} at renewal`} />
                       </div>
                     </div>
                   );
@@ -528,18 +799,184 @@ export const ManageLicensesDrawer = ({
               </div>
             </div>
 
-            <div className={`text-sm font-medium ${promptMatched ? 'text-success' : 'text-destructive'}`}>
-              {selectedCount} of {renewalExcess} required selections made. The rest keep their license.
+            <div className={`text-sm font-medium ${overlayMatched ? 'text-success' : 'text-destructive'}`}>
+              {overlaySelected} of {overlayRequired} required selections
             </div>
 
             <DialogFooter className="gap-2">
               <Button variant="outline" onClick={() => setOverlayOpen(false)}>
-                <ArrowLeft className="h-4 w-4 mr-1" />Cancel
+                <ArrowLeft className="h-4 w-4 mr-1" />Back
               </Button>
-              <Button onClick={handlePromptApply} disabled={!promptMatched}>Apply Changes</Button>
+              <Button onClick={handleOverlayConfirm} disabled={!overlayMatched}>Confirm</Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>
+
+        {/* Simple reduce confirmation */}
+        <Dialog open={reduceConfirmOpen} onOpenChange={setReduceConfirmOpen}>
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle>Reduce renewal seat count?</DialogTitle>
+              <DialogDescription>
+                Reduce renewal seat count from {renewalCount} to {stepperInput}? No users are affected.
+                Your annual cost will drop by {formatCurrency(Math.abs(reduceDelta))}/year starting at the next renewal.
+                No refund is issued for the current cycle.
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter className="gap-2">
+              <Button variant="outline" onClick={() => setReduceConfirmOpen(false)}>Cancel</Button>
+              <Button onClick={handleReduceConfirm}>Confirm</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Increase choice (Section G2) */}
+        <Dialog open={increaseOpen} onOpenChange={setIncreaseOpen}>
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle>Add {increaseN} more seat{increaseN === 1 ? '' : 's'}?</DialogTitle>
+              <DialogDescription>Choose when to apply this change.</DialogDescription>
+            </DialogHeader>
+            <RadioGroup value={increaseMode} onValueChange={(v) => setIncreaseMode(v as 'now' | 'renewal')} className="space-y-2">
+              <label className={`flex items-start gap-2 border rounded-md p-3 cursor-pointer hover:bg-muted/40 ${increaseMode === 'now' ? 'border-primary bg-primary/5' : ''}`}>
+                <RadioGroupItem value="now" className="mt-0.5" />
+                <div>
+                  <div className="text-sm font-medium">Add seats now</div>
+                  <div className="text-xs text-muted-foreground">
+                    Seats are added immediately so you can assign users. Prorated amount: {formatCurrency(increaseProrated)} — choose how to pay before you close.
+                  </div>
+                </div>
+              </label>
+              <label className={`flex items-start gap-2 border rounded-md p-3 cursor-pointer hover:bg-muted/40 ${increaseMode === 'renewal' ? 'border-primary bg-primary/5' : ''}`}>
+                <RadioGroupItem value="renewal" className="mt-0.5" />
+                <div>
+                  <div className="text-sm font-medium">Add at renewal only</div>
+                  <div className="text-xs text-muted-foreground">
+                    Seats will be added at your next renewal on {renewalDateLabel}. No charge today.
+                  </div>
+                </div>
+              </label>
+            </RadioGroup>
+            <DialogFooter className="gap-2">
+              <Button variant="outline" onClick={() => setIncreaseOpen(false)}>Cancel</Button>
+              <Button onClick={handleIncreaseConfirm}>Confirm</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Expiring Seat Assignment Warning (Section F / v25) */}
+        <AlertDialog open={!!assignWarningUser} onOpenChange={(o) => !o && setAssignWarningUser(null)}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>This seat is set to expire at renewal</AlertDialogTitle>
+              <AlertDialogDescription className="space-y-3">
+                <span className="block">
+                  You are assigning <strong>{assignWarningUser?.firstName} {assignWarningUser?.lastName}</strong> to
+                  a seat that is scheduled to be removed at the next renewal ({renewalDateLabel}).
+                </span>
+                <span className="block">
+                  After renewal, this user will lose access to <strong>{liveProduct.name}</strong> unless
+                  you increase the renewal seat count OR mark this seat as renewing before then.
+                </span>
+                <span className="block">Continue with the assignment?</span>
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel onClick={() => setAssignWarningUser(null)}>Cancel</AlertDialogCancel>
+              <AlertDialogAction onClick={confirmAssignExpiring}>Assign anyway</AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+
+        {/* Inline unassign confirmation (v17 copy, kept) */}
+        <AlertDialog open={!!unassignTarget} onOpenChange={(o) => !o && setUnassignTarget(null)}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>
+                Unassign {unassignTarget?.user.firstName} {unassignTarget?.user.lastName}?
+              </AlertDialogTitle>
+              <AlertDialogDescription>
+                {unassignTarget?.user.firstName} will lose access to {liveProduct.name} immediately. The seat
+                remains paid through the current cycle and can be reassigned to another user at any time.
+                No refund is issued.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                onClick={confirmUnassign}>
+                Unassign
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+
+        {/* v20 — Payment method dialog (Pay button) */}
+        <Dialog open={payOpen} onOpenChange={setPayOpen}>
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle>How would you like to pay?</DialogTitle>
+              <DialogDescription>
+                {formatCurrency(pendingAmount)} for the seats added to {liveProduct.name}.
+              </DialogDescription>
+            </DialogHeader>
+            <RadioGroup value={payMethod} onValueChange={(v) => setPayMethod(v as PaymentMethod)} className="space-y-2">
+              {availableMethods.includes('pay_immediately') && (
+                <label className={`flex items-start gap-2 border rounded-md p-3 cursor-pointer hover:bg-muted/40 ${payMethod === 'pay_immediately' ? 'border-primary bg-primary/5' : ''}`}>
+                  <RadioGroupItem value="pay_immediately" className="mt-0.5" />
+                  <div>
+                    <div className="text-sm font-medium">Pay Immediately</div>
+                    <div className="text-xs text-muted-foreground">Select a saved payment method or add new. Seats activate on payment.</div>
+                  </div>
+                </label>
+              )}
+              {availableMethods.includes('pay_on_receipt') && (
+                <label className={`flex items-start gap-2 border rounded-md p-3 cursor-pointer hover:bg-muted/40 ${payMethod === 'pay_on_receipt' ? 'border-primary bg-primary/5' : ''}`}>
+                  <RadioGroupItem value="pay_on_receipt" className="mt-0.5" />
+                  <div>
+                    <div className="text-sm font-medium">Pay on Receipt</div>
+                    <div className="text-xs text-muted-foreground">Invoice due upon receipt (7 days). Seats activate when paid.</div>
+                  </div>
+                </label>
+              )}
+              {availableMethods.includes('pay_on_terms') && (
+                <label className={`flex items-start gap-2 border rounded-md p-3 cursor-pointer hover:bg-muted/40 ${payMethod === 'pay_on_terms' ? 'border-primary bg-primary/5' : ''}`}>
+                  <RadioGroupItem value="pay_on_terms" className="mt-0.5" />
+                  <div>
+                    <div className="text-sm font-medium">Pay on Terms (Net 30)</div>
+                    <div className="text-xs text-muted-foreground">Invoice with 30-day terms. Seats activate immediately.</div>
+                  </div>
+                </label>
+              )}
+            </RadioGroup>
+            <DialogFooter className="gap-2">
+              <Button variant="outline" onClick={() => setPayOpen(false)}>Cancel</Button>
+              <Button onClick={handlePayConfirm}>Continue</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* v20 — discard confirmation for unpaid changes (Cancel with pending invoice) */}
+        <AlertDialog open={discardConfirmOpen} onOpenChange={setDiscardConfirmOpen}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Discard unpaid changes?</AlertDialogTitle>
+              <AlertDialogDescription>
+                You have unpaid changes. Discarding will remove the added seats, delete the
+                unpaid invoice, and undo any pre-assignments to those seats. Continue?
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                onClick={handleDiscard}>
+                Discard changes
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </SheetContent>
     </Sheet>
   );

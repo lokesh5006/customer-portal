@@ -118,8 +118,23 @@ export const DownloadsPage = () => {
   const subs = getCompanySubscriptions();
   const suspended = isSuspendedMode();
   // Treat suspended subscriptions as "owned" for badge/state purposes so users see what they're missing.
-  const isSubscribed = (productName: string) =>
-    subs.some(s => (s.status === 'active' || s.status === 'suspended') && s.products.some(p => p.name === productName));
+  // v19 — a product is "owned" only if it's a non-pending product on the subscription. AND, if the
+  // current user's ONLY license(s) for it are pending-payment, they have no access yet (Section A2).
+  const isSubscribed = (productName: string) => {
+    const owned = subs.some(s =>
+      (s.status === 'active' || s.status === 'suspended') &&
+      s.products.some(p => p.name === productName && p.status !== 'pending_payment'));
+    if (!owned) return false;
+    if (currentUser) {
+      const userLics = subs.flatMap(s => {
+        const prod = s.products.find(p => p.name === productName);
+        if (!prod) return [];
+        return licenses.filter(l => l.userId === currentUser.id && l.subscriptionId === s.id && l.productId === prod.id);
+      });
+      if (userLics.length > 0 && userLics.every(l => l.status === 'pending_payment')) return false;
+    }
+    return true;
+  };
   type ButtonState = 'enabled' | 'suspended' | 'not_subscribed';
   const buttonState = (productName: string): ButtonState => {
     if (!isSubscribed(productName)) return 'not_subscribed';

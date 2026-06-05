@@ -23,12 +23,16 @@ import {
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import { useToast } from '@/hooks/use-toast';
 import { ToastAction } from '@/components/ui/toast';
 import { useReadOnlyGuard, READ_ONLY_TOOLTIP } from '@/hooks/useReadOnlyGuard';
 import { BulkImportDialog } from '@/components/users/BulkImportDialog';
 import {
-  Plus, MoreVertical, Download, Edit, UserX, UserCheck, ExternalLink, Clock, Upload,
+  Plus, MoreVertical, Download, Edit, UserX, UserCheck, ExternalLink, Clock, Upload, RotateCw,
 } from 'lucide-react';
 
 const statusColors: Record<string, string> = {
@@ -69,7 +73,7 @@ export const UsersPage = () => {
   const {
     getCompanyUsers, getCompanySubscriptions,
     deactivateUser, reactivateUser, hasAccess, can, startProxySession,
-    licenses, updateUser,
+    licenses, updateUser, markLicensesExpiringAtRenewal, updateRenewalSeatCount,
   } = useApp();
   const { toast } = useToast();
   const { readOnly } = useReadOnlyGuard();
@@ -81,6 +85,7 @@ export const UsersPage = () => {
   const [createdTo, setCreatedTo] = useState<Date>();
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
+  const [expiringOnly, setExpiringOnly] = useState(false);
 
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerMode, setDrawerMode] = useState<DrawerMode>('edit');
@@ -115,6 +120,49 @@ export const UsersPage = () => {
     return Array.from(seen, ([name, licenseType]) => ({ name, licenseType }));
   };
 
+  // v19 Section C3 — product names the user is set to lose at the next renewal.
+  const expiringProductsForUser = (userId: string): string[] => {
+    const names = new Set<string>();
+    licenses
+      .filter(l => l.userId === userId && l.expiringAtRenewal && !l.deactivatedAt)
+      .forEach(l => {
+        const sub = subscriptions.find(s => s.id === l.subscriptionId);
+        const prod = sub?.products.find(p => p.id === l.productId);
+        if (prod && prod.name !== 'DataNet') names.add(prod.name);
+      });
+    return Array.from(names);
+  };
+
+  // v20 Section D — the renewal column/chip show only for AO + BA AND when the company
+  // actually has at least one expiring-at-renewal license.
+  const canRenewalStatus = can('manage_seat_renewal_status');
+  const anyExpiringInCompany = allUsers.some(u => expiringProductsForUser(u.id).length > 0);
+  const showRenewalColumn = canRenewalStatus && anyExpiringInCompany;
+
+  // v20 Section F3 — mark ALL of a user's expiring licenses as renewing (per product:
+  // clear the flag and bump that product's renewal count by the number unflagged).
+  const handleMarkUserRenewing = (user: User) => {
+    const userExpiring = licenses.filter(l => l.userId === user.id && l.expiringAtRenewal && !l.deactivatedAt);
+    const byProduct = new Map<string, { subId: string; prodId: string; count: number }>();
+    userExpiring.forEach(l => {
+      const k = `${l.subscriptionId}:${l.productId}`;
+      const cur = byProduct.get(k);
+      if (cur) cur.count += 1;
+      else byProduct.set(k, { subId: l.subscriptionId, prodId: l.productId, count: 1 });
+    });
+    byProduct.forEach(({ subId, prodId, count }) => {
+      markLicensesExpiringAtRenewal(subId, prodId, [user.id], false);
+      const sub = subscriptions.find(s => s.id === subId);
+      const prod = sub?.products.find(p => p.id === prodId);
+      const current = prod?.renewalSeatCount ?? prod?.licenseCount ?? 0;
+      updateRenewalSeatCount(subId, prodId, current + count);
+    });
+    toast({
+      title: `${user.firstName} ${user.lastName} will renew.`,
+      description: 'Their seat(s) are kept at the next renewal.',
+    });
+  };
+
   const filteredUsers = users.filter(user => {
     const q = searchQuery.toLowerCase();
     const matchesSearch = !q ||
@@ -127,7 +175,8 @@ export const UsersPage = () => {
     let matchesCreated = true;
     if (createdFrom) matchesCreated = new Date(user.createdAt) >= createdFrom;
     if (createdTo && matchesCreated) matchesCreated = new Date(user.createdAt) <= createdTo;
-    return matchesSearch && matchesStatus && matchesRole && matchesCreated;
+    const matchesExpiring = !expiringOnly || expiringProductsForUser(user.id).length > 0;
+    return matchesSearch && matchesStatus && matchesRole && matchesCreated && matchesExpiring;
   });
 
   const totalPages = Math.ceil(filteredUsers.length / pageSize);
@@ -136,6 +185,7 @@ export const UsersPage = () => {
   const resetFilters = () => {
     setSearchQuery(''); setStatusFilter('all'); setRoleFilter('all');
     setCreatedFrom(undefined); setCreatedTo(undefined); setCurrentPage(1);
+    setExpiringOnly(false);
   };
 
   const isLastActiveOwner = (user: User): boolean => {
@@ -293,6 +343,19 @@ export const UsersPage = () => {
       ),
     },
     {
+      key: 'renewalStatus', header: 'Status at next renewal', className: 'min-w-[180px]',
+      render: (user) => {
+        const exp = expiringProductsForUser(user.id);
+        if (exp.length === 0) return <span className="text-muted-foreground text-xs">—</span>;
+        const label = exp.length > 3 ? `${exp.length} products` : exp.join(', ');
+        return (
+          <span className="text-xs font-medium text-amber-600 dark:text-amber-400">
+            Expiring — {label}
+          </span>
+        );
+      },
+    },
+    {
       key: 'actions', header: '', className: 'w-[50px] text-right',
       render: (user) => (
         <DropdownMenu>
@@ -310,6 +373,13 @@ export const UsersPage = () => {
             {can('users.impersonate') && canImpersonateTarget(user) && (
               <DropdownMenuItem onClick={() => handleProxyLogin(user)} disabled={user.status === 'inactive'}>
                 <ExternalLink className="h-4 w-4 mr-2" />Proxy as User
+              </DropdownMenuItem>
+            )}
+            {/* v20 Section F3 — mark a user's expiring license(s) as renewing (AO + BA) */}
+            {canRenewalStatus && expiringProductsForUser(user.id).length > 0 && (
+              <DropdownMenuItem onClick={() => handleMarkUserRenewing(user)} disabled={readOnly}>
+                <RotateCw className="h-4 w-4 mr-2" />
+                {expiringProductsForUser(user.id).length > 1 ? 'Mark all licenses as renewing' : 'Mark license as renewing'}
               </DropdownMenuItem>
             )}
             <DropdownMenuSeparator />
@@ -398,8 +468,25 @@ export const UsersPage = () => {
           }
         />
 
+        {/* v19/v20 Section C3/D — expiring-at-renewal filter chip (only when column shown) */}
+        {showRenewalColumn && (
+          <div className="flex items-center gap-2">
+            <Button
+              variant={expiringOnly ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => { setExpiringOnly(v => !v); setCurrentPage(1); }}
+              className="gap-1.5"
+            >
+              <Clock className="h-3.5 w-3.5" />
+              Expiring at renewal
+            </Button>
+          </div>
+        )}
+
         <div>
-          <DataTable columns={columns} data={paginatedUsers} keyExtractor={(user) => user.id} emptyMessage="No users found." />
+          <DataTable
+            columns={showRenewalColumn ? columns : columns.filter(c => c.key !== 'renewalStatus')}
+            data={paginatedUsers} keyExtractor={(user) => user.id} emptyMessage="No users found." />
           <Card className="rounded-t-none border-t-0">
             <PaginationControls currentPage={currentPage} totalPages={totalPages} pageSize={pageSize}
               totalRecords={filteredUsers.length} onPageChange={setCurrentPage}
@@ -439,6 +526,7 @@ const UserEditDrawer = ({ open, onOpenChange, mode, user, readOnly, onSaved }: U
   const {
     currentCompany, hasAccess, getCompanySubscriptions, getCompanyUsers,
     licenses, assignLicense, unassignLicense, getAssignedLicenseCount,
+    markLicensesExpiringAtRenewal,
     addUser, updateUser, isUsernameTaken,
   } = useApp();
   const { toast } = useToast();
@@ -581,6 +669,70 @@ const UserEditDrawer = ({ open, onOpenChange, mode, user, readOnly, onSaved }: U
     });
   };
 
+  // ============================================================
+  // EXPIRING SEAT ASSIGNMENT — v25 going-away-seat check, applied to the
+  // Users & Contacts assign path (same rule as the Manage Licenses drawer):
+  //   pendingRenewalCount    = renewalSeatCount (if set) OR licenseCount
+  //   currentlyAssignedCount = active assigned licenses (excl. pending-payment
+  //                            and deactivated rows)
+  // An assignment that pushes assigned above the renewal count fills a seat
+  // that's going away at renewal → warn first, tag expiringAtRenewal on confirm.
+  // ============================================================
+  type ExpiringAssignItem = { subId: string; prodId: string; prodName: string; renewalDate: string };
+  const [pendingExpiringAssigns, setPendingExpiringAssigns] = useState<{
+    userId: string;
+    userName: string;
+    items: ExpiringAssignItem[];
+  } | null>(null);
+
+  const willFillExpiringSeat = (subId: string, prodId: string): boolean => {
+    const sub = subscriptions.find(s => s.id === subId);
+    const prod = sub?.products.find(p => p.id === prodId);
+    if (!prod) return false;
+    const pendingRenewalCount = prod.renewalSeatCount ?? prod.licenseCount;
+    const currentlyAssignedCount = licenses.filter(l =>
+      l.subscriptionId === subId &&
+      l.productId === prodId &&
+      !!l.userId &&
+      l.status !== 'pending_payment' &&
+      !l.deactivatedAt
+    ).length;
+    const fills = currentlyAssignedCount + 1 > pendingRenewalCount;
+    // Debug log — remove after verification
+    console.log('[Assign Check]', {
+      source: 'UsersPage', productId: prodId, pendingRenewalCount, currentlyAssignedCount,
+      willFillExpiringSeat: fills,
+    });
+    return fills;
+  };
+
+  // "Assign anyway" — perform the deferred assignments and tag them expiring.
+  const confirmExpiringAssigns = () => {
+    if (!pendingExpiringAssigns) return;
+    const { userId, userName, items } = pendingExpiringAssigns;
+    items.forEach(it => {
+      const ok = assignLicense(userId, it.subId, it.prodId);
+      if (ok) markLicensesExpiringAtRenewal(it.subId, it.prodId, [userId], true);
+    });
+    toast({
+      title: 'Assigned to expiring seat',
+      description: `${userName} is assigned to a seat that expires at renewal. They'll lose access unless the seat is marked as renewing before then.`,
+    });
+    setPendingExpiringAssigns(null);
+    onSaved();
+  };
+
+  // Cancel — skip ONLY the expiring assignments; everything else already saved.
+  const cancelExpiringAssigns = () => {
+    if (!pendingExpiringAssigns) return;
+    toast({
+      title: 'Assignment cancelled',
+      description: `${pendingExpiringAssigns.items.map(i => i.prodName).join(', ')} was not assigned. Other changes were saved.`,
+    });
+    setPendingExpiringAssigns(null);
+    onSaved();
+  };
+
   const handleSave = () => {
     if (!currentCompany) return;
     if (!canSave) return;
@@ -620,7 +772,10 @@ const UserEditDrawer = ({ open, onOpenChange, mode, user, readOnly, onSaved }: U
       return;
     }
 
-    // Diff product checkboxes against existing licenses
+    // Diff product checkboxes against existing licenses. New assignments that
+    // would fill a going-away seat are DEFERRED behind the expiring-seat warning
+    // dialog; everything else commits immediately.
+    const deferred: ExpiringAssignItem[] = [];
     subscriptions.forEach(sub => {
       sub.products.forEach(prod => {
         if (prod.name === 'DataNet') return;
@@ -630,12 +785,26 @@ const UserEditDrawer = ({ open, onOpenChange, mode, user, readOnly, onSaved }: U
           l.userId === targetUserId && l.subscriptionId === sub.id && l.productId === prod.id
         );
         if (desired && !existing) {
-          assignLicense(targetUserId, sub.id, prod.id);
+          if (willFillExpiringSeat(sub.id, prod.id)) {
+            deferred.push({ subId: sub.id, prodId: prod.id, prodName: prod.name, renewalDate: sub.renewalDate });
+          } else {
+            assignLicense(targetUserId, sub.id, prod.id);
+          }
         } else if (!desired && existing) {
           unassignLicense(targetUserId, sub.id, prod.id);
         }
       });
     });
+
+    if (deferred.length > 0) {
+      // Fire the warning dialog — STOP, do not assign these yet.
+      setPendingExpiringAssigns({
+        userId: targetUserId,
+        userName: `${firstName.trim()} ${lastName.trim()}`,
+        items: deferred,
+      });
+      return;
+    }
 
     onSaved();
   };
@@ -758,13 +927,13 @@ const UserEditDrawer = ({ open, onOpenChange, mode, user, readOnly, onSaved }: U
                           ? licenses.some(l => l.userId === user.id && l.subscriptionId === sub.id && l.productId === prod.id)
                           : false;
                         const noSeats = !checked && available <= 0 && !alreadyHas;
-                        // Q10: a product has expiring seats when its scheduled (next-year)
+                        // Q10: a product has expiring seats when its committed renewal
                         // seat count is lower than its current count. License Admin sees an
                         // informational notice when assigning to such a product because they
                         // can't toggle the seat's renewal status themselves.
+                        // (v25 — renewalSeatCount is the live field; scheduledLicenseCount is legacy.)
                         const hasExpiringSeats =
-                          prod.scheduledLicenseCount !== undefined &&
-                          prod.scheduledLicenseCount < prod.licenseCount;
+                          (prod.renewalSeatCount ?? prod.scheduledLicenseCount ?? prod.licenseCount) < prod.licenseCount;
                         const showExpiringNotice =
                           editorIsOnlyLicenseAdmin && checked && !alreadyHas && hasExpiringSeats;
                         const endOfCycleDate = new Date(sub.renewalDate).toLocaleDateString('en-US', {
@@ -872,6 +1041,44 @@ const UserEditDrawer = ({ open, onOpenChange, mode, user, readOnly, onSaved }: U
             </Button>
           </SheetFooter>
         )}
+
+        {/* Expiring Seat Assignment Warning (v25 — same rule as Manage Licenses drawer) */}
+        <AlertDialog
+          open={!!pendingExpiringAssigns}
+          // Esc/overlay dismiss just closes the dialog (state cleared, drawer stays
+          // open with checkboxes intact — re-saving re-fires the warning). The Cancel
+          // and Assign-anyway buttons carry the real handlers; this stays idempotent
+          // so their clicks don't double-fire through the close event.
+          onOpenChange={(o) => !o && setPendingExpiringAssigns(null)}
+        >
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>
+                {pendingExpiringAssigns && pendingExpiringAssigns.items.length > 1
+                  ? 'These seats are set to expire at renewal'
+                  : 'This seat is set to expire at renewal'}
+              </AlertDialogTitle>
+              <AlertDialogDescription className="space-y-3">
+                {pendingExpiringAssigns?.items.map(it => (
+                  <span key={`${it.subId}:${it.prodId}`} className="block">
+                    You are assigning <strong>{pendingExpiringAssigns.userName}</strong> to a seat on{' '}
+                    <strong>{it.prodName}</strong> that is scheduled to be removed at the next renewal
+                    ({formatDate(it.renewalDate)}).
+                  </span>
+                ))}
+                <span className="block">
+                  After renewal, this user will lose access unless you increase the renewal seat
+                  count OR mark this seat as renewing before then.
+                </span>
+                <span className="block">Continue with the assignment?</span>
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel onClick={cancelExpiringAssigns}>Cancel</AlertDialogCancel>
+              <AlertDialogAction onClick={confirmExpiringAssigns}>Assign anyway</AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </SheetContent>
     </Sheet>
   );
