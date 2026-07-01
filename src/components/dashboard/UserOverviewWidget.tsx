@@ -56,7 +56,7 @@ export const UserOverviewWidget = () => {
             onClick={(e) => { e.stopPropagation(); navigate('/users'); }}
           >
             <UserPlus className="h-4 w-4 mr-2" />
-            Invite User
+            Add Contact
           </Button>
         )}
       </div>

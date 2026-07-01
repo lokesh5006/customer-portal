@@ -34,7 +34,13 @@ import { RenewalFlyout } from '@/components/billing/RenewalFlyout';
 import { useReadOnlyGuard, READ_ONLY_TOOLTIP } from '@/hooks/useReadOnlyGuard';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 
-type PaymentMethod = 'Direct ACH' | 'Credit Card' | 'ACH e-Check' | 'Paper Check' | 'Invoice Only (Net 30)';
+type PaymentMethod = 'Direct ACH' | 'Credit Card' | 'ACH e-Check' | 'Paper Check' | 'Invoice per terms agreement';
+
+// Helper subtitles shown under specific renewal payment options.
+const RENEWAL_OPTION_DESCRIPTIONS: Partial<Record<PaymentMethod, string>> = {
+  'Direct ACH': 'Firm initiates Direct ACH payment outside this portal. L3 billing team will mark paid when payment is received.',
+  'Paper Check': 'Firm initiates Paper Check payment. L3 billing team will mark paid when payment is received.',
+};
 
 const formatCurrency = (n: number): string =>
   new Intl.NumberFormat('en-US', {
@@ -394,7 +400,7 @@ export const SubscriptionsPage = () => {
   );
   const productCount = activeProductNames.size;
 
-  const paymentMethods: PaymentMethod[] = ['Direct ACH', 'Credit Card', 'ACH e-Check', 'Paper Check', 'Invoice Only (Net 30)'];
+  const paymentMethods: PaymentMethod[] = ['Direct ACH', 'Credit Card', 'ACH e-Check', 'Paper Check', 'Invoice per terms agreement'];
 
   return (
     <MainLayout>
@@ -830,7 +836,7 @@ export const SubscriptionsPage = () => {
                             {/* Renewal Options */}
                             <Card id="renewal-options">
                               <CardHeader className="pb-4">
-                                <CardTitle className="text-base font-semibold">Renewal Options</CardTitle>
+                                <CardTitle className="text-base font-semibold">Renewal Payment Options</CardTitle>
                                 <p className="text-xs text-muted-foreground mt-1">Select a payment method for your next renewal.</p>
                               </CardHeader>
                               <CardContent className="p-6 pt-0">
@@ -850,11 +856,16 @@ export const SubscriptionsPage = () => {
                                           selected ? 'border-primary bg-primary/5' : 'border-border hover:border-primary/40'
                                         )}
                                       >
-                                        <span className="flex items-center gap-2.5">
-                                          <span className="h-4 w-4 rounded-full border-2 border-input flex items-center justify-center shrink-0">
+                                        <span className="flex items-start gap-2.5">
+                                          <span className="h-4 w-4 mt-0.5 rounded-full border-2 border-input flex items-center justify-center shrink-0">
                                             {selected && <span className="h-2 w-2 rounded-full bg-primary" />}
                                           </span>
-                                          <span className="text-sm">{opt}</span>
+                                          <span className="flex flex-col">
+                                            <span className="text-sm">{opt}</span>
+                                            {RENEWAL_OPTION_DESCRIPTIONS[opt] && (
+                                              <span className="text-xs text-muted-foreground mt-0.5">{RENEWAL_OPTION_DESCRIPTIONS[opt]}</span>
+                                            )}
+                                          </span>
                                         </span>
                                         {selected && (
                                           <Badge variant="outline" className="bg-primary text-primary-foreground border-primary text-xs">

@@ -49,7 +49,7 @@ const subStatusBadge = (status: Subscription['status']) => {
   }
 };
 
-const RENEWAL_OPTION_LABELS = ['Direct ACH', 'Credit Card', 'ACH e-Check', 'Paper Check', 'Invoice Only (Net 30)'];
+const RENEWAL_OPTION_LABELS = ['Direct ACH', 'Credit Card', 'ACH e-Check', 'Paper Check', 'Invoice per terms agreement'];
 
 export const SubscriptionDetailPage = () => {
   const navigate = useNavigate();
@@ -167,7 +167,7 @@ export const SubscriptionDetailPage = () => {
     'Credit Card': hasCard,
     'ACH e-Check': hasAch,
     'Paper Check': false,
-    'Invoice Only (Net 30)': !!config.payOnTermsEnabled,
+    'Invoice per terms agreement': !!config.payOnTermsEnabled,
   };
 
   // Billing Details

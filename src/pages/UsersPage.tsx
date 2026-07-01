@@ -420,7 +420,7 @@ export const UsersPage = () => {
         <TooltipTrigger asChild>
           <span tabIndex={0}>
             <Button onClick={() => openDrawer(null, 'add')} disabled={readOnly || !canManageUsers}>
-              <Plus className="h-4 w-4 mr-2" />Add User
+              <Plus className="h-4 w-4 mr-2" />Add Contact
             </Button>
           </span>
         </TooltipTrigger>
@@ -486,7 +486,7 @@ export const UsersPage = () => {
         <div>
           <DataTable
             columns={showRenewalColumn ? columns : columns.filter(c => c.key !== 'renewalStatus')}
-            data={paginatedUsers} keyExtractor={(user) => user.id} emptyMessage="No users found." />
+            data={paginatedUsers} keyExtractor={(user) => user.id} emptyMessage="No contacts found." />
           <Card className="rounded-t-none border-t-0">
             <PaginationControls currentPage={currentPage} totalPages={totalPages} pageSize={pageSize}
               totalRecords={filteredUsers.length} onPageChange={setCurrentPage}
@@ -751,7 +751,7 @@ const UserEditDrawer = ({ open, onOpenChange, mode, user, readOnly, onSaved }: U
         dataNetEmailOptIn: dataNetOptIn,
       });
       targetUserId = created.id;
-      toast({ title: 'User created', description: `${created.firstName} ${created.lastName} has been invited.` });
+      toast({ title: 'Contact added', description: `${created.firstName} ${created.lastName} has been added.` });
     } else if (user) {
       targetUserId = user.id;
       updateUser(user.id, {
@@ -1037,7 +1037,7 @@ const UserEditDrawer = ({ open, onOpenChange, mode, user, readOnly, onSaved }: U
           <SheetFooter className="px-6 py-4 border-t gap-2">
             <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
             <Button onClick={handleSave} disabled={!canSave}>
-              {mode === 'add' ? 'Create User' : 'Save'}
+              {mode === 'add' ? 'Add Contact' : 'Save'}
             </Button>
           </SheetFooter>
         )}
