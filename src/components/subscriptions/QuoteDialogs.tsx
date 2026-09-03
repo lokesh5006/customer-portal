@@ -27,6 +27,9 @@ import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import {
+  Tabs, TabsList, TabsTrigger, TabsContent,
+} from '@/components/ui/tabs';
+import {
   AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
@@ -127,12 +130,18 @@ export const ManageLicensesDrawer = ({
     invoices,
     users,
     can,
+    hasAccess,
   } = useApp();
   const { toast } = useToast();
 
   const canManageSeats = can('manage_seats_count');
   const canAssign = can('manage_user_assignment');
   const canRenewalStatus = can('manage_seat_renewal_status');
+  // v26 — Billing Admin gets full range on both tabs but is floored on decreases and can
+  // never reach the per-user overlay (they can't choose who loses access). Account Owner
+  // is unrestricted. License Admin has canManageSeats === false already, gating both tabs.
+  const isOwner = hasAccess(['account_owner']);
+  const isFlooredBillingAdmin = canManageSeats && !isOwner;
 
   // Re-derive LIVE product/subscription from context (props are a stale snapshot).
   const liveSub = useMemo(
@@ -181,15 +190,16 @@ export const ManageLicensesDrawer = ({
   const renewalCount = liveProduct?.renewalSeatCount ?? licenseCount;       // committed renewal target
   const initialRenewalCount = renewalCount;
 
-  // ---- Stepper (Section A/D — single source of truth, re-synced from live state) ----
-  const [stepperInput, setStepperInput] = useState(initialRenewalCount);
+  // ---- v26 — two independent tracks, each with its own stepper ----
+  type SeatTab = 'current' | 'renewal';
+  const [activeTab, setActiveTab] = useState<SeatTab>('current');
+  const [currentStepperInput, setCurrentStepperInput] = useState(licenseCount);
+  const [renewalStepperInput, setRenewalStepperInput] = useState(initialRenewalCount);
 
   // ---- Dialog / overlay state ----
   const [overlayOpen, setOverlayOpen] = useState(false);
-  const [overlayChoices, setOverlayChoices] = useState<Record<string, 'now' | 'expire'>>({});
+  const [overlaySelected, setOverlaySelected] = useState<Set<string>>(new Set());
   const [reduceConfirmOpen, setReduceConfirmOpen] = useState(false);
-  const [increaseOpen, setIncreaseOpen] = useState(false);
-  const [increaseMode, setIncreaseMode] = useState<'now' | 'renewal'>('now');
   const [unassignTarget, setUnassignTarget] = useState<AssignedRecord | null>(null);
   const [assignWarningUser, setAssignWarningUser] = useState<User | null>(null);
   // v20 — shopping-cart footer state.
@@ -202,12 +212,12 @@ export const ManageLicensesDrawer = ({
   // depend on initialRenewalCount — Apply commits update the live renewal count, and a
   // reset here was wiping `dirty` right after the handlers set it (Save never enabled).
   useEffect(() => {
-    setStepperInput(initialRenewalCount);
+    setActiveTab('current');
+    setCurrentStepperInput(licenseCount);
+    setRenewalStepperInput(initialRenewalCount);
     setOverlayOpen(false);
-    setOverlayChoices({});
+    setOverlaySelected(new Set());
     setReduceConfirmOpen(false);
-    setIncreaseOpen(false);
-    setIncreaseMode('now');
     setUnassignTarget(null);
     setAssignWarningUser(null);
     setDirty(false);
@@ -216,11 +226,14 @@ export const ManageLicensesDrawer = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, liveProduct?.id]);
 
-  // Re-snap the stepper to the new committed baseline whenever the live renewal count
-  // changes (e.g. after an Apply commits) — WITHOUT resetting the in-session dirty flag,
-  // so Save changes stays enabled after "Add at renewal only" / per-user removal.
+  // Re-snap each stepper to its committed baseline whenever the live counts change (e.g.
+  // after an Apply commits) — WITHOUT resetting the in-session dirty flag, so Save changes
+  // stays enabled after a per-tab edit.
   useEffect(() => {
-    setStepperInput(initialRenewalCount);
+    setCurrentStepperInput(licenseCount);
+  }, [licenseCount]);
+  useEffect(() => {
+    setRenewalStepperInput(initialRenewalCount);
   }, [initialRenewalCount]);
 
   // ---- Pricing helpers ----
@@ -239,19 +252,6 @@ export const ManageLicensesDrawer = ({
     }).totalCharge;
   };
 
-  // ---- Pending-change preview (stepper vs committed renewal) ----
-  const delta = stepperInput - renewalCount;
-  const annualDelta = delta * pricePerSeatPerYear;          // only shown when delta > 0
-  const proratedToday = delta > 0 ? prorate(delta) : 0;     // never negative
-  const applyDisabled = !canManageSeats || delta === 0;
-  // Show the "no refund" note while actively reducing OR when a committed renewal
-  // reduction is standing (renewal below the current paid count, no active edit).
-  const showReductionNote = delta < 0 || (delta === 0 && renewalCount < licenseCount);
-
-  // Section B — checkout-style order summary (Subtotal / Tax (7%) / Total) for an increase.
-  const orderSubtotal = proratedToday;
-  const orderTax = round2(orderSubtotal * TAX_RATE);
-  const orderTotal = round2(orderSubtotal + orderTax);
   const daysRemaining = liveSub
     ? Math.max(0, Math.ceil((new Date(liveSub.renewalDate).getTime() - Date.now()) / 86400000))
     : 0;
@@ -259,6 +259,14 @@ export const ManageLicensesDrawer = ({
   const renewalDateLabel = liveSub
     ? new Date(liveSub.renewalDate).toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' })
     : '';
+
+  // v26 — header stat tiles + ring (Current Seats basis only, unaffected by active tab)
+  const ringPct = licenseCount > 0 ? Math.min(1, assignedCount / licenseCount) : 0;
+  const availableToAssign = Math.max(0, licenseCount - assignedCount);
+  const renewalVsCurrentDelta = renewalCount - licenseCount;
+  const renewalDeltaLabel = renewalVsCurrentDelta === 0
+    ? 'No change scheduled'
+    : `${renewalVsCurrentDelta > 0 ? '+' : '−'}${Math.abs(renewalVsCurrentDelta)} from ${renewalDateLabel}`;
 
   // v20 — the provisional pending invoice for THIS product drives the footer Pay button.
   const pendingInvoice = useMemo(() => {
@@ -270,60 +278,81 @@ export const ManageLicensesDrawer = ({
   const pendingAmount = pendingInvoice ? (pendingInvoice.totalAmount ?? pendingInvoice.amount) : 0;
   const availableMethods = getAvailablePaymentMethods(liveSub?.companyId);
 
-  // ---- Apply: branch by direction ----
-  const alreadyExpiringCount = assignedRecords.filter(r => !!r.license.expiringAtRenewal).length;
-  const overlayRequired = Math.max(0, assignedCount - stepperInput - alreadyExpiringCount);
+  // ============================================================
+  // v26 — CURRENT SEATS tab (immediate, increase-only)
+  // ============================================================
+  const currentDelta = Math.max(0, currentStepperInput - licenseCount);
+  const currentProratedToday = prorate(currentDelta);
+  const currentOrderSubtotal = currentProratedToday;
+  const currentOrderTax = round2(currentOrderSubtotal * TAX_RATE);
+  const currentOrderTotal = round2(currentOrderSubtotal + currentOrderTax);
+  const currentApplyDisabled = !canManageSeats || currentDelta === 0;
 
-  const handleApply = () => {
-    if (applyDisabled || !liveSub || !liveProduct) return;
-    if (delta > 0) {
-      setIncreaseMode('now');
-      setIncreaseOpen(true);
+  const clampCurrentStepper = (v: number) => Math.max(licenseCount, v);
+
+  const handleApplyCurrent = () => {
+    if (currentApplyDisabled || !liveSub || !liveProduct) return;
+    // v20 — add the seats now (provisional). The drawer STAYS open so the admin can
+    // pre-assign users; the footer Pay button is where they pick how to pay.
+    const res = addSeatsPendingPayment({
+      subscriptionId: liveSub.id,
+      productId: liveProduct.id,
+      additionalSeats: currentDelta,
+    });
+    if (res) {
+      setDirty(true);
+      toast({
+        title: `${currentDelta} seat${currentDelta === 1 ? '' : 's'} added.`,
+        description: 'Assign users below, then choose how to pay.',
+      });
+    }
+  };
+
+  // ============================================================
+  // v26 — AT RENEWAL tab (deferred, full range, floored for Billing Admin)
+  // ============================================================
+  const alreadyExpiringCount = assignedRecords.filter(r => !!r.license.expiringAtRenewal).length;
+  // Billing Admin can never trigger the per-user overlay — their input floors at the
+  // point where no per-user decision would be required. Account Owner is unrestricted.
+  const renewalFloor = isFlooredBillingAdmin ? Math.max(0, assignedCount - alreadyExpiringCount) : 0;
+  const clampRenewalStepper = (v: number) => Math.max(renewalFloor, v);
+
+  // Re-clamp if the floor rises out from under an already-typed value (e.g. a user gets
+  // assigned elsewhere while a Billing Admin has the At Renewal tab open).
+  useEffect(() => {
+    setRenewalStepperInput(v => Math.max(renewalFloor, v));
+  }, [renewalFloor]);
+
+  const renewalDelta = renewalStepperInput - renewalCount;
+  const renewalNewAnnualTotal = renewalStepperInput * pricePerSeatPerYear;
+  const renewalApplyDisabled = !canManageSeats || renewalDelta === 0;
+  // Show the "no refund" note while actively reducing OR when a committed renewal
+  // reduction is standing (renewal below the current paid count, no active edit).
+  const showReductionNote = renewalDelta < 0 || (renewalDelta === 0 && renewalCount < licenseCount);
+  const overlayRequired = Math.max(0, assignedCount - renewalStepperInput - alreadyExpiringCount);
+
+  const handleApplyRenewal = () => {
+    if (renewalApplyDisabled || !liveSub || !liveProduct) return;
+    if (renewalDelta > 0) {
+      updateRenewalSeatCount(liveSub.id, liveProduct.id, renewalStepperInput);
+      setDirty(true);
+      toast({
+        title: 'Renewal count updated.',
+        description: `${renewalDelta} seat${renewalDelta === 1 ? '' : 's'} will be added at renewal on ${renewalDateLabel}.`,
+      });
     } else if (overlayRequired > 0) {
-      setOverlayChoices({});
+      setOverlaySelected(new Set());
       setOverlayOpen(true);
     } else {
       setReduceConfirmOpen(true);
     }
   };
 
-  // ---- Increase choice (Section G2) ----
-  const increaseN = Math.max(0, stepperInput - renewalCount);
-  const increaseProrated = prorate(increaseN);
-  const handleIncreaseConfirm = () => {
-    if (!liveSub || !liveProduct) return;
-    if (increaseMode === 'now') {
-      // v20 — add the seats now (provisional). The drawer STAYS open so the admin can
-      // pre-assign users; the footer Pay button is where they pick how to pay.
-      const res = addSeatsPendingPayment({
-        subscriptionId: liveSub.id,
-        productId: liveProduct.id,
-        additionalSeats: increaseN,
-      });
-      setIncreaseOpen(false);
-      if (res) {
-        setDirty(true);
-        toast({
-          title: `${increaseN} seat${increaseN === 1 ? '' : 's'} added.`,
-          description: 'Assign users below, then choose how to pay.',
-        });
-      }
-    } else {
-      updateRenewalSeatCount(liveSub.id, liveProduct.id, renewalCount + increaseN);
-      setIncreaseOpen(false);
-      setDirty(true);
-      toast({
-        title: 'Renewal count updated.',
-        description: `${increaseN} seat${increaseN === 1 ? '' : 's'} will be added at renewal on ${renewalDateLabel}.`,
-      });
-    }
-  };
-
   // ---- Simple reduce confirmation (no users affected) ----
-  const reduceDelta = (renewalCount - stepperInput) * pricePerSeatPerYear;
+  const reduceDelta = (renewalCount - renewalStepperInput) * pricePerSeatPerYear;
   const handleReduceConfirm = () => {
     if (!liveSub || !liveProduct) return;
-    updateRenewalSeatCount(liveSub.id, liveProduct.id, stepperInput);
+    updateRenewalSeatCount(liveSub.id, liveProduct.id, renewalStepperInput);
     setReduceConfirmOpen(false);
     setDirty(true);
     toast({
@@ -332,31 +361,24 @@ export const ManageLicensesDrawer = ({
     });
   };
 
-  // ---- Per-user removal overlay (reduce below assigned) ----
+  // ---- Per-user "expire at renewal" overlay (reduce below assigned) — single mode,
+  // since the At Renewal tab is the only track with a decrease path (v26).
   const overlayUsers = assignedRecords.filter(r => !r.license.expiringAtRenewal);
-  const overlaySelected = Object.keys(overlayChoices).length;
-  const overlayMatched = overlaySelected === overlayRequired;
-  const toggleOverlayChoice = (userId: string, choice: 'now' | 'expire') => {
-    setOverlayChoices(prev => {
-      const next = { ...prev };
-      if (next[userId] === choice) delete next[userId];
-      else next[userId] = choice;
+  const overlayMatched = overlaySelected.size === overlayRequired;
+  const toggleOverlayUser = (userId: string) => {
+    setOverlaySelected(prev => {
+      const next = new Set(prev);
+      if (next.has(userId)) next.delete(userId);
+      else next.add(userId);
       return next;
     });
   };
   const handleOverlayConfirm = () => {
     if (!overlayMatched || !liveSub || !liveProduct) return;
-    const removeNow: string[] = [];
-    const expire: string[] = [];
-    Object.entries(overlayChoices).forEach(([uid, c]) => {
-      if (c === 'now') removeNow.push(uid);
-      else expire.push(uid);
-    });
-    removeNow.forEach(uid => unassignLicense(uid, liveSub.id, liveProduct.id));
-    if (expire.length) markLicensesExpiringAtRenewal(liveSub.id, liveProduct.id, expire, true);
-    updateRenewalSeatCount(liveSub.id, liveProduct.id, stepperInput);
+    markLicensesExpiringAtRenewal(liveSub.id, liveProduct.id, Array.from(overlaySelected), true);
+    updateRenewalSeatCount(liveSub.id, liveProduct.id, renewalStepperInput);
     setOverlayOpen(false);
-    setOverlayChoices({});
+    setOverlaySelected(new Set());
     setDirty(true);
     toast({
       title: 'Renewal change applied.',
@@ -573,106 +595,191 @@ export const ManageLicensesDrawer = ({
         </SheetHeader>
 
         <div className="flex-1 overflow-y-auto px-5 pb-5 space-y-6">
-          {/* Summary card */}
-          <div className="rounded-lg bg-primary text-primary-foreground p-4 space-y-3">
-            <div className="space-y-1.5">
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-primary-foreground/80">Current seats</span>
-                <span className="text-lg font-bold">{licenseCount}</span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-primary-foreground/80">New seats</span>
-                <span className="text-lg font-bold">{stepperInput}</span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-sm text-primary-foreground/80">Currently assigned</span>
-                <span className="text-lg font-bold">{assignedCount}</span>
+          {/* v26 — three-stat header + progress ring (Current Seats basis, unaffected by tab) */}
+          <div className="rounded-lg bg-primary text-primary-foreground p-4">
+            <div className="flex items-center gap-4">
+              <svg width="60" height="60" viewBox="0 0 60 60" className="shrink-0" role="img"
+                aria-label={`${assignedCount} of ${licenseCount} seats assigned`}>
+                <circle cx="30" cy="30" r="26" fill="none" stroke="currentColor" strokeOpacity="0.25" strokeWidth="6" />
+                <circle
+                  cx="30" cy="30" r="26" fill="none" stroke="currentColor" strokeWidth="6" strokeLinecap="round"
+                  strokeDasharray={2 * Math.PI * 26}
+                  strokeDashoffset={2 * Math.PI * 26 * (1 - ringPct)}
+                  transform="rotate(-90 30 30)"
+                />
+                <text x="30" y="34" textAnchor="middle" fontSize="13" fontWeight="600" fill="currentColor">
+                  {Math.round(ringPct * 100)}%
+                </text>
+              </svg>
+              <div className="grid grid-cols-3 gap-3 flex-1 min-w-0">
+                <div>
+                  <div className="text-xs text-primary-foreground/70">Current Seats</div>
+                  <div className="text-lg font-bold">{licenseCount}</div>
+                  <div className="text-[11px] text-primary-foreground/60">{formatCurrency(pricePerSeatPerYear)}/seat/yr</div>
+                </div>
+                <div>
+                  <div className="text-xs text-primary-foreground/70">Assigned</div>
+                  <div className="text-lg font-bold">{assignedCount} / {licenseCount}</div>
+                  <div className="text-[11px] text-primary-foreground/60">{availableToAssign} available to assign</div>
+                </div>
+                <div>
+                  <div className="text-xs text-primary-foreground/70">At Renewal</div>
+                  <div className="text-lg font-bold">{renewalCount}</div>
+                  <div className="text-[11px] text-primary-foreground/60">{renewalDeltaLabel}</div>
+                </div>
               </div>
             </div>
+          </div>
 
-            {/* Section B — checkout-style Order Summary (only on a pending increase) */}
-            {delta > 0 && (
-              <>
-                <div className="border-t border-primary-foreground/20" />
-                <div className="space-y-1.5">
-                  <div className="text-xs uppercase tracking-wide text-primary-foreground/70">Order Summary</div>
+          {/* v26 — Current Seats / At Renewal tabs */}
+          <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as SeatTab)}>
+            <TabsList className="grid w-full grid-cols-2">
+              <TabsTrigger value="current">Current Seats</TabsTrigger>
+              <TabsTrigger value="renewal">At Renewal</TabsTrigger>
+            </TabsList>
+
+            {/* ---- Current Seats panel (immediate, increase-only) ---- */}
+            <TabsContent value="current" className="space-y-4 pt-2">
+              <div>
+                <h3 className="text-sm font-medium text-center">Add seats now</h3>
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <div className="mt-3 flex items-center justify-center gap-2">
+                        <Button variant="default" size="icon" disabled={!canManageSeats || currentStepperInput <= licenseCount}
+                          onClick={() => setCurrentStepperInput(v => clampCurrentStepper(v - 1))} aria-label="Decrease current seats">
+                          <Minus className="h-4 w-4" />
+                        </Button>
+                        <Input type="number" min={licenseCount} value={currentStepperInput} disabled={!canManageSeats}
+                          onChange={(e) => setCurrentStepperInput(clampCurrentStepper(parseInt(e.target.value) || licenseCount))}
+                          className="h-10 w-20 text-center text-lg font-semibold" />
+                        <Button variant="default" size="icon" disabled={!canManageSeats}
+                          onClick={() => setCurrentStepperInput(v => clampCurrentStepper(v + 1))} aria-label="Increase current seats">
+                          <Plus className="h-4 w-4" />
+                        </Button>
+                        <Button variant="default" className="ml-2" disabled={currentApplyDisabled} onClick={handleApplyCurrent}>
+                          Apply
+                        </Button>
+                      </div>
+                    </TooltipTrigger>
+                    {!canManageSeats && (
+                      <TooltipContent>Contact your Billing Admin to change seat counts.</TooltipContent>
+                    )}
+                  </Tooltip>
+                </TooltipProvider>
+                <p className="mt-2 text-xs text-muted-foreground text-center">
+                  Current seats only ever increase mid-cycle. To reduce seats, use the At Renewal tab.
+                </p>
+              </div>
+
+              {currentDelta > 0 && (
+                <div className="rounded-lg border bg-muted/30 p-4 space-y-1.5">
+                  <div className="text-xs uppercase tracking-wide text-muted-foreground">Order Summary</div>
                   <div className="flex justify-between text-sm">
-                    <span className="text-primary-foreground/90">{liveProduct.name} × {delta}</span>
-                    <span className="font-medium">{formatCurrency(orderSubtotal)}</span>
+                    <span>{liveProduct.name} × {currentDelta}</span>
+                    <span className="font-medium">{formatCurrency(currentOrderSubtotal)}</span>
                   </div>
-                  <div className="text-[11px] text-primary-foreground/60">
+                  <div className="text-[11px] text-muted-foreground">
                     Prorated for {daysRemaining} of 365 days
                   </div>
                   <div className="flex justify-between text-sm pt-1">
-                    <span className="text-primary-foreground/80">Subtotal</span>
-                    <span>{formatCurrency(orderSubtotal)}</span>
+                    <span className="text-muted-foreground">Subtotal</span>
+                    <span>{formatCurrency(currentOrderSubtotal)}</span>
                   </div>
                   <div className="flex justify-between text-sm">
-                    <span className="text-primary-foreground/80">Tax (7%)</span>
-                    <span>{formatCurrency(orderTax)}</span>
+                    <span className="text-muted-foreground">Tax (7%)</span>
+                    <span>{formatCurrency(currentOrderTax)}</span>
                   </div>
-                  <div className="flex justify-between text-base font-semibold pt-1.5 border-t border-primary-foreground/20">
-                    <span>Total</span>
-                    <span>{formatCurrency(orderTotal)}</span>
+                  <div className="flex justify-between text-base font-semibold pt-1.5 border-t">
+                    <span>Total Due</span>
+                    <span>{formatCurrency(currentOrderTotal)}</span>
                   </div>
                 </div>
-              </>
-            )}
+              )}
+            </TabsContent>
 
-            {/* Pending decrease: no charge today (Section B3 — no negative amounts) */}
-            {delta < 0 && (
-              <>
-                <div className="border-t border-primary-foreground/20" />
-                <div className="text-sm text-primary-foreground/90">
-                  No charge today — changes apply at next renewal.
-                </div>
-              </>
-            )}
+            {/* ---- At Renewal panel (deferred, full range, floored for Billing Admin) ---- */}
+            <TabsContent value="renewal" className="space-y-4 pt-2">
+              <div>
+                <h3 className="text-sm font-medium text-center">Update seats at renewal</h3>
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <div className="mt-3 flex items-center justify-center gap-2">
+                        <Button variant="default" size="icon" disabled={!canManageSeats || renewalStepperInput <= renewalFloor}
+                          onClick={() => setRenewalStepperInput(v => clampRenewalStepper(v - 1))} aria-label="Decrease renewal seats">
+                          <Minus className="h-4 w-4" />
+                        </Button>
+                        <Input type="number" min={renewalFloor} value={renewalStepperInput} disabled={!canManageSeats}
+                          onChange={(e) => setRenewalStepperInput(clampRenewalStepper(parseInt(e.target.value) || renewalFloor))}
+                          className="h-10 w-20 text-center text-lg font-semibold" />
+                        <Button variant="default" size="icon" disabled={!canManageSeats}
+                          onClick={() => setRenewalStepperInput(v => clampRenewalStepper(v + 1))} aria-label="Increase renewal seats">
+                          <Plus className="h-4 w-4" />
+                        </Button>
+                        <Button variant="default" className="ml-2" disabled={renewalApplyDisabled} onClick={handleApplyRenewal}>
+                          Apply
+                        </Button>
+                      </div>
+                    </TooltipTrigger>
+                    {!canManageSeats && (
+                      <TooltipContent>Contact your Billing Admin to change seat counts.</TooltipContent>
+                    )}
+                    {canManageSeats && isFlooredBillingAdmin && (
+                      <TooltipContent>As a Billing Admin, you can reduce down to the currently assigned count. An Account Owner can choose specific users to remove.</TooltipContent>
+                    )}
+                  </Tooltip>
+                </TooltipProvider>
+              </div>
 
-            <div className="text-xs text-primary-foreground/70">
-              per seat cost {formatCurrency(pricePerSeatPerYear)}/year
-            </div>
-          </div>
+              {/* Decrease info note */}
+              {showReductionNote && (
+                <Alert>
+                  <Info className="h-4 w-4" />
+                  <AlertDescription>
+                    Reducing renewal seat count. No refund issued for current cycle.
+                  </AlertDescription>
+                </Alert>
+              )}
 
-          {/* Decrease info note (Section C2 — State 3) */}
-          {showReductionNote && (
-            <Alert>
-              <Info className="h-4 w-4" />
-              <AlertDescription>
-                Reducing renewal seat count. No refund issued for current cycle.
-              </AlertDescription>
-            </Alert>
-          )}
-
-          {/* Stepper */}
-          <div>
-            <h3 className="text-sm font-medium text-center">Update seats at renewal</h3>
-            <TooltipProvider>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <div className="mt-3 flex items-center justify-center gap-2">
-                    <Button variant="default" size="icon" disabled={!canManageSeats || stepperInput <= 0}
-                      onClick={() => setStepperInput(v => Math.max(0, v - 1))} aria-label="Decrease renewal seats">
-                      <Minus className="h-4 w-4" />
-                    </Button>
-                    <Input type="number" min={0} value={stepperInput} disabled={!canManageSeats}
-                      onChange={(e) => setStepperInput(Math.max(0, parseInt(e.target.value) || 0))}
-                      className="h-10 w-20 text-center text-lg font-semibold" />
-                    <Button variant="default" size="icon" disabled={!canManageSeats}
-                      onClick={() => setStepperInput(v => v + 1)} aria-label="Increase renewal seats">
-                      <Plus className="h-4 w-4" />
-                    </Button>
-                    <Button variant="default" className="ml-2" disabled={applyDisabled} onClick={handleApply}>
-                      Apply
-                    </Button>
+              {renewalDelta > 0 && (
+                <div className="rounded-lg border bg-muted/30 p-4 space-y-1.5">
+                  <div className="text-xs uppercase tracking-wide text-muted-foreground">Renewal Order Summary</div>
+                  <div className="flex justify-between text-sm">
+                    <span>At-renewal seats</span>
+                    <span className="font-medium">{renewalStepperInput}</span>
                   </div>
-                </TooltipTrigger>
-                {!canManageSeats && (
-                  <TooltipContent>Contact your Billing Admin to change seat counts.</TooltipContent>
-                )}
-              </Tooltip>
-            </TooltipProvider>
-          </div>
+                  <div className="flex justify-between text-sm">
+                    <span className="text-muted-foreground">Additional seats</span>
+                    <span>+{renewalDelta}</span>
+                  </div>
+                  <div className="flex justify-between text-base font-semibold pt-1.5 border-t">
+                    <span>New renewal total</span>
+                    <span>{formatCurrency(renewalNewAnnualTotal)}/yr</span>
+                  </div>
+                  <div className="text-[11px] text-muted-foreground">
+                    Full annual price, not prorated. Effective {renewalDateLabel} — no charge today.
+                  </div>
+                </div>
+              )}
+              {renewalDelta < 0 && (
+                <div className="rounded-lg border bg-muted/30 p-4 space-y-1.5">
+                  <div className="text-xs uppercase tracking-wide text-muted-foreground">Renewal Order Summary</div>
+                  <div className="flex justify-between text-sm">
+                    <span>At-renewal seats</span>
+                    <span className="font-medium">{renewalStepperInput}</span>
+                  </div>
+                  <div className="flex justify-between text-sm">
+                    <span className="text-muted-foreground">Fewer seats</span>
+                    <span>{renewalDelta}</span>
+                  </div>
+                  <div className="text-sm text-muted-foreground pt-1">
+                    Annual cost drops by {formatCurrency(Math.abs(reduceDelta))}/year starting {renewalDateLabel}.
+                  </div>
+                </div>
+              )}
+            </TabsContent>
+          </Tabs>
 
           {/* Unified Users list (Section B) */}
           <div>
@@ -755,52 +862,47 @@ export const ManageLicensesDrawer = ({
           )}
         </SheetFooter>
 
-        {/* Per-user removal overlay */}
+        {/* v26 — decrease overlay, single "Expire at renewal" mode (At Renewal tab only) */}
         <Dialog open={overlayOpen} onOpenChange={setOverlayOpen}>
           <DialogContent className="max-w-lg bg-amber-50 dark:bg-amber-950/30 border-primary">
             <DialogHeader>
               <DialogTitle>Reduce seats at renewal</DialogTitle>
               <DialogDescription className="text-sm">
-                The licenses you have paid for last through the current cycle. Select the {overlayRequired} user{overlayRequired === 1 ? '' : 's'} to remove now or expire at the next renewal.
+                Select the {overlayRequired} user{overlayRequired === 1 ? '' : 's'} whose access will end at renewal on {renewalDateLabel}.
               </DialogDescription>
             </DialogHeader>
 
             <div className="border rounded-md overflow-hidden bg-background">
-              <div className="grid grid-cols-[1fr_auto_auto] gap-3 px-3 py-2 bg-muted/40 text-xs font-medium text-muted-foreground">
+              <div className="grid grid-cols-[1fr_auto] gap-3 px-3 py-2 bg-muted/40 text-xs font-medium text-muted-foreground">
                 <div>User</div>
-                <div className="text-center w-20">Remove now</div>
                 <div className="text-center w-28">Expire at renewal</div>
               </div>
               <div className="divide-y max-h-[240px] overflow-y-auto">
-                {overlayUsers.map(rec => {
-                  const choice = overlayChoices[rec.user.id];
-                  return (
-                    <div key={rec.user.id} className="grid grid-cols-[1fr_auto_auto] gap-3 items-center px-3 py-2">
-                      <div className="flex items-center gap-2 min-w-0">
-                        <div className="h-7 w-7 rounded-full bg-primary/10 text-primary flex items-center justify-center text-[11px] font-semibold shrink-0">
-                          {userInitials(rec.user)}
-                        </div>
-                        <div className="min-w-0">
-                          <div className="text-sm font-medium truncate">{rec.user.firstName} {rec.user.lastName}</div>
-                          <div className="text-xs text-muted-foreground truncate">{rec.user.email}</div>
-                        </div>
+                {overlayUsers.map(rec => (
+                  <div key={rec.user.id} className="grid grid-cols-[1fr_auto] gap-3 items-center px-3 py-2">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <div className="h-7 w-7 rounded-full bg-primary/10 text-primary flex items-center justify-center text-[11px] font-semibold shrink-0">
+                        {userInitials(rec.user)}
                       </div>
-                      <div className="text-center w-20">
-                        <Checkbox checked={choice === 'now'} onCheckedChange={() => toggleOverlayChoice(rec.user.id, 'now')}
-                          aria-label={`Remove ${rec.user.email} now`} />
-                      </div>
-                      <div className="text-center w-28">
-                        <Checkbox checked={choice === 'expire'} onCheckedChange={() => toggleOverlayChoice(rec.user.id, 'expire')}
-                          aria-label={`Expire ${rec.user.email} at renewal`} />
+                      <div className="min-w-0">
+                        <div className="text-sm font-medium truncate">{rec.user.firstName} {rec.user.lastName}</div>
+                        <div className="text-xs text-muted-foreground truncate">{rec.user.email}</div>
                       </div>
                     </div>
-                  );
-                })}
+                    <div className="text-center w-28">
+                      <Checkbox checked={overlaySelected.has(rec.user.id)} onCheckedChange={() => toggleOverlayUser(rec.user.id)}
+                        aria-label={`Expire ${rec.user.email} at renewal`} />
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
 
             <div className={`text-sm font-medium ${overlayMatched ? 'text-success' : 'text-destructive'}`}>
-              {overlaySelected} of {overlayRequired} required selections
+              {overlaySelected.size} of {overlayRequired} required selections
+            </div>
+            <div className="text-xs text-muted-foreground">
+              Selected users keep access through the current cycle — this takes effect on your renewal date.
             </div>
 
             <DialogFooter className="gap-2">
@@ -812,13 +914,13 @@ export const ManageLicensesDrawer = ({
           </DialogContent>
         </Dialog>
 
-        {/* Simple reduce confirmation */}
+        {/* Simple reduce confirmation (At Renewal tab, no users affected) */}
         <Dialog open={reduceConfirmOpen} onOpenChange={setReduceConfirmOpen}>
           <DialogContent className="max-w-md">
             <DialogHeader>
               <DialogTitle>Reduce renewal seat count?</DialogTitle>
               <DialogDescription>
-                Reduce renewal seat count from {renewalCount} to {stepperInput}? No users are affected.
+                Reduce renewal seat count from {renewalCount} to {renewalStepperInput}? No users are affected.
                 Your annual cost will drop by {formatCurrency(Math.abs(reduceDelta))}/year starting at the next renewal.
                 No refund is issued for the current cycle.
               </DialogDescription>
@@ -826,40 +928,6 @@ export const ManageLicensesDrawer = ({
             <DialogFooter className="gap-2">
               <Button variant="outline" onClick={() => setReduceConfirmOpen(false)}>Cancel</Button>
               <Button onClick={handleReduceConfirm}>Confirm</Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-
-        {/* Increase choice (Section G2) */}
-        <Dialog open={increaseOpen} onOpenChange={setIncreaseOpen}>
-          <DialogContent className="max-w-md">
-            <DialogHeader>
-              <DialogTitle>Add {increaseN} more seat{increaseN === 1 ? '' : 's'}?</DialogTitle>
-              <DialogDescription>Choose when to apply this change.</DialogDescription>
-            </DialogHeader>
-            <RadioGroup value={increaseMode} onValueChange={(v) => setIncreaseMode(v as 'now' | 'renewal')} className="space-y-2">
-              <label className={`flex items-start gap-2 border rounded-md p-3 cursor-pointer hover:bg-muted/40 ${increaseMode === 'now' ? 'border-primary bg-primary/5' : ''}`}>
-                <RadioGroupItem value="now" className="mt-0.5" />
-                <div>
-                  <div className="text-sm font-medium">Add seats now</div>
-                  <div className="text-xs text-muted-foreground">
-                    Seats are added immediately so you can assign users. Prorated amount: {formatCurrency(increaseProrated)} — choose how to pay before you close.
-                  </div>
-                </div>
-              </label>
-              <label className={`flex items-start gap-2 border rounded-md p-3 cursor-pointer hover:bg-muted/40 ${increaseMode === 'renewal' ? 'border-primary bg-primary/5' : ''}`}>
-                <RadioGroupItem value="renewal" className="mt-0.5" />
-                <div>
-                  <div className="text-sm font-medium">Add at renewal only</div>
-                  <div className="text-xs text-muted-foreground">
-                    Seats will be added at your next renewal on {renewalDateLabel}. No charge today.
-                  </div>
-                </div>
-              </label>
-            </RadioGroup>
-            <DialogFooter className="gap-2">
-              <Button variant="outline" onClick={() => setIncreaseOpen(false)}>Cancel</Button>
-              <Button onClick={handleIncreaseConfirm}>Confirm</Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>
