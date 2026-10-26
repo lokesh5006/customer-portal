@@ -8,6 +8,7 @@ import { Label } from '@/components/ui/label';
 import { useApp, Company } from '@/contexts/AppContext';
 import { useToast } from '@/hooks/use-toast';
 import { Check } from 'lucide-react';
+import { ALLOW_FIRM_EDIT_BILL_TO, validateBillTo } from '@/lib/billTo';
 
 export const EditBillingDetailsDialog = ({
   open, onOpenChange, company,
@@ -22,6 +23,8 @@ export const EditBillingDetailsDialog = ({
   const companyUsers = getCompanyUsers().filter(u => u.status !== 'inactive');
 
   const [name, setName] = useState('');
+  const [billToName, setBillToName] = useState('');
+  const [billToAttention, setBillToAttention] = useState('');
   const [line1, setLine1] = useState('');
   const [line2, setLine2] = useState('');
   const [city, setCity] = useState('');
@@ -33,6 +36,8 @@ export const EditBillingDetailsDialog = ({
   useEffect(() => {
     if (!open || !company) return;
     setName(company.name);
+    setBillToName(company.address?.billToName || '');
+    setBillToAttention(company.address?.billToAttention || '');
     setLine1(company.address?.line1 || '');
     setLine2(company.address?.line2 || '');
     setCity(company.address?.city || '');
@@ -44,6 +49,8 @@ export const EditBillingDetailsDialog = ({
 
   if (!company) return null;
 
+  const billToErrors = validateBillTo(billToName, billToAttention);
+
   const toggleContact = (id: string) => {
     setContactIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
   };
@@ -53,10 +60,13 @@ export const EditBillingDetailsDialog = ({
       toast({ title: 'Company name is required', variant: 'destructive' });
       return;
     }
+    if (billToErrors.name || billToErrors.attention) return;
     updateCompanyBillingDetails({
       companyId: company.id,
       name: name.trim(),
       address: {
+        billToName: billToName.trim() || undefined,
+        billToAttention: billToAttention.trim() || undefined,
         line1: line1.trim() || undefined,
         line2: line2.trim() || undefined,
         city: city.trim() || undefined,
@@ -82,6 +92,31 @@ export const EditBillingDetailsDialog = ({
           <div>
             <Label htmlFor="bd-name" className="text-sm">Company Name</Label>
             <Input id="bd-name" value={name} onChange={(e) => setName(e.target.value)} className="mt-1" />
+          </div>
+          <div>
+            <Label htmlFor="bd-bill-to-name" className="text-sm">Bill-to Name <span className="text-muted-foreground">(optional)</span></Label>
+            <Input
+              id="bd-bill-to-name"
+              value={billToName}
+              placeholder={name || company.name}
+              onChange={(e) => setBillToName(e.target.value)}
+              disabled={!ALLOW_FIRM_EDIT_BILL_TO}
+              aria-invalid={!!billToErrors.name}
+              className="mt-1"
+            />
+            {billToErrors.name && <p className="text-xs text-destructive mt-1">{billToErrors.name}</p>}
+          </div>
+          <div>
+            <Label htmlFor="bd-bill-to-attention" className="text-sm">Attention <span className="text-muted-foreground">(optional)</span></Label>
+            <Input
+              id="bd-bill-to-attention"
+              value={billToAttention}
+              onChange={(e) => setBillToAttention(e.target.value)}
+              disabled={!ALLOW_FIRM_EDIT_BILL_TO}
+              aria-invalid={!!billToErrors.attention}
+              className="mt-1"
+            />
+            {billToErrors.attention && <p className="text-xs text-destructive mt-1">{billToErrors.attention}</p>}
           </div>
           <div>
             <Label htmlFor="bd-line1" className="text-sm">Address Line 1</Label>
@@ -138,7 +173,7 @@ export const EditBillingDetailsDialog = ({
 
         <DialogFooter className="gap-2">
           <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-          <Button onClick={handleSave}>Save</Button>
+          <Button onClick={handleSave} disabled={!!(billToErrors.name || billToErrors.attention)}>Save</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

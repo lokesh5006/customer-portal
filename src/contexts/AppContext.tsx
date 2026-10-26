@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useCallback, useEffect, ReactNode } from 'react';
 import { formatCurrency } from '@/lib/format';
 import { calculateProratedAdd } from '@/lib/proration';
+import { withBillTo } from '@/lib/billTo';
 
 // Types
 export type Role = 'account_owner' | 'billing_admin' | 'license_admin' | 'registered_contact';
@@ -193,9 +194,63 @@ export interface User {
   dataNetEmailOptIn?: boolean;
   /** Per-user notification channel preferences. Optional — default to all-on. */
   notificationPrefs?: Record<NotificationType, NotificationChannelPrefs>;
+  /** Whether this user has configured their own individual MFA (independent of the firm-wide toggle). */
+  mfaConfigured?: boolean;
+  /**
+   * v18 Sites — the user's role set per Site (siteId -> roles). A key being present is
+   * what makes the user a member of that Site. `roles` above always holds the roles for
+   * the firm's currently-materialized Site (see applySiteSelection), so every existing
+   * `u.roles` read/write is automatically Site-scoped.
+   */
+  siteRoles?: Record<string, Role[]>;
+  /**
+   * v20 — false for a CRM contact that has no portal login yet (it can't sign in until it
+   * registers through the "existing customer" path). Undefined/true = has a login.
+   */
+  hasPortalLogin?: boolean;
+}
+
+/**
+ * v20 — the login identity: one per email, shared by every firm record (User) that uses
+ * that email, so per-firm records can never disagree on the flag.
+ */
+export interface LoginIdentity {
+  email: string;
+  /**
+   * "Allowed Straddling Exception". When true this email may be linked to more than one
+   * firm (sign-in shows a firm chooser). Default false; set in mock data only.
+   */
+  allowStraddlingException: boolean;
+}
+
+/**
+ * v18 — a Site is a firm-level sub-scope (from Halo): its own users, subscriptions,
+ * invoices, quotes and tickets. Firm-level settings (billing config, payment methods,
+ * company profile, domain, MFA) stay on the Company.
+ */
+export interface Site {
+  id: string;
+  companyId: string;
+  name: string;
 }
 
 export interface CompanyAddress {
+  line1?: string;
+  line2?: string;
+  city?: string;
+  state?: string;
+  postalCode?: string;
+  country?: string;
+  /** v19 — optional name shown on the "Bill to" in place of the company name (e.g. "Accounts Payable"). Never changes the company name. */
+  billToName?: string;
+  /** v19 — optional "Attn:" line on the "Bill to". */
+  billToAttention?: string;
+}
+
+/** v19 — bill-to snapshot stored on each invoice at creation time. */
+export interface InvoiceBillTo {
+  name: string;
+  attention?: string;
   line1?: string;
   line2?: string;
   city?: string;
@@ -208,12 +263,27 @@ export interface Company {
   id: string;
   name: string;
   createdAt: string;
+  /** Subdomain the firm signs in under (e.g. "acmelaw" -> acmelaw.uat.portal.leimberg.com). Set once at signup; editable only by the Account Owner. */
+  domain?: string;
+  /** Firm-wide MFA requirement toggle. Settable only by the Account Owner; when on, every user in
+   * the firm is required to use MFA. Independent of a user's own `mfaConfigured` setup. */
+  mfaEnabledForFirm?: boolean;
+  /** Contact email used for billing communications in HaloPSA. */
+  billingEmail?: string;
+  /** User ID of the firm's main/primary contact. Settable by Account Owner and Billing Admin. */
+  mainContactUserId?: string;
   /** Whether the company's active subscriptions auto-renew. Defaults to true. */
   autoRenewal?: boolean;
   /** Billing address (v15 — editable from the subscription detail page). */
   address?: CompanyAddress;
   /** User IDs that serve as billing contacts for this company. */
   billingContactUserIds?: string[];
+  /**
+   * v19 — SHI-style firms: invoices are billed through a parent company. Set in the CRM
+   * (Halo) by Leimberg staff, never by the firm. When present the billing block is read-only
+   * and shows the parent's name and address.
+   */
+  billedThrough?: { name: string; address: CompanyAddress };
 }
 
 export interface SubscriptionProduct {
@@ -238,6 +308,12 @@ export interface SubscriptionProduct {
   scheduledEffectiveDate?: string;
   /** Users marked "Expire end of year" — their licenses drop when the scheduled change activates */
   scheduledUnassignedUserIds?: string[];
+  /**
+   * v27 — set when a VIP/negotiated-pricing account submits a seat-change Request from
+   * the Manage Licenses drawer. Locks seat-count controls on both tabs until back-office
+   * resolves the request (clearing it is outside this batch's scope).
+   */
+  hasPendingSeatRequest?: boolean;
 }
 
 export type PaymentMethod = 'pay_immediately' | 'pay_on_receipt' | 'pay_on_terms';
@@ -249,11 +325,20 @@ export interface CompanyBillingConfig {
   payOnTermsEnabled: boolean;
   terms?: PaymentTerms;
   defaultBillingMethod: PaymentMethod;
+  /**
+   * v27 — manually-negotiated pricing account. Set only from the backend CRM in
+   * production; exposed as a demo toggle on the Admin Tool page in this app. When true,
+   * the Manage Licenses drawer hides all dollar amounts and routes seat changes through
+   * a "Request" flow (support ticket + back-office notification) instead of billing.
+   */
+  hasNegotiatedPricing?: boolean;
 }
 
 export interface Subscription {
   id: string;
   companyId: string;
+  /** v18 — owning Site. Omitted → the company's primary (first) Site. */
+  siteId?: string;
   name: string;
   planType: string;
   billingFrequency: 'annual' | 'monthly';
@@ -327,6 +412,8 @@ export interface Invoice {
   id: string;
   companyId: string;
   invoiceNumber: string;
+  /** v18 — owning Site. Omitted → derived from subscriptionId, else the primary Site. */
+  siteId?: string;
   date: string;
   dueDate: string;
   status: 'paid' | 'pending' | 'overdue' | 'unpaid' | 'awaiting_payment' | 'payment_terms_applied' | 'upcoming';
@@ -356,6 +443,8 @@ export interface Invoice {
   totalAmount?: number;
   /** ISO timestamp the invoice was marked paid, if any */
   paidAt?: string | null;
+  /** v19 — bill-to snapshot taken at creation. Omitted on older invoices → firm's current details. */
+  billTo?: InvoiceBillTo;
 }
 
 export interface QuoteLineItem {
@@ -373,6 +462,8 @@ export type QuoteRequestReason =
 export interface Quote {
   id: string;
   companyId: string;
+  /** v18 — owning Site. Omitted → the company's primary (first) Site. */
+  siteId?: string;
   quoteNumber: string;
   createdDate: string;
   expiryDate: string;
@@ -387,6 +478,10 @@ export interface Quote {
   recipients?: string[];
   /** Optional reason captured when the customer submits a quote request. */
   requestReason?: QuoteRequestReason;
+  /** Optional secondary note captured on request (e.g. preferred contact time/timezone). */
+  contactNotes?: string;
+  /** Optional contact address for the request; falls back to the company's site address when blank. */
+  contactAddress?: string;
   /** ISO timestamp when sales formally responded (requested -> active). */
   formallyQuotedAt?: string;
   /** ISO timestamp when the customer accepted the quote. */
@@ -396,6 +491,8 @@ export interface Quote {
 export interface QuoteRequest {
   id: string;
   companyId: string;
+  /** v18 — owning Site. Omitted → the company's primary (first) Site. */
+  siteId?: string;
   createdDate: string;
   status: 'submitted' | 'in_review' | 'closed';
   products: { productName: string; desiredLicenseCount: number }[];
@@ -425,6 +522,8 @@ export interface SavedPaymentMethod {
 export interface SupportTicket {
   id: string;
   companyId: string;
+  /** v18 — owning Site. Omitted → the company's primary (first) Site. */
+  siteId?: string;
   userId: string;
   category: string;
   subject: string;
@@ -455,7 +554,19 @@ interface AppState {
   proxiedUser: User | null;
   originalUser: User | null;
   companies: Company[];
+  /** v18 — all Sites across all firms. */
+  sites: Site[];
+  /** v18 — the Site the logged-in user is currently viewing. Null for a firm with no Sites. */
+  currentSite: Site | null;
+  /**
+   * v18 — per company, which Site's roles are currently materialized into `User.roles`.
+   * Lets a Site switch write the outgoing Site's (possibly edited) roles back to
+   * `siteRoles` before loading the incoming Site's roles.
+   */
+  materializedSiteIds: Record<string, string>;
   users: User[];
+  /** v20 — login identities that carry a non-default flag (any email not listed = false). */
+  loginIdentities: LoginIdentity[];
   subscriptions: Subscription[];
   licenses: License[];
   invoices: Invoice[];
@@ -483,9 +594,19 @@ interface AppState {
 }
 
 interface AppContextType extends AppState {
-  login: (email: string, password: string) => boolean;
+  /** `companyId` picks the firm record when the email is linked to several firms (v20). */
+  login: (email: string, password: string, companyId?: string) => boolean;
+  /**
+   * v20 — existing-customer registration: give the CRM contact(s) with this email a portal
+   * login. Links to the existing firm record; never creates a company. False if none found.
+   */
+  activateContactLogin: (email: string) => boolean;
   logout: () => void;
   selectCompany: (companyId: string) => void;
+  /** v18 — Sites within the current firm that the logged-in user is a member of. */
+  getUserSites: () => Site[];
+  /** v18 — switch the active Site; re-scopes all data and re-applies that Site's roles. */
+  switchSite: (siteId: string) => void;
   updateCompany: (companyId: string, updates: Partial<Company>) => void;
   updateCompanyBillingDetails: (input: {
     companyId: string;
@@ -503,6 +624,11 @@ interface AppContextType extends AppState {
   deactivateUser: (userId: string) => void;
   reactivateUser: (userId: string) => void;
   changeUserRoles: (userId: string, roles: UserRole[]) => boolean;
+  /** Transfers Account Owner to another active user in the firm; the current owner is reassigned to Billing Admin. */
+  transferOwnership: (newOwnerUserId: string) => boolean;
+  /** Permanently deletes the current company: all its users, subscriptions, invoices, quotes, and
+   * related records, then logs out. There is no confirmation gate here — the caller must confirm first. */
+  deleteCompanyAccount: () => void;
   updateProductLicenseCount: (subscriptionId: string, productId: string, newCount: number) => void;
   assignLicense: (userId: string, subscriptionId: string, productId: string) => boolean;
   unassignLicense: (userId: string, subscriptionId: string, productId: string) => void;
@@ -514,7 +640,7 @@ interface AppContextType extends AppState {
   renameSubscription: (subscriptionId: string, newName: string) => void;
   updateWizardData: (data: Partial<AppState['wizardData']>) => void;
   completeSignup: () => void;
-  createAccount: (input: { companyName: string; firstName: string; lastName: string; email: string; password: string }) => { user: User; company: Company };
+  createAccount: (input: { companyName: string; companyDomain?: string; firstName: string; lastName: string; username: string; email: string; phone?: string; password: string }) => { user: User; company: Company };
   createTicket: (ticket: Omit<SupportTicket, 'id' | 'createdAt' | 'status' | 'companyId' | 'userId'>) => SupportTicket;
   getEffectiveRoles: () => Role[];
   hasAccess: (requiredRoles: Role[]) => boolean;
@@ -538,6 +664,8 @@ interface AppContextType extends AppState {
     recipients?: string[];
     status?: Quote['status'];
     requestReason?: QuoteRequestReason;
+    contactNotes?: string;
+    contactAddress?: string;
   }) => Quote;
   cancelQuoteRequest: (quoteId: string) => void;
   approvePendingQuoteRequests: () => number;
@@ -545,7 +673,7 @@ interface AppContextType extends AppState {
   hasSentQuote: () => boolean;
   hasDeclinedQuote: () => boolean;
   isFirstTimeCustomer: () => boolean;
-  acceptQuote: (quoteId: string, input: { poNumber?: string; paymentMethod: PaymentMethod }) => { quote: Quote; invoice: Invoice; subscription?: Subscription } | null;
+  acceptQuote: (quoteId: string, input: { poNumber?: string }) => { quote: Quote; invoice: Invoice } | null;
   declineQuote: (quoteId: string, reason?: string) => void;
   addQuoteRequest: (input: { products: { productName: string; desiredLicenseCount: number }[]; note: string }) => QuoteRequest;
   getCompanyConfig: (companyId?: string) => CompanyBillingConfig;
@@ -588,6 +716,12 @@ interface AppContextType extends AppState {
    * since License records have no standalone id.
    */
   markLicensesExpiringAtRenewal: (subscriptionId: string, productId: string, userIds: string[], expiring?: boolean) => void;
+  /**
+   * v27 — VIP/negotiated-pricing seat-change request. Creates a support ticket + stubbed
+   * back-office notification and sets `hasPendingSeatRequest` on the product; does not
+   * mutate seat counts or create an invoice.
+   */
+  submitSeatRequest: (input: { subscriptionId: string; productId: string; description: string }) => boolean;
   /**
    * v16 — set the product's committed renewal seat count. This is the editable
    * "New seats at renewal" target; it does NOT touch the current paid licenseCount.
@@ -650,6 +784,14 @@ interface AppContextType extends AppState {
    */
   discardPendingInvoice: (invoiceId: string) => void;
   /**
+   * v28 — live-sync the Manage Licenses "Current Seats" stepper. Grows (delta > 0) or
+   * shrinks (delta < 0) the product's single provisional pending-payment invoice in place:
+   * adds empty pending seats, or removes EMPTY pending seats only (never one holding a
+   * pre-assigned user). The invoice is re-prorated for the new seat count, and deleted
+   * when no pending seats remain. Creates the invoice if none exists yet.
+   */
+  adjustPendingSeats: (input: { subscriptionId: string; productId: string; delta: number }) => void;
+  /**
    * v19 — does this user have DataNet access? True when the company has at least one
    * active product license (excluding pending-payment) AND the user either holds an
    * active license or is an AO/BA/LA admin. Mirrors the company-wide auto-inclusion rule.
@@ -658,7 +800,7 @@ interface AppContextType extends AppState {
   markInvoicePaid: (invoiceId: string) => void;
   /** Persist an optional PO number on an existing invoice (per discovery Q3). */
   setInvoicePoNumber: (invoiceId: string, poNumber: string | undefined) => void;
-  checkoutPurchase: (input: { lineItems: QuoteLineItem[]; paymentMethod: PaymentMethod; poNumber?: string }) => Invoice;
+  checkoutPurchase: (input: { lineItems: QuoteLineItem[]; paymentMethod: PaymentMethod; poNumber?: string; billTo?: InvoiceBillTo }) => Invoice;
   renewSubscription: (
     subscriptionId: string,
     newLicenseCounts?: Record<string, number>,
@@ -787,13 +929,142 @@ const initialCompanies: Company[] = [
   },
   {
     id: 'company-2', name: 'XYZ Consulting', createdAt: '2023-06-20', autoRenewal: true,
-    address: { line1: '88 Market Street', city: 'San Francisco', state: 'CA', postalCode: '94105', country: 'United States' },
+    // v19 — "Accounts Payable" style bill-to label with an Attention line.
+    address: {
+      line1: '88 Market Street', city: 'San Francisco', state: 'CA', postalCode: '94105', country: 'United States',
+      billToName: 'Accounts Payable', billToAttention: 'Jessica Wong',
+    },
     billingContactUserIds: ['user-21'],
+  },
+  // v19 — SHI-style end client: invoices are billed through a parent company (set in the CRM).
+  {
+    id: 'company-3', name: 'Northwind Wealth Advisors', createdAt: '2024-02-12', autoRenewal: true,
+    address: { line1: '1 Harbor Point', city: 'Stamford', state: 'CT', postalCode: '06902', country: 'United States' },
+    billedThrough: {
+      name: 'SHI International Corp.',
+      address: { line1: '290 Davidson Avenue', city: 'Somerset', state: 'NJ', postalCode: '08873', country: 'United States' },
+    },
+    billingContactUserIds: ['user-41'],
+  },
+  // v20 — CRM-only firm (no portal users yet). Exists so the duplicate-company checks have a
+  // demo target: "Smith and Jones, L.L.P." / "200 Park Ave" are blocked at registration.
+  {
+    id: 'company-4', name: 'Smith & Jones LLP', createdAt: '2022-11-03', autoRenewal: true,
+    address: { line1: '200 Park Avenue', line2: 'Suite 1700', city: 'New York', state: 'NY', postalCode: '10166', country: 'United States' },
   },
 ];
 
+// v18 — Sites. A firm's FIRST Site in this list is its primary Site: any seeded record
+// without an explicit siteId (and any user without siteRoles) belongs to it.
+//   ABC → New York HQ (everything that existed pre-v18) + Boston Office (new).
+//   XYZ → single Site, so XYZ users never see the Site switcher.
+const initialSites: Site[] = [
+  { id: 'site-abc-ny', companyId: 'company-1', name: 'New York HQ' },
+  { id: 'site-abc-bos', companyId: 'company-1', name: 'Boston Office' },
+  { id: 'site-xyz-sf', companyId: 'company-2', name: 'San Francisco HQ' },
+  { id: 'site-nw-main', companyId: 'company-3', name: 'Stamford HQ' },
+  { id: 'site-sj-main', companyId: 'company-4', name: 'New York Office' },
+];
+
+const SITE_STORAGE_KEY = 'leimberg.selectedSiteId';
+
+const readStoredSiteId = (): string | null => {
+  try {
+    return sessionStorage.getItem(SITE_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+};
+
+const writeStoredSiteId = (siteId: string) => {
+  try {
+    sessionStorage.setItem(SITE_STORAGE_KEY, siteId);
+  } catch {
+    // sessionStorage may be unavailable (private mode); selection just won't persist.
+  }
+};
+
+const getPrimarySiteId = (sites: Site[], companyId: string): string | undefined =>
+  sites.find(s => s.companyId === companyId)?.id;
+
+/** Resolve which Site a record belongs to: explicit siteId → its subscription's Site → primary Site. */
+const resolveSiteId = (
+  record: { companyId: string; siteId?: string; subscriptionId?: string },
+  subscriptions: Subscription[],
+  sites: Site[],
+): string | undefined => {
+  if (record.siteId) return record.siteId;
+  if (record.subscriptionId) {
+    const sub = subscriptions.find(s => s.id === record.subscriptionId);
+    if (sub) return sub.siteId ?? getPrimarySiteId(sites, sub.companyId);
+  }
+  return getPrimarySiteId(sites, record.companyId);
+};
+
+/** Sites in the user's firm that the user is a member of (has a siteRoles entry for). */
+const getSitesForUser = (sites: Site[], user: User): Site[] =>
+  sites.filter(s => s.companyId === user.companyId && !!user.siteRoles && s.id in user.siteRoles);
+
+/**
+ * Re-materialize `User.roles` for every user in `companyId` from `fromSiteId` to
+ * `toSiteId`: the outgoing Site's live roles are written back into siteRoles first (so
+ * edits made while viewing it are kept), then each user's roles become their roles at
+ * the incoming Site — or [] if they aren't a member there.
+ */
+const applySiteSelection = (
+  prev: AppState,
+  companyId: string,
+  toSiteId: string,
+): Pick<AppState, 'users' | 'materializedSiteIds' | 'currentSite'> => {
+  const fromSiteId = prev.materializedSiteIds[companyId];
+  const users = prev.users.map(u => {
+    if (u.companyId !== companyId || !u.siteRoles) return u;
+    const siteRoles = fromSiteId && fromSiteId in u.siteRoles
+      ? { ...u.siteRoles, [fromSiteId]: u.roles }
+      : u.siteRoles;
+    return { ...u, siteRoles, roles: siteRoles[toSiteId] ?? [] };
+  });
+  return {
+    users,
+    materializedSiteIds: { ...prev.materializedSiteIds, [companyId]: toSiteId },
+    currentSite: prev.sites.find(s => s.id === toSiteId) ?? null,
+  };
+};
+
+/**
+ * Make `userId` the current user, scoped to `preferredSiteId` if they're a member of it,
+ * else their first Site. demoRoles (which drives can()/hasAccess()) becomes the user's
+ * role set at that Site. A firm with no Sites gets no scoping (currentSite null).
+ */
+const enterSiteForUser = (
+  prev: AppState,
+  userId: string,
+  preferredSiteId: string | null,
+): Partial<AppState> => {
+  const user = prev.users.find(u => u.id === userId);
+  if (!user) return {};
+  const accessible = getSitesForUser(prev.sites, user);
+  const target = accessible.find(s => s.id === preferredSiteId) ?? accessible[0];
+  if (!target) return { currentSite: null, currentUser: user, demoRoles: user.roles };
+  const scoped = applySiteSelection(prev, user.companyId, target.id);
+  const me = scoped.users.find(u => u.id === userId)!;
+  return { ...scoped, currentUser: me, demoRoles: me.roles };
+};
+
+/** Seeded users without explicit siteRoles are members of their firm's primary Site. */
+const withDefaultSiteRoles = (users: User[], sites: Site[]): User[] =>
+  users.map(u => {
+    if (u.siteRoles) return u;
+    const primary = getPrimarySiteId(sites, u.companyId);
+    return primary ? { ...u, siteRoles: { [primary]: u.roles } } : u;
+  });
+
+// Seeded `roles` are each user's roles at their firm's primary Site (the Site materialized
+// on first load). Boston-only users therefore start with roles: [].
 const initialUsers: User[] = [
-  { id: 'user-1', firstName: 'John', lastName: 'Smith', email: 'john.smith@abcaccounting.com', username: 'johnsmith', roles: ['account_owner'], status: 'active', lastLogin: '2024-01-20', createdAt: '2023-01-15', companyId: 'company-1', jobTitle: 'CEO', dataNetEmailOptIn: true },
+  // John Smith is the multi-Site demo user: Account Owner at New York HQ, Billing Admin
+  // at Boston Office — switching Sites changes his role-gated UI.
+  { id: 'user-1', firstName: 'John', lastName: 'Smith', email: 'john.smith@abcaccounting.com', username: 'johnsmith', roles: ['account_owner'], siteRoles: { 'site-abc-ny': ['account_owner'], 'site-abc-bos': ['billing_admin'] }, status: 'active', lastLogin: '2024-01-20', createdAt: '2023-01-15', companyId: 'company-1', jobTitle: 'CEO', dataNetEmailOptIn: true },
   { id: 'user-2', firstName: 'Sarah', lastName: 'Johnson', email: 'sarah.johnson@abcaccounting.com', username: 'sarahjohnson', roles: ['billing_admin'], status: 'active', lastLogin: '2024-01-19', createdAt: '2023-02-10', companyId: 'company-1', jobTitle: 'CFO', dataNetEmailOptIn: true },
   { id: 'user-3', firstName: 'Mike', lastName: 'Williams', email: 'mike.williams@abcaccounting.com', username: 'mikewilliams', roles: ['license_admin'], status: 'active', lastLogin: '2024-01-18', createdAt: '2023-03-05', companyId: 'company-1', jobTitle: 'IT Manager', dataNetEmailOptIn: true },
   { id: 'user-4', firstName: 'Emily', lastName: 'Brown', email: 'emily.brown@abcaccounting.com', username: 'emilybrown', roles: ['billing_admin', 'license_admin'], status: 'active', lastLogin: '2024-01-17', createdAt: '2023-04-12', companyId: 'company-1', jobTitle: 'Operations Manager', dataNetEmailOptIn: true },
@@ -806,12 +1077,35 @@ const initialUsers: User[] = [
   { id: 'user-11', firstName: 'Chris', lastName: 'Martinez', email: 'chris.martinez@abcaccounting.com', username: 'chrismartinez', roles: ['registered_contact'], status: 'active', lastLogin: '2024-01-16', createdAt: '2023-10-05', companyId: 'company-1', jobTitle: 'Financial Analyst', dataNetEmailOptIn: true },
   { id: 'user-12', firstName: 'Nicole', lastName: 'Garcia', email: 'nicole.garcia@abcaccounting.com', username: 'nicolegarcia', roles: ['registered_contact'], status: 'active', lastLogin: null, createdAt: '2023-11-20', companyId: 'company-1', jobTitle: 'Intern', dataNetEmailOptIn: true },
   { id: 'user-13', firstName: 'Kevin', lastName: 'Lee', email: 'kevin.lee@abcaccounting.com', username: 'kevinlee', roles: ['registered_contact'], status: 'active', lastLogin: '2024-01-05', createdAt: '2023-12-01', companyId: 'company-1', jobTitle: 'Auditor', dataNetEmailOptIn: true },
+  // v18 — ABC Boston Office members (not members of New York HQ).
+  { id: 'user-30', firstName: 'Olivia', lastName: 'Brooks', email: 'olivia.brooks@abcaccounting.com', username: 'oliviabrooks', roles: [], siteRoles: { 'site-abc-bos': ['account_owner'] }, status: 'active', lastLogin: '2024-01-19', createdAt: '2023-09-01', companyId: 'company-1', jobTitle: 'Office Managing Partner', dataNetEmailOptIn: true },
+  { id: 'user-31', firstName: 'Ethan', lastName: 'Clark', email: 'ethan.clark@abcaccounting.com', username: 'ethanclark', roles: [], siteRoles: { 'site-abc-bos': ['license_admin'] }, status: 'active', lastLogin: '2024-01-18', createdAt: '2023-09-05', companyId: 'company-1', jobTitle: 'IT Coordinator', dataNetEmailOptIn: true },
+  { id: 'user-32', firstName: 'Grace', lastName: 'Hall', email: 'grace.hall@abcaccounting.com', username: 'gracehall', roles: [], siteRoles: { 'site-abc-bos': ['registered_contact'] }, status: 'active', lastLogin: '2024-01-12', createdAt: '2023-10-12', companyId: 'company-1', jobTitle: 'Staff Accountant', dataNetEmailOptIn: true },
   { id: 'user-20', firstName: 'Michael', lastName: 'Chen', email: 'michael.chen@xyzconsulting.com', username: 'michaelchen', roles: ['account_owner'], status: 'active', lastLogin: '2024-01-20', createdAt: '2023-06-20', companyId: 'company-2', jobTitle: 'Managing Partner', dataNetEmailOptIn: true },
   { id: 'user-21', firstName: 'Jessica', lastName: 'Wong', email: 'jessica.wong@xyzconsulting.com', username: 'jessicawong', roles: ['billing_admin'], status: 'active', lastLogin: '2024-01-18', createdAt: '2023-07-01', companyId: 'company-2', jobTitle: 'Finance Director', dataNetEmailOptIn: true },
   { id: 'user-22', firstName: 'Daniel', lastName: 'Kim', email: 'daniel.kim@xyzconsulting.com', username: 'danielkim', roles: ['license_admin'], status: 'active', lastLogin: '2024-01-17', createdAt: '2023-07-15', companyId: 'company-2', jobTitle: 'IT Director', dataNetEmailOptIn: true },
   { id: 'user-23', firstName: 'Rachel', lastName: 'Park', email: 'rachel.park@xyzconsulting.com', username: 'rachelpark', roles: ['registered_contact'], status: 'active', lastLogin: '2024-01-16', createdAt: '2023-08-01', companyId: 'company-2', jobTitle: 'Consultant', dataNetEmailOptIn: true },
   { id: 'user-24', firstName: 'Steven', lastName: 'Liu', email: 'steven.liu@xyzconsulting.com', username: 'stevenliu', roles: ['registered_contact'], status: 'active', lastLogin: '2024-01-15', createdAt: '2023-08-20', companyId: 'company-2', jobTitle: 'Senior Consultant', dataNetEmailOptIn: true },
   { id: 'user-25', firstName: 'Laura', lastName: 'Huang', email: 'laura.huang@xyzconsulting.com', username: 'laurahuang', roles: ['registered_contact'], status: 'invited', lastLogin: null, createdAt: '2024-01-15', companyId: 'company-2', jobTitle: 'Associate', dataNetEmailOptIn: true },
+  // v19 — Northwind (billed through SHI).
+  { id: 'user-40', firstName: 'Priya', lastName: 'Shah', email: 'priya.shah@northwindwealth.com', username: 'priyashah', roles: ['account_owner'], status: 'active', lastLogin: '2024-02-20', createdAt: '2024-02-12', companyId: 'company-3', jobTitle: 'Managing Director', dataNetEmailOptIn: true },
+  { id: 'user-41', firstName: 'Tom', lastName: 'Reyes', email: 'tom.reyes@northwindwealth.com', username: 'tomreyes', roles: ['billing_admin'], status: 'active', lastLogin: '2024-02-18', createdAt: '2024-02-12', companyId: 'company-3', jobTitle: 'Operations Manager', dataNetEmailOptIn: true },
+  // v20 — straddling demo data. A person linked to several firms has one User record per
+  // firm (same email); the exception flag lives on their LoginIdentity (initialLoginIdentities).
+  // CRM contact at XYZ with no portal login yet → "existing customer" registration path.
+  { id: 'user-26', firstName: 'Alex', lastName: 'Rivera', email: 'alex.rivera@xyzconsulting.com', username: 'alexrivera', roles: ['registered_contact'], status: 'active', lastLogin: null, createdAt: '2024-03-01', companyId: 'company-2', jobTitle: 'Analyst', dataNetEmailOptIn: true, hasPortalLogin: false },
+  // Multi-firm, exception TRUE → "Choose an account" after sign-in.
+  { id: 'user-60', firstName: 'Sam', lastName: 'Patel', email: 'sam.patel@patelcpa.com', username: 'sampatel', roles: ['license_admin'], status: 'active', lastLogin: '2024-02-10', createdAt: '2023-09-15', companyId: 'company-2', jobTitle: 'Outsourced IT Lead', dataNetEmailOptIn: true },
+  { id: 'user-61', firstName: 'Sam', lastName: 'Patel', email: 'sam.patel@patelcpa.com', username: 'sampatel', roles: ['registered_contact'], status: 'active', lastLogin: '2024-02-14', createdAt: '2024-02-12', companyId: 'company-3', jobTitle: 'Outside Advisor', dataNetEmailOptIn: true },
+  // Multi-firm, exception FALSE → "We can't sign you in yet" error page.
+  { id: 'user-62', firstName: 'Morgan', lastName: 'Lee', email: 'morgan.lee@leeadvisory.com', username: 'morganlee', roles: ['registered_contact'], status: 'active', lastLogin: '2024-01-30', createdAt: '2023-10-01', companyId: 'company-2', jobTitle: 'Contract Consultant', dataNetEmailOptIn: true },
+  { id: 'user-63', firstName: 'Morgan', lastName: 'Lee', email: 'morgan.lee@leeadvisory.com', username: 'morganlee', roles: ['license_admin'], status: 'active', lastLogin: '2024-02-15', createdAt: '2024-02-12', companyId: 'company-3', jobTitle: 'Contract IT Manager', dataNetEmailOptIn: true },
+];
+
+// v20 — login identities. Every email not listed here has allowStraddlingException = false.
+const initialLoginIdentities: LoginIdentity[] = [
+  { email: 'sam.patel@patelcpa.com', allowStraddlingException: true },
+  { email: 'morgan.lee@leeadvisory.com', allowStraddlingException: false },
 ];
 
 // v14 reset (Section A2): exactly ONE active subscription per company.
@@ -855,6 +1149,41 @@ const initialSubscriptions: Subscription[] = [
       { id: 'prod-desktop-2', name: 'NumberCruncher Desktop', licenseCount: 10, purchasedLicenseCount: 10, pricePerLicense: 10, status: 'active' },
     ],
   },
+  // v18 — ABC Boston Office's own subscription (one per Site). Desktop only (4 seats)
+  // + DataNet, renewal ~90 days out, so it's visibly different from New York HQ.
+  {
+    id: 'sub-abc-bos',
+    companyId: 'company-1',
+    siteId: 'site-abc-bos',
+    name: 'Annual Plan',
+    planType: 'Annual',
+    billingFrequency: 'annual',
+    status: 'active',
+    startDate: _isoDaysAgo(275),
+    renewalDate: _isoDaysAhead(90),
+    baseFee: 1000,
+    perSeatCost: 10,
+    products: [
+      { id: 'prod-desktop-bos', name: 'NumberCruncher Desktop', licenseCount: 4, purchasedLicenseCount: 4, pricePerLicense: 10, status: 'active' },
+      { id: 'prod-datanet-bos', name: 'DataNet', licenseCount: 0, purchasedLicenseCount: 0, pricePerLicense: 0, status: 'active' },
+    ],
+  },
+  // v19 — Northwind (billed through SHI). Desktop only.
+  {
+    id: 'sub-nw-1',
+    companyId: 'company-3',
+    name: 'Annual Plan',
+    planType: 'Annual',
+    billingFrequency: 'annual',
+    status: 'active',
+    startDate: _isoDaysAgo(120),
+    renewalDate: _isoDaysAhead(245),
+    baseFee: 1000,
+    perSeatCost: 10,
+    products: [
+      { id: 'prod-desktop-nw', name: 'NumberCruncher Desktop', licenseCount: 3, purchasedLicenseCount: 3, pricePerLicense: 10, status: 'active' },
+    ],
+  },
 ];
 
 // v14 reset (Section A3): ZERO deactivated licenses on first load. The
@@ -876,6 +1205,9 @@ const initialLicenses: License[] = [
   // XYZ — NumberCruncher Desktop (prod-desktop-2): 5 of 10 paid seats assigned.
   ...['user-20','user-21','user-22','user-23','user-24']
     .map(uid => ({ userId: uid, subscriptionId: 'sub-3', productId: 'prod-desktop-2', assignedAt: _isoDaysAgo(150), licenseType: 'paid' as LicenseType })),
+  // v18 — ABC Boston Office (prod-desktop-bos): 3 of 4 paid seats assigned.
+  ...['user-30','user-31','user-32']
+    .map(uid => ({ userId: uid, subscriptionId: 'sub-abc-bos', productId: 'prod-desktop-bos', assignedAt: _isoDaysAgo(200), licenseType: 'paid' as LicenseType })),
 ];
 
 // ============================================================
@@ -888,6 +1220,11 @@ const initialInvoices: Invoice[] = [
   {
     id: 'inv-abc-001',
     companyId: 'company-1',
+    // v19 — own bill-to snapshot (firm's previous address + Attention), kept after the firm edits its billing details.
+    billTo: {
+      name: 'ABC Accounting', attention: 'Finance Department',
+      line1: '120 Broadway', line2: 'Floor 8', city: 'New York', state: 'NY', postalCode: '10271', country: 'United States',
+    },
     invoiceNumber: 'INV-ABC-001',
     date: _isoDaysAgo(300),
     dueDate: _isoDaysAgo(270),
@@ -1035,11 +1372,68 @@ const initialInvoices: Invoice[] = [
     ],
   },
 
+  // ============ ABC ACCOUNTING — BOSTON OFFICE (v18 Site) ============
+  // Site is derived from subscriptionId (sub-abc-bos → site-abc-bos).
+  // inv-abc-bos-001 — Initial purchase, paid
+  {
+    id: 'inv-abc-bos-001',
+    companyId: 'company-1',
+    invoiceNumber: 'INV-ABC-BOS-001',
+    date: _isoDaysAgo(275),
+    dueDate: _isoDaysAgo(245),
+    status: 'paid',
+    amount: 1112.80,
+    balance: 0,
+    subscriptionId: 'sub-abc-bos',
+    subscriptionName: 'Annual Plan',
+    invoiceType: 'Initial Invoice',
+    source: 'checkout',
+    paymentMethod: 'pay_on_receipt',
+    paidAt: _isoDaysAgo(240),
+    description: 'Initial subscription purchase — Boston Office',
+    subtotal: 1040,
+    tax: 72.80,
+    totalAmount: 1112.80,
+    lineItems: [
+      { product: 'Base Subscription Fee', quantity: 1, unitPrice: 1000, total: 1000 },
+      { product: 'NumberCruncher Desktop Seats', quantity: 4, unitPrice: 10, total: 40 },
+    ],
+  },
+  // inv-abc-bos-002 — Seat adjustment, awaiting payment
+  {
+    id: 'inv-abc-bos-002',
+    companyId: 'company-1',
+    invoiceNumber: 'INV-ABC-BOS-002',
+    date: _isoDaysAgo(8),
+    dueDate: _isoDaysAhead(22),
+    status: 'awaiting_payment',
+    amount: 10.70,
+    balance: 10.70,
+    subscriptionId: 'sub-abc-bos',
+    subscriptionName: 'Annual Plan',
+    invoiceType: 'Adjustment Invoice',
+    source: 'license_change',
+    paymentMethod: 'pay_on_receipt',
+    paidAt: null,
+    description: 'License adjustment — added 1 seat',
+    subtotal: 10,
+    tax: 0.70,
+    totalAmount: 10.70,
+    lineItems: [
+      { product: 'Additional NumberCruncher Desktop Seats', quantity: 1, unitPrice: 10, total: 10 },
+    ],
+  },
+
   // ============ XYZ CONSULTING (Pay on Terms — Net 30) ============
   // inv-xyz-001 — Initial purchase under Net 30, terms applied, subscription active
   {
     id: 'inv-xyz-001',
     companyId: 'company-2',
+    // v19 — snapshot taken before XYZ added an Attention line.
+    billTo: {
+      name: 'Accounts Payable',
+      line1: '88 Market Street', city: 'San Francisco', state: 'CA', postalCode: '94105', country: 'United States',
+    },
     invoiceNumber: 'INV-XYZ-001',
     date: _isoDaysAgo(200),
     dueDate: _isoDaysAgo(170),
@@ -1141,6 +1535,31 @@ const initialInvoices: Invoice[] = [
       { product: 'QuickView Desktop Seats', quantity: 3, unitPrice: 199, total: 597 },
     ],
   },
+  // v19 — Northwind initial purchase. No snapshot: Bill to falls back to the SHI parent.
+  {
+    id: 'inv-nw-001',
+    companyId: 'company-3',
+    invoiceNumber: 'INV-NW-001',
+    date: _isoDaysAgo(120),
+    dueDate: _isoDaysAgo(90),
+    status: 'paid',
+    amount: 1102.10,
+    balance: 0,
+    subscriptionId: 'sub-nw-1',
+    subscriptionName: 'Annual Plan',
+    invoiceType: 'Initial Invoice',
+    source: 'checkout',
+    paymentMethod: 'pay_on_receipt',
+    paidAt: _isoDaysAgo(100),
+    description: 'Initial subscription purchase',
+    subtotal: 1030,
+    tax: 72.10,
+    totalAmount: 1102.10,
+    lineItems: [
+      { product: 'Base Subscription Fee', quantity: 1, unitPrice: 1000, total: 1000 },
+      { product: 'NumberCruncher Desktop Seats', quantity: 3, unitPrice: 10, total: 30 },
+    ],
+  },
 ];
 
 const initialTickets: SupportTicket[] = [
@@ -1148,6 +1567,7 @@ const initialTickets: SupportTicket[] = [
   { id: 'ticket-2', companyId: 'company-1', userId: 'user-6', category: 'Billing', subject: 'Invoice clarification', description: 'Need breakdown of charges', status: 'closed', createdAt: '2024-01-10' },
   { id: 'ticket-3', companyId: 'company-1', userId: 'user-1', category: 'Account', subject: 'Adding more users to account', description: 'Need to add 5 more users', status: 'open', createdAt: '2024-01-18' },
   { id: 'ticket-4', companyId: 'company-1', userId: 'user-3', category: 'Technical', subject: 'License activation failed', description: 'Getting error code 500 on activation', status: 'in-progress', createdAt: '2024-01-19' },
+  { id: 'ticket-bos-1', companyId: 'company-1', siteId: 'site-abc-bos', userId: 'user-31', category: 'Technical', subject: 'Boston workstation activation', description: 'Desktop activation fails on two Boston machines', status: 'open', createdAt: '2024-01-17' },
   { id: 'ticket-5', companyId: 'company-2', userId: 'user-20', category: 'Technical', subject: 'Report export not working', description: 'PDF export fails for large reports', status: 'open', createdAt: '2024-01-20' },
   { id: 'ticket-6', companyId: 'company-2', userId: 'user-23', category: 'Feature Request', subject: 'Dark mode support', description: 'Would like dark mode option', status: 'closed', createdAt: '2024-01-08' },
 ];
@@ -1233,6 +1653,17 @@ const initialQuotes: Quote[] = [
     ],
   },
 
+  // ============ ABC ACCOUNTING — BOSTON OFFICE (v18 Site) ============
+  {
+    id: 'quote-abc-bos-001', companyId: 'company-1', siteId: 'site-abc-bos', quoteNumber: 'Q-ABC-BOS-001',
+    createdDate: _isoDaysAgo(3), expiryDate: _isoDaysAhead(27),
+    status: 'active', amount: 698,
+    note: 'Boston Office — 2 additional NumberCruncher Desktop seats.',
+    lineItems: [
+      { productName: 'NumberCruncher Desktop', licenseCount: 2, unitPrice: 349, total: 698 },
+    ],
+  },
+
   // ============ XYZ CONSULTING ============
   // quote-xyz-001 — Active, multi-product
   {
@@ -1266,6 +1697,8 @@ const initialCompanyConfigs: CompanyBillingConfig[] = [
   { companyId: 'company-1', paymentEligibility: 'pay_on_receipt', payOnTermsEnabled: false, defaultBillingMethod: 'pay_on_receipt' },
   // XYZ — Pay on Terms enabled (Net 30)
   { companyId: 'company-2', paymentEligibility: 'pay_on_terms', payOnTermsEnabled: true, terms: 'Net 30', defaultBillingMethod: 'pay_on_terms' },
+  // Northwind (billed through SHI) — Pay on Receipt
+  { companyId: 'company-3', paymentEligibility: 'pay_on_receipt', payOnTermsEnabled: false, defaultBillingMethod: 'pay_on_receipt' },
 ];
 
 const initialDataNetUpdates: DataNetUpdate[] = [
@@ -1431,7 +1864,16 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     proxiedUser: null,
     originalUser: null,
     companies: initialCompanies,
-    users: initialUsers,
+    sites: initialSites,
+    currentSite: null,
+    // Seeded `roles` are the primary Site's roles, so that's what starts materialized.
+    materializedSiteIds: Object.fromEntries(
+      initialCompanies
+        .map(c => [c.id, getPrimarySiteId(initialSites, c.id)] as const)
+        .filter((e): e is readonly [string, string] => !!e[1]),
+    ),
+    users: withDefaultSiteRoles(initialUsers, initialSites),
+    loginIdentities: initialLoginIdentities,
     subscriptions: initialSubscriptions,
     licenses: initialLicenses,
     invoices: initialInvoices,
@@ -1533,13 +1975,17 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     }));
   }, []);
 
-  const login = useCallback((email: string, _password: string): boolean => {
+  const login = useCallback((email: string, _password: string, companyId?: string): boolean => {
     if (!email.trim()) return false;
     const normalized = email.trim().toLowerCase();
-    const existing = state.users.find(u => u.email.toLowerCase() === normalized);
+    // v20 — an email linked to several firms has one record per firm; companyId picks one.
+    const existing = state.users.find(u =>
+      u.email.toLowerCase() === normalized && (!companyId || u.companyId === companyId));
 
     if (existing) {
       if (existing.status === 'inactive') return false;
+      // v20 — a CRM contact without a portal login must register first.
+      if (existing.hasPortalLogin === false) return false;
       const company = state.companies.find(c => c.id === existing.companyId);
       const todayISO = new Date().toISOString().split('T')[0];
       const wasInvited = existing.status === 'invited';
@@ -1547,14 +1993,15 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       const flipped: User = wasInvited
         ? { ...existing, status: 'active' as const, lastLogin: todayISO }
         : { ...existing, lastLogin: todayISO };
-      setState(prev => ({
-        ...prev,
-        users: prev.users.map(u => u.id === flipped.id ? flipped : u),
-        isAuthenticated: true,
-        currentUser: flipped,
-        currentCompany: company || null,
-        demoRoles: flipped.roles,
-      }));
+      setState(prev => {
+        const next = { ...prev, users: prev.users.map(u => u.id === flipped.id ? flipped : u) };
+        return {
+          ...next,
+          ...enterSiteForUser(next, flipped.id, readStoredSiteId()),
+          isAuthenticated: true,
+          currentCompany: company || null,
+        };
+      });
       if (wasInvited) {
         const admins = state.users.filter(u =>
           u.companyId === flipped.companyId &&
@@ -1605,23 +2052,41 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       companyId: abcCompany.id,
       dataNetEmailOptIn: true,
     };
+    // v18 — auto-joined demo users become Account Owner of ABC's primary Site only.
+    const primarySiteId = getPrimarySiteId(state.sites, abcCompany.id);
+    if (primarySiteId) newUser.siteRoles = { [primarySiteId]: ['account_owner'] };
+    setState(prev => {
+      const next = { ...prev, users: [...prev.users, newUser] };
+      return {
+        ...next,
+        ...enterSiteForUser(next, newUser.id, readStoredSiteId()),
+        isAuthenticated: true,
+        currentCompany: abcCompany,
+      };
+    });
+    return true;
+  }, [state.users, state.companies, state.sites, notify]);
+
+  const activateContactLogin = useCallback((email: string): boolean => {
+    const normalized = email.trim().toLowerCase();
+    const isTarget = (u: User) => u.email.toLowerCase() === normalized && u.hasPortalLogin === false;
+    if (!state.users.some(isTarget)) return false;
     setState(prev => ({
       ...prev,
-      users: [...prev.users, newUser],
-      isAuthenticated: true,
-      currentUser: newUser,
-      currentCompany: abcCompany,
-      demoRoles: ['account_owner'],
+      users: prev.users.map(u => isTarget(u) ? { ...u, hasPortalLogin: true } : u),
     }));
     return true;
-  }, [state.users, state.companies, notify]);
+  }, [state.users]);
 
   const logout = useCallback(() => {
+    // The stored Site id is intentionally kept: the next login in this tab reopens it
+    // (if that user is a member of it).
     setState(prev => ({
       ...prev,
       isAuthenticated: false,
       currentUser: null,
       currentCompany: null,
+      currentSite: null,
       demoRoles: ['account_owner'],
       isProxySession: false,
       proxiedUser: null,
@@ -1632,9 +2097,50 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   const selectCompany = useCallback((companyId: string) => {
     const company = state.companies.find(c => c.id === companyId);
     if (company) {
-      setState(prev => ({ ...prev, currentCompany: company }));
+      setState(prev => {
+        const userId = prev.currentUser?.id;
+        if (userId && prev.currentUser?.companyId === companyId) {
+          return { ...prev, ...enterSiteForUser(prev, userId, readStoredSiteId()), currentCompany: company };
+        }
+        // Viewing a firm the user isn't a member of: scope to its primary Site.
+        const primary = getPrimarySiteId(prev.sites, companyId);
+        return {
+          ...prev,
+          ...(primary ? applySiteSelection(prev, companyId, primary) : { currentSite: null }),
+          currentCompany: company,
+        };
+      });
     }
   }, [state.companies]);
+
+  const getUserSites = useCallback((): Site[] => {
+    // During a proxy session the switcher reflects the real (original) user's Sites.
+    const user = state.isProxySession ? state.originalUser : state.currentUser;
+    if (!user) return [];
+    const live = state.users.find(u => u.id === user.id) ?? user;
+    return getSitesForUser(state.sites, live);
+  }, [state.sites, state.users, state.currentUser, state.originalUser, state.isProxySession]);
+
+  const switchSite = useCallback((siteId: string) => {
+    setState(prev => {
+      if (!prev.currentUser || prev.isProxySession) return prev;
+      if (prev.currentSite?.id === siteId) return prev;
+      const live = prev.users.find(u => u.id === prev.currentUser!.id);
+      if (!live || !getSitesForUser(prev.sites, live).some(s => s.id === siteId)) return prev;
+      writeStoredSiteId(siteId);
+      // Re-applies the user's roles for the new Site (demoRoles), discarding any
+      // Admin-tool role override from the previous Site.
+      return { ...prev, ...enterSiteForUser(prev, live.id, siteId) };
+    });
+  }, []);
+
+  // v18 — single Site-scoping predicate used by every getCompany* accessor and every
+  // company-wide status check below, so all pages re-scope together on a Site switch.
+  const inCurrentSite = useCallback(
+    (record: { companyId: string; siteId?: string; subscriptionId?: string }): boolean =>
+      !state.currentSite || resolveSiteId(record, state.subscriptions, state.sites) === state.currentSite.id,
+    [state.currentSite, state.subscriptions, state.sites],
+  );
 
   const updateCompany = useCallback((companyId: string, updates: Partial<Company>) => {
     setState(prev => ({
@@ -1732,6 +2238,8 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       id: `user-${Date.now()}`,
       createdAt: new Date().toISOString().split('T')[0],
       companyId,
+      // v18 — a user added from the portal joins the Site currently being viewed.
+      ...(state.currentSite ? { siteRoles: { [state.currentSite.id]: userData.roles } } : {}),
     };
     setState(prev => ({ ...prev, users: [...prev.users, newUser] }));
     // Notify all admins (account_owner + license_admin) of the invitation.
@@ -1751,7 +2259,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       });
     });
     return newUser;
-  }, [state.currentCompany, state.users, notify]);
+  }, [state.currentCompany, state.currentSite, state.users, notify]);
 
   const updateUser = useCallback((userId: string, updates: Partial<User>) => {
     setState(prev => ({
@@ -1814,6 +2322,74 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     });
     return true;
   }, [state.users, notify]);
+
+  const transferOwnership = useCallback((newOwnerUserId: string): boolean => {
+    const currentOwner = state.currentUser;
+    const newOwner = state.users.find(u => u.id === newOwnerUserId);
+    if (!currentOwner || !newOwner || newOwner.companyId !== currentOwner.companyId) return false;
+    if (!currentOwner.roles.includes('account_owner')) return false;
+
+    setState(prev => ({
+      ...prev,
+      users: prev.users.map(u => {
+        if (u.id === newOwner.id) {
+          return { ...u, roles: Array.from(new Set([...u.roles, 'account_owner' as Role])) };
+        }
+        if (u.id === currentOwner.id) {
+          const rest = u.roles.filter(r => r !== 'account_owner');
+          return { ...u, roles: Array.from(new Set([...rest, 'billing_admin' as Role])) };
+        }
+        return u;
+      }),
+      currentUser: prev.currentUser && prev.currentUser.id === currentOwner.id
+        ? { ...prev.currentUser, roles: Array.from(new Set([...prev.currentUser.roles.filter(r => r !== 'account_owner'), 'billing_admin' as Role])) }
+        : prev.currentUser,
+    }));
+    notify({
+      userId: newOwner.id,
+      type: 'account.role_changed',
+      title: 'You are now the Account Owner',
+      message: `${currentOwner.firstName} ${currentOwner.lastName} transferred account ownership to you.`,
+      link: '/dashboard',
+    });
+    notify({
+      userId: currentOwner.id,
+      type: 'account.role_changed',
+      title: 'Ownership transferred',
+      message: `You transferred account ownership to ${newOwner.firstName} ${newOwner.lastName} and have been assigned the Billing Admin role.`,
+      link: '/dashboard',
+    });
+    return true;
+  }, [state.currentUser, state.users, notify]);
+
+  const deleteCompanyAccount = useCallback(() => {
+    const companyId = state.currentCompany?.id;
+    if (!companyId) return;
+    setState(prev => ({
+      ...prev,
+      companies: prev.companies.filter(c => c.id !== companyId),
+      users: prev.users.filter(u => u.companyId !== companyId),
+      subscriptions: prev.subscriptions.filter(s => s.companyId !== companyId),
+      licenses: prev.licenses.filter(l => {
+        const sub = prev.subscriptions.find(s => s.id === l.subscriptionId);
+        return sub ? sub.companyId !== companyId : true;
+      }),
+      invoices: prev.invoices.filter(i => i.companyId !== companyId),
+      quotes: prev.quotes.filter(q => q.companyId !== companyId),
+      quoteRequests: prev.quoteRequests.filter(r => r.companyId !== companyId),
+      supportTickets: prev.supportTickets.filter(t => t.companyId !== companyId),
+      companyConfigs: prev.companyConfigs.filter(c => c.companyId !== companyId),
+      savedPaymentMethods: prev.savedPaymentMethods.filter(m => m.companyId !== companyId),
+      notifications: prev.notifications.filter(n => n.companyId !== companyId),
+      isAuthenticated: false,
+      currentUser: null,
+      currentCompany: null,
+      demoRoles: ['account_owner'],
+      isProxySession: false,
+      proxiedUser: null,
+      originalUser: null,
+    }));
+  }, [state.currentCompany]);
 
   const updateProductLicenseCount = useCallback((subscriptionId: string, productId: string, newCount: number) => {
     setState(prev => ({
@@ -1879,8 +2455,12 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     // v19 — a pending-payment license grants NO access yet (and a deactivated one
     // never does). Exclude both so this canonical "what does the user have access to?"
     // helper drives correct visibility in the sidebar/dashboard/downloads surfaces.
-    const userLicenses = state.licenses.filter(l =>
-      l.userId === userId && l.status !== 'pending_payment' && !l.deactivatedAt);
+    // v18 — only licenses on the active Site's subscriptions.
+    const userLicenses = state.licenses.filter(l => {
+      if (l.userId !== userId || l.status === 'pending_payment' || l.deactivatedAt) return false;
+      const sub = state.subscriptions.find(s => s.id === l.subscriptionId);
+      return !sub || inCurrentSite(sub);
+    });
     return userLicenses.map(l => {
       const sub = state.subscriptions.find(s => s.id === l.subscriptionId);
       const prod = sub?.products.find(p => p.id === l.productId);
@@ -1891,12 +2471,15 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         productName: prod?.name || '',
       };
     });
-  }, [state.licenses, state.subscriptions]);
+  }, [state.licenses, state.subscriptions, inCurrentSite]);
 
   const addSubscription = useCallback((subscription: Subscription) => {
     setState(prev => ({
       ...prev,
-      subscriptions: [...prev.subscriptions, subscription],
+      subscriptions: [
+        ...prev.subscriptions,
+        subscription.siteId || !prev.currentSite ? subscription : { ...subscription, siteId: prev.currentSite.id },
+      ],
     }));
   }, []);
 
@@ -1965,11 +2548,12 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     }));
   }, [state.wizardData]);
 
-  const createAccount = useCallback((input: { companyName: string; firstName: string; lastName: string; email: string; password: string }) => {
+  const createAccount = useCallback((input: { companyName: string; companyDomain?: string; firstName: string; lastName: string; username: string; email: string; phone?: string; password: string }) => {
     const newCompanyId = `company-${Date.now()}`;
     const newCompany: Company = {
       id: newCompanyId,
       name: input.companyName,
+      domain: input.companyDomain,
       createdAt: new Date().toISOString().split('T')[0],
     };
 
@@ -1979,7 +2563,8 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       firstName: input.firstName,
       lastName: input.lastName,
       email: input.email,
-      username: `${input.firstName}${input.lastName}`.toLowerCase().replace(/[^a-z0-9]/g, '') || `user${Date.now()}`,
+      username: input.username || `${input.firstName}${input.lastName}`.toLowerCase().replace(/[^a-z0-9]/g, '') || `user${Date.now()}`,
+      phone: input.phone,
       roles: ['account_owner'],
       status: 'active',
       lastLogin: new Date().toISOString().split('T')[0],
@@ -2014,13 +2599,14 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       ...ticketData,
       id: `ticket-${Date.now()}`,
       companyId: state.currentCompany?.id || 'company-1',
+      siteId: state.currentSite?.id,
       userId: state.currentUser?.id || 'user-1',
       status: 'open',
       createdAt: new Date().toISOString().split('T')[0],
     };
     setState(prev => ({ ...prev, supportTickets: [...prev.supportTickets, newTicket] }));
     return newTicket;
-  }, [state.currentCompany, state.currentUser]);
+  }, [state.currentCompany, state.currentSite, state.currentUser]);
 
   const getEffectiveRoles = useCallback((): Role[] => {
     const roles = [...state.demoRoles];
@@ -2081,24 +2667,24 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     const companyId = state.currentCompany?.id;
     if (!companyId) return false;
     return state.subscriptions.some(
-      s => s.companyId === companyId && (s.status === 'pending_payment' || s.status === 'suspended')
+      s => s.companyId === companyId && inCurrentSite(s) && (s.status === 'pending_payment' || s.status === 'suspended')
     );
-  }, [state.subscriptions, state.currentCompany]);
+  }, [state.subscriptions, state.currentCompany, inCurrentSite]);
 
   const isSuspendedMode = useCallback((): boolean => {
     const companyId = state.currentCompany?.id;
     if (!companyId) return false;
     return state.subscriptions.some(
-      s => s.companyId === companyId && s.status === 'suspended'
+      s => s.companyId === companyId && inCurrentSite(s) && s.status === 'suspended'
     );
-  }, [state.subscriptions, state.currentCompany]);
+  }, [state.subscriptions, state.currentCompany, inCurrentSite]);
 
   const forceSuspendCurrentSubscription = useCallback((): boolean => {
     const companyId = state.currentCompany?.id;
     if (!companyId) return false;
     let success = false;
     setState(prev => {
-      const target = prev.subscriptions.find(s => s.companyId === companyId && s.status === 'active');
+      const target = prev.subscriptions.find(s => s.companyId === companyId && inCurrentSite(s) && s.status === 'active');
       if (!target) return prev;
 
       const existingUnpaidRenewal = prev.invoices.find(
@@ -2144,7 +2730,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
             })),
           ],
         };
-        invoices = [synthetic, ...invoices];
+        invoices = [withBillTo(synthetic, prev.companies), ...invoices];
       }
 
       success = true;
@@ -2157,7 +2743,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       };
     });
     return success;
-  }, [state.currentCompany]);
+  }, [state.currentCompany, inCurrentSite]);
 
   const restoreActiveSubscription = useCallback((): boolean => {
     const companyId = state.currentCompany?.id;
@@ -2165,7 +2751,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     setState(prev => ({
       ...prev,
       subscriptions: prev.subscriptions.map(s => {
-        if (s.companyId !== companyId || s.status !== 'suspended') return s;
+        if (s.companyId !== companyId || !inCurrentSite(s) || s.status !== 'suspended') return s;
         const nextRenewal = new Date(
           new Date(s.renewalDate).getTime() + 365 * 86400000
         ).toISOString().split('T')[0];
@@ -2173,14 +2759,18 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       }),
     }));
     return true;
-  }, [state.currentCompany]);
+  }, [state.currentCompany, inCurrentSite]);
 
   const getCurrentUserTrialLicenses = useCallback(() => {
     const userId = state.currentUser?.id;
     if (!userId) return [];
     const now = Date.now();
     return state.licenses
-      .filter(l => l.userId === userId && l.licenseType === 'trial' && l.trialExpiresAt)
+      .filter(l => {
+        if (l.userId !== userId || l.licenseType !== 'trial' || !l.trialExpiresAt) return false;
+        const sub = state.subscriptions.find(s => s.id === l.subscriptionId);
+        return !sub || inCurrentSite(sub);
+      })
       .map(l => {
         const sub = state.subscriptions.find(s => s.id === l.subscriptionId);
         const product = sub?.products.find(p => p.id === l.productId);
@@ -2191,7 +2781,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
         };
       })
       .filter(t => new Date(t.expiresAt).getTime() > now);
-  }, [state.licenses, state.currentUser, state.subscriptions]);
+  }, [state.licenses, state.currentUser, state.subscriptions, inCurrentSite]);
 
   const isUsernameTaken = useCallback((username: string, companyId: string, excludeUserId?: string): boolean => {
     const normalized = username.trim().toLowerCase();
@@ -2205,55 +2795,63 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
   const getUserCompanies = useCallback((userId: string): Company[] => {
     const user = state.users.find(u => u.id === userId);
     if (!user) return [];
-    return state.companies.filter(c => c.id === user.companyId);
+    // v20 — every firm that has a record with this user's email.
+    const email = user.email.toLowerCase();
+    return state.companies.filter(c =>
+      state.users.some(u => u.companyId === c.id && u.email.toLowerCase() === email));
   }, [state.users, state.companies]);
 
+  // v18 — every getCompany* accessor below returns only the active Site's records.
+  // Users are Site members (siteRoles key); their `roles` are already their roles here.
   const getCompanyUsers = useCallback((): User[] => {
-    return state.users.filter(u => u.companyId === state.currentCompany?.id);
-  }, [state.users, state.currentCompany]);
+    const siteId = state.currentSite?.id;
+    return state.users.filter(u =>
+      u.companyId === state.currentCompany?.id &&
+      (!siteId || (!!u.siteRoles && siteId in u.siteRoles)));
+  }, [state.users, state.currentCompany, state.currentSite]);
 
   const getCompanySubscriptions = useCallback((): Subscription[] => {
-    return state.subscriptions.filter(s => s.companyId === state.currentCompany?.id);
-  }, [state.subscriptions, state.currentCompany]);
+    return state.subscriptions.filter(s => s.companyId === state.currentCompany?.id && inCurrentSite(s));
+  }, [state.subscriptions, state.currentCompany, inCurrentSite]);
 
   const getCompanyInvoices = useCallback((): Invoice[] => {
-    return state.invoices.filter(i => i.companyId === state.currentCompany?.id);
-  }, [state.invoices, state.currentCompany]);
+    return state.invoices.filter(i => i.companyId === state.currentCompany?.id && inCurrentSite(i));
+  }, [state.invoices, state.currentCompany, inCurrentSite]);
 
   const getCompanyTickets = useCallback((): SupportTicket[] => {
-    return state.supportTickets.filter(t => t.companyId === state.currentCompany?.id);
-  }, [state.supportTickets, state.currentCompany]);
+    return state.supportTickets.filter(t => t.companyId === state.currentCompany?.id && inCurrentSite(t));
+  }, [state.supportTickets, state.currentCompany, inCurrentSite]);
 
   // Auto-expire active quotes whose expiryDate is in the past
   const getCompanyQuotes = useCallback((): Quote[] => {
     const today = new Date();
     // Only auto-expire 'active' quotes. 'requested' quotes wait for sales response indefinitely.
     return state.quotes
-      .filter(q => q.companyId === state.currentCompany?.id)
+      .filter(q => q.companyId === state.currentCompany?.id && inCurrentSite(q))
       .map(q => (q.status === 'active' && new Date(q.expiryDate) < today ? { ...q, status: 'expired' as const } : q));
-  }, [state.quotes, state.currentCompany]);
+  }, [state.quotes, state.currentCompany, inCurrentSite]);
 
   const getCompanyQuoteRequests = useCallback((): QuoteRequest[] => {
-    return state.quoteRequests.filter(r => r.companyId === state.currentCompany?.id);
-  }, [state.quoteRequests, state.currentCompany]);
+    return state.quoteRequests.filter(r => r.companyId === state.currentCompany?.id && inCurrentSite(r));
+  }, [state.quoteRequests, state.currentCompany, inCurrentSite]);
 
   const hasPaidInvoice = useCallback((): boolean => {
     const companyId = state.currentCompany?.id;
     if (!companyId) return false;
-    return state.invoices.some(i => i.companyId === companyId && i.status === 'paid');
-  }, [state.invoices, state.currentCompany]);
+    return state.invoices.some(i => i.companyId === companyId && inCurrentSite(i) && i.status === 'paid');
+  }, [state.invoices, state.currentCompany, inCurrentSite]);
 
   const hasSentQuote = useCallback((): boolean => {
     const companyId = state.currentCompany?.id;
     if (!companyId) return false;
-    return state.quotes.some(q => q.companyId === companyId);
-  }, [state.quotes, state.currentCompany]);
+    return state.quotes.some(q => q.companyId === companyId && inCurrentSite(q));
+  }, [state.quotes, state.currentCompany, inCurrentSite]);
 
   const hasDeclinedQuote = useCallback((): boolean => {
     const companyId = state.currentCompany?.id;
     if (!companyId) return false;
-    return state.quotes.some(q => q.companyId === companyId && q.status === 'declined');
-  }, [state.quotes, state.currentCompany]);
+    return state.quotes.some(q => q.companyId === companyId && inCurrentSite(q) && q.status === 'declined');
+  }, [state.quotes, state.currentCompany, inCurrentSite]);
 
   const isFirstTimeCustomer = useCallback((): boolean => {
     return !hasPaidInvoice();
@@ -2265,6 +2863,8 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     recipients?: string[];
     status?: Quote['status'];
     requestReason?: QuoteRequestReason;
+    contactNotes?: string;
+    contactAddress?: string;
   }): Quote => {
     const created = new Date();
     const expires = new Date(created.getTime() + 30 * 86400000);
@@ -2272,6 +2872,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     const newQuote: Quote = {
       id: `quote-${Date.now()}`,
       companyId: state.currentCompany?.id || 'company-1',
+      siteId: state.currentSite?.id,
       quoteNumber: `Q-${String(1000 + Math.floor(Math.random() * 9000))}`,
       createdDate: created.toISOString().split('T')[0],
       expiryDate: expires.toISOString().split('T')[0],
@@ -2281,12 +2882,20 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       lineItems: input.lineItems,
       recipients: input.recipients && input.recipients.length > 0 ? input.recipients : undefined,
       requestReason: input.requestReason,
+      contactNotes: input.contactNotes || undefined,
+      contactAddress: input.contactAddress || undefined,
     };
     setState(prev => ({ ...prev, quotes: [newQuote, ...prev.quotes] }));
     return newQuote;
-  }, [state.currentCompany]);
+  }, [state.currentCompany, state.currentSite]);
 
-  const acceptQuote = useCallback((quoteId: string, input: { poNumber?: string; paymentMethod: PaymentMethod }) => {
+  // Accepting a quote is confirmation-only (per the locked Quotes workflow decision):
+  // it captures an optional PO number for the back office and marks the quote
+  // Accepted. It never charges a card or auto-provisions seats — invoice and
+  // subscription setup happen separately (in HaloCRM, in production). We still
+  // record a minimal awaiting-payment invoice here so it's visible on the
+  // Invoices page, since this demo has no real back-office system behind it.
+  const acceptQuote = useCallback((quoteId: string, input: { poNumber?: string }) => {
     const quote = state.quotes.find(q => q.id === quoteId);
     if (!quote) return null;
     if (quote.status !== 'active') return null;
@@ -2295,23 +2904,16 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     const today = new Date();
     const due = new Date(today.getTime() + 30 * 86400000);
     const todayStr = today.toISOString().split('T')[0];
-    const status: Invoice['status'] =
-      input.paymentMethod === 'pay_immediately' ? 'paid' :
-      input.paymentMethod === 'pay_on_terms' ? 'payment_terms_applied' : 'awaiting_payment';
 
-    // Mid-cycle: target the company's primary active Annual subscription.
+    // Mid-cycle: target the primary active Annual subscription of the quote's Site (v18).
     // Falls back to any active subscription if no Annual one exists.
+    const quoteSiteId = resolveSiteId(quote, state.subscriptions, state.sites);
+    const inQuoteSite = (s: Subscription) =>
+      s.companyId === quote.companyId && resolveSiteId(s, state.subscriptions, state.sites) === quoteSiteId;
     const targetSub =
-      state.subscriptions.find(s => s.companyId === quote.companyId && s.status === 'active' && s.planType === 'Annual') ||
-      state.subscriptions.find(s => s.companyId === quote.companyId && s.status === 'active') ||
+      state.subscriptions.find(s => inQuoteSite(s) && s.status === 'active' && s.planType === 'Annual') ||
+      state.subscriptions.find(s => inQuoteSite(s) && s.status === 'active') ||
       null;
-
-    // Apply seat increases / new products immediately for pay_immediately
-    // (payment already happened at /pay before acceptQuote runs) and for
-    // pay_on_terms (seats provisioned on credit). For pay_on_receipt, defer
-    // until the invoice is paid via markInvoicePaid.
-    const applyImmediately =
-      input.paymentMethod === 'pay_immediately' || input.paymentMethod === 'pay_on_terms';
 
     const baseId = Date.now();
     const invoiceId = `inv-${baseId}`;
@@ -2321,33 +2923,32 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       invoiceNumber: `INV-${String(2000 + Math.floor(Math.random() * 9000))}`,
       date: todayStr,
       dueDate: due.toISOString().split('T')[0],
-      status,
+      status: 'awaiting_payment',
       amount: quote.amount,
-      balance: input.paymentMethod === 'pay_immediately' ? 0 : quote.amount,
+      balance: quote.amount,
       subscriptionId: targetSub?.id || '',
       subscriptionName: targetSub?.name || 'Annual Plan',
       invoiceType: 'Adjustment Invoice',
       source: 'quote_acceptance',
       quoteNumber: quote.quoteNumber,
       poNumber: input.poNumber,
-      paymentMethod: input.paymentMethod,
+      paymentMethod: 'pay_on_receipt',
       lineItems: quote.lineItems.map(l => ({
         product: l.productName,
         quantity: l.licenseCount,
         unitPrice: l.unitPrice,
         total: l.total,
       })),
-      // Pay-on-receipt defers seat application until the invoice is paid.
-      pendingQuoteApplication:
-        !applyImmediately && targetSub
-          ? { quoteId: quote.id, subscriptionId: targetSub.id }
-          : undefined,
+      // Seat/product provisioning is deferred until the back office actually
+      // invoices and the customer pays — never applied immediately on accept.
+      pendingQuoteApplication: targetSub
+        ? { quoteId: quote.id, subscriptionId: targetSub.id }
+        : undefined,
     };
     const updatedQuote: Quote = {
       ...quote,
       status: 'accepted',
       poNumber: input.poNumber,
-      paymentMethod: input.paymentMethod,
       invoiceId: invoice.id,
       acceptedAt: today.toISOString(),
     };
@@ -2355,20 +2956,17 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     setState(prev => ({
       ...prev,
       quotes: prev.quotes.map(q => q.id === quoteId ? updatedQuote : q),
-      invoices: [invoice, ...prev.invoices],
-      subscriptions: applyImmediately && targetSub
-        ? prev.subscriptions.map(s => s.id === targetSub.id ? applyQuoteToSubscription(s, quote) : s)
-        : prev.subscriptions,
+      invoices: [withBillTo(invoice, prev.companies), ...prev.invoices],
     }));
     notify({
       type: 'quote.accepted',
       title: 'Quote accepted',
-      message: `Quote ${quote.quoteNumber} for ${formatCurrency(quote.amount)} has been accepted. Invoice generated.`,
+      message: `Quote ${quote.quoteNumber} has been accepted. Our team will follow up with the invoice and subscription setup.`,
       link: '/invoices',
       linkLabel: 'View invoice',
     });
-    return { quote: updatedQuote, invoice, subscription: targetSub || undefined };
-  }, [state.quotes, state.subscriptions, notify]);
+    return { quote: updatedQuote, invoice };
+  }, [state.quotes, state.subscriptions, state.sites, notify]);
 
   const declineQuote = useCallback((quoteId: string, reason?: string) => {
     const quote = state.quotes.find(q => q.id === quoteId);
@@ -2439,6 +3037,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     const req: QuoteRequest = {
       id: `qreq-${Date.now()}`,
       companyId: state.currentCompany?.id || 'company-1',
+      siteId: state.currentSite?.id,
       createdDate: new Date().toISOString().split('T')[0],
       status: 'submitted',
       products: input.products,
@@ -2446,7 +3045,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     };
     setState(prev => ({ ...prev, quoteRequests: [req, ...prev.quoteRequests] }));
     return req;
-  }, [state.currentCompany]);
+  }, [state.currentCompany, state.currentSite]);
 
   const getCompanyConfig = useCallback((companyId?: string): CompanyBillingConfig => {
     const cid = companyId || state.currentCompany?.id || 'company-1';
@@ -2534,7 +3133,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
 
     setState(prev => ({
       ...prev,
-      invoices: [invoice, ...prev.invoices],
+      invoices: [withBillTo(invoice, prev.companies), ...prev.invoices],
       subscriptions: prev.subscriptions.map(s => s.id === subscriptionId ? {
         ...s,
         products: s.products.map(p => p.id === productId ? {
@@ -2638,6 +3237,40 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     }));
   }, []);
 
+  // v27 — VIP/negotiated-pricing seat-change request. Reused by both Manage Licenses tabs
+  // when the account is flagged `hasNegotiatedPricing`: submits a support ticket describing
+  // the exact requested change and locks seat-count controls via `hasPendingSeatRequest`.
+  // No invoice or seat mutation happens here — back office applies the change manually.
+  const submitSeatRequest = useCallback((input: {
+    subscriptionId: string;
+    productId: string;
+    description: string;
+  }): boolean => {
+    const sub = state.subscriptions.find(s => s.id === input.subscriptionId);
+    const prod = sub?.products.find(p => p.id === input.productId);
+    if (!sub || !prod) return false;
+
+    createTicket({
+      category: 'Billing',
+      subject: `Seat change request — ${prod.name}`,
+      description: input.description,
+    });
+
+    // No email/notification infrastructure exists in this app yet. This is the
+    // integration point for the back-office email — wire it into a real mailer when
+    // one is added; for now the ticket above is the durable record of the request.
+    console.info('[VIP seat request] back-office notification (stub):', input.description);
+
+    setState(prev => ({
+      ...prev,
+      subscriptions: prev.subscriptions.map(s => s.id !== input.subscriptionId ? s : {
+        ...s,
+        products: s.products.map(p => p.id !== input.productId ? p : { ...p, hasPendingSeatRequest: true }),
+      }),
+    }));
+    return true;
+  }, [state.subscriptions, createTicket]);
+
   const updateRenewalSeatCount = useCallback((subscriptionId: string, productId: string, newCount: number) => {
     setState(prev => ({
       ...prev,
@@ -2701,7 +3334,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
 
     setState(prev => ({
       ...prev,
-      invoices: [invoice, ...prev.invoices],
+      invoices: [withBillTo(invoice, prev.companies), ...prev.invoices],
       subscriptions: prev.subscriptions.map(s => s.id !== input.subscriptionId ? s : {
         ...s,
         products: s.products.map(p => p.id !== input.productId ? p : {
@@ -2774,7 +3407,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
 
     setState(prev => ({
       ...prev,
-      invoices: [invoice, ...prev.invoices],
+      invoices: [withBillTo(invoice, prev.companies), ...prev.invoices],
       licenses: [...prev.licenses, ...pendingLicenses],
       subscriptions: prev.subscriptions.map(s => s.id !== input.subscriptionId ? s : {
         ...s,
@@ -2914,6 +3547,132 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     });
   }, []);
 
+  // v28 — live-sync the drawer's Current Seats stepper against ONE provisional invoice per
+  // product (instead of a new invoice per click). Only empty pending seats are ever removed.
+  const adjustPendingSeats = useCallback((input: { subscriptionId: string; productId: string; delta: number }) => {
+    if (input.delta === 0) return;
+    setState(prev => {
+      const sub = prev.subscriptions.find(s => s.id === input.subscriptionId);
+      const prod = sub?.products.find(p => p.id === input.productId);
+      if (!sub || !prod) return prev;
+
+      // Same "pending invoice" resolution the drawer uses for its Pay button.
+      const pendingForProduct = prev.licenses.filter(l =>
+        l.subscriptionId === sub.id && l.productId === prod.id && l.status === 'pending_payment' && !l.deactivatedAt);
+      const existing = pendingForProduct
+        .map(l => prev.invoices.find(i => i.id === l.pendingPaymentInvoiceId))
+        .find(i => !!i && (i.status === 'awaiting_payment' || i.status === 'unpaid'));
+
+      const today = new Date();
+      const todayIso = today.toISOString().split('T')[0];
+      const invoiceId = existing?.id ?? `inv-${Date.now()}`;
+      let licenses = prev.licenses;
+      let applied = 0;
+
+      if (input.delta > 0) {
+        const added: License[] = Array.from({ length: input.delta }).map(() => ({
+          userId: '',
+          subscriptionId: sub.id,
+          productId: prod.id,
+          assignedAt: todayIso,
+          status: 'pending_payment' as const,
+          pendingPaymentInvoiceId: invoiceId,
+        }));
+        licenses = [...licenses, ...added];
+        applied = input.delta;
+      } else {
+        if (!existing) return prev;
+        let toRemove = -input.delta;
+        licenses = licenses.filter(l => {
+          if (toRemove > 0 && l.pendingPaymentInvoiceId === existing.id && !l.userId) {
+            toRemove -= 1;
+            applied -= 1;
+            return false;
+          }
+          return true;
+        });
+        // A paid seat freed up while users sit on pending seats: move those users onto
+        // the free paid seats (immediate access) so their pending seats can be released.
+        const pendingTotal = pendingForProduct.length;
+        const activeAssigned = prev.licenses.filter(l =>
+          l.subscriptionId === sub.id && l.productId === prod.id && !!l.userId &&
+          l.status !== 'pending_payment' && !l.deactivatedAt).length;
+        let freePaid = Math.max(0, (prod.licenseCount - pendingTotal) - activeAssigned);
+        if (toRemove > 0 && freePaid > 0) {
+          licenses = licenses.map(l => {
+            if (toRemove > 0 && freePaid > 0 && l.pendingPaymentInvoiceId === existing.id && !!l.userId) {
+              toRemove -= 1;
+              freePaid -= 1;
+              applied -= 1;
+              return { ...l, status: 'active' as const, pendingPaymentInvoiceId: undefined };
+            }
+            return l;
+          });
+        }
+        if (applied === 0) return prev;
+      }
+
+      const seatCount = licenses.filter(l => l.pendingPaymentInvoiceId === invoiceId).length;
+      let invoices = prev.invoices;
+      if (seatCount === 0) {
+        invoices = invoices.filter(i => i.id !== invoiceId);
+      } else {
+        const catalog = prev.catalogProducts.find(c => c.name === prod.name);
+        const cost = calculateProratedAdd({
+          product: {
+            pricePerSeatPerYear: catalog?.pricePerSeatPerYear ?? prod.pricePerLicense,
+            maintenancePerSeatPerYear: catalog?.maintenancePerSeatPerYear ?? 0,
+          },
+          seats: seatCount,
+          addDate: today,
+          renewalDate: new Date(sub.renewalDate),
+          useLegacyProration: prev.useLegacyProration,
+        }).totalCharge;
+        const fields = {
+          amount: cost,
+          balance: cost,
+          description: `License adjustment — added ${seatCount} seat(s) (pending payment)`,
+          lineItems: [{
+            product: `Additional ${prod.name} Seats`,
+            quantity: seatCount,
+            unitPrice: Math.round((cost / seatCount) * 100) / 100,
+            total: cost,
+          }],
+        };
+        if (existing) {
+          invoices = invoices.map(i => i.id === invoiceId ? { ...i, ...fields } : i);
+        } else {
+          const invoice: Invoice = {
+            id: invoiceId,
+            companyId: sub.companyId,
+            invoiceNumber: `INV-${String(3000 + Math.floor(Math.random() * 9000))}`,
+            date: todayIso,
+            dueDate: new Date(today.getTime() + 30 * 86400000).toISOString().split('T')[0],
+            status: 'awaiting_payment',
+            subscriptionId: sub.id,
+            subscriptionName: sub.name,
+            invoiceType: 'Adjustment Invoice',
+            source: 'mid_cycle_license',
+            paymentMethod: 'pay_on_receipt',
+            ...fields,
+          };
+          invoices = [withBillTo(invoice, prev.companies), ...invoices];
+        }
+      }
+
+      const subscriptions = prev.subscriptions.map(s => s.id !== sub.id ? s : {
+        ...s,
+        products: s.products.map(p => p.id !== prod.id ? p : {
+          ...p,
+          licenseCount: Math.max(0, p.licenseCount + applied),
+          purchasedLicenseCount: Math.max(0, (p.purchasedLicenseCount ?? p.licenseCount) + applied),
+          renewalSeatCount: Math.max(0, (p.renewalSeatCount ?? p.licenseCount) + applied),
+        }),
+      });
+      return { ...prev, licenses, invoices, subscriptions };
+    });
+  }, []);
+
   // v19 — add a brand-new product to an existing subscription as Pay-on-Receipt. Product
   // is created 'pending_payment', co-terminates with the parent subscription (no separate
   // renewal date), and its seats stay pending until the generated invoice is paid.
@@ -2995,7 +3754,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
 
     setState(prev => ({
       ...prev,
-      invoices: [invoice, ...prev.invoices],
+      invoices: [withBillTo(invoice, prev.companies), ...prev.invoices],
       licenses: [...prev.licenses, ...pendingLicenses],
       subscriptions: prev.subscriptions.map(s => s.id !== input.subscriptionId ? s : {
         ...s,
@@ -3135,7 +3894,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     }
   }, [notify]);
 
-  const checkoutPurchase = useCallback((input: { lineItems: QuoteLineItem[]; paymentMethod: PaymentMethod; poNumber?: string }): Invoice => {
+  const checkoutPurchase = useCallback((input: { lineItems: QuoteLineItem[]; paymentMethod: PaymentMethod; poNumber?: string; billTo?: InvoiceBillTo }): Invoice => {
     const today = new Date();
     const todayStr = today.toISOString().split('T')[0];
     const renewalStr = new Date(today.getTime() + 365 * 86400000).toISOString().split('T')[0];
@@ -3160,6 +3919,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     const newSubscription: Subscription = {
       id: subId,
       companyId,
+      siteId: state.currentSite?.id,
       name: 'Annual Plan',
       planType: 'Annual',
       billingFrequency: 'annual',
@@ -3194,13 +3954,15 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       paymentMethod: input.paymentMethod,
       poNumber: input.poNumber,
       activatesSubscription: input.paymentMethod === 'pay_on_receipt',
+      // v19 — the bill-to shown at checkout; withBillTo() falls back to the firm's details when omitted.
+      billTo: input.billTo,
       lineItems: input.lineItems.map(l => ({ product: l.productName, quantity: l.licenseCount, unitPrice: l.unitPrice, total: l.total })),
     };
 
     setState(prev => ({
       ...prev,
       subscriptions: [...prev.subscriptions, newSubscription],
-      invoices: [invoice, ...prev.invoices],
+      invoices: [withBillTo(invoice, prev.companies), ...prev.invoices],
     }));
     notify({
       type: 'invoice.created',
@@ -3219,7 +3981,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       });
     }
     return invoice;
-  }, [state.currentCompany, notify]);
+  }, [state.currentCompany, state.currentSite, notify]);
 
   const renewSubscription = useCallback((
     subscriptionId: string,
@@ -3285,7 +4047,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
             })),
           ],
         };
-        invoices = [invoice, ...invoices];
+        invoices = [withBillTo(invoice, prev.companies), ...invoices];
         resultingInvoice = invoice;
       }
       return {
@@ -3441,7 +4203,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       });
       if (newInvoices.length === 0) return prev;
       created = newInvoices.length;
-      return { ...prev, invoices: [...newInvoices, ...prev.invoices] };
+      return { ...prev, invoices: [...newInvoices.map(inv => withBillTo(inv, prev.companies)), ...prev.invoices] };
     });
     renewalNotices.forEach(({ ownerId, subName, invoiceNumber }) => {
       notify({
@@ -3640,7 +4402,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
           purchasedLicenseCount: (p.purchasedLicenseCount ?? p.licenseCount) + 1,
         } : p),
       } : s),
-      invoices: [invoice, ...prev.invoices],
+      invoices: [withBillTo(invoice, prev.companies), ...prev.invoices],
     }));
     return { invoice };
   }, [state.subscriptions, state.licenses, state.catalogProducts, state.useLegacyProration]);
@@ -3735,8 +4497,11 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
     <AppContext.Provider value={{
       ...state,
       login,
+      activateContactLogin,
       logout,
       selectCompany,
+      getUserSites,
+      switchSite,
       updateCompany,
       updateCompanyBillingDetails,
       setAutoRenewal,
@@ -3749,6 +4514,8 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       deactivateUser,
       reactivateUser,
       changeUserRoles,
+      transferOwnership,
+      deleteCompanyAccount,
       updateProductLicenseCount,
       assignLicense,
       unassignLicense,
@@ -3791,6 +4558,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       scheduleLicenseDecrease,
       applyLicenseReduction,
       markLicensesExpiringAtRenewal,
+      submitSeatRequest,
       updateRenewalSeatCount,
       addSeatsImmediate,
       addSeatsPendingPayment,
@@ -3799,6 +4567,7 @@ export const AppProvider = ({ children }: { children: ReactNode }) => {
       addProductToSubscriptionPendingPayment,
       finalizePendingInvoice,
       discardPendingInvoice,
+      adjustPendingSeats,
       getUserDataNetAccess,
       markInvoicePaid,
       setInvoicePoNumber,

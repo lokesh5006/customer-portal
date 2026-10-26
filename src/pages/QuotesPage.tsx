@@ -8,15 +8,13 @@ import { Input } from '@/components/ui/input';
 import {
   ListingPageHeader, DataTable, DataTableColumn, PaginationControls, SortableHeader, SortState,
 } from '@/components/listing';
-import {
-  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator,
-} from '@/components/ui/dropdown-menu';
 import { useApp, Quote } from '@/contexts/AppContext';
 import {
-  FileSignature, Eye, Check, X, RefreshCw, Plus, MessageSquare, MoreVertical, Download, Search, Clock, Trash2,
+  FileSignature, MessageSquare, Download, Search, Clock, RefreshCw, Trash2,
+  FileText, ClipboardCheck, Hourglass, Timer,
 } from 'lucide-react';
 import {
-  AcceptQuoteDrawer, DeclineQuoteDialog, ViewNoteDialog, ViewDeclineReasonDialog, RequestQuoteDialog,
+  AcceptQuoteDrawer, DeclineQuoteDialog, QuoteDetailsDrawer, ViewDeclineReasonDialog, RequestQuoteDialog,
 } from '@/components/subscriptions/QuoteDialogs';
 import { useToast } from '@/hooks/use-toast';
 import { useReadOnlyGuard, READ_ONLY_TOOLTIP } from '@/hooks/useReadOnlyGuard';
@@ -40,12 +38,11 @@ const daysUntil = (iso: string) =>
 export const QuotesPage = () => {
   const navigate = useNavigate();
   const { toast } = useToast();
-  const { getCompanyQuotes, getCompanyQuoteRequests, getCompanySubscriptions, hasAccess, cancelQuoteRequest } = useApp();
+  const { getCompanyQuotes, getCompanyQuoteRequests, hasAccess, cancelQuoteRequest } = useApp();
   const { readOnly } = useReadOnlyGuard();
   const quotes = getCompanyQuotes();
   const quoteRequests = getCompanyQuoteRequests();
   const canAccept = hasAccess(['account_owner', 'billing_admin']) && !readOnly;
-  const hasActivePaidSubscription = getCompanySubscriptions().some(s => s.status === 'active');
 
   const [searchQuery, setSearchQuery] = useState('');
   const [sort, setSort] = useState<SortState>({ key: null, direction: null });
@@ -54,7 +51,7 @@ export const QuotesPage = () => {
 
   const [acceptQuote, setAcceptQuote] = useState<Quote | null>(null);
   const [declineQuote, setDeclineQuote] = useState<Quote | null>(null);
-  const [noteQuote, setNoteQuote] = useState<Quote | null>(null);
+  const [detailsQuote, setDetailsQuote] = useState<Quote | null>(null);
   const [viewDeclineQuote, setViewDeclineQuote] = useState<Quote | null>(null);
   const [requestOpen, setRequestOpen] = useState(false);
 
@@ -93,15 +90,24 @@ export const QuotesPage = () => {
   const totalPages = Math.max(1, Math.ceil(sorted.length / pageSize));
   const paginated = sorted.slice((currentPage - 1) * pageSize, currentPage * pageSize);
 
+  // The reference labels a formally-issued quote awaiting the customer's decision
+  // as "Pending" (our internal status for that state is 'active').
+  const statusLabel = (s: Quote['status']) => s === 'active' ? 'Pending' : s === 'requested' ? 'Requested' : s;
   const statusColor = (s: Quote['status']) => {
     switch (s) {
       case 'requested': return 'bg-warning/10 text-warning border-warning/30';
-      case 'active': return 'bg-info/10 text-info border-info/30';
+      case 'active': return 'bg-warning/10 text-warning border-warning/30';
       case 'accepted': return 'bg-success/10 text-success border-success/30';
       case 'declined': return 'text-muted-foreground border-muted-foreground/40';
       case 'expired': return 'bg-warning/10 text-warning border-warning/30';
     }
   };
+
+  const totalQuotes = quotes.length;
+  const acceptedCount = quotes.filter(q => q.status === 'accepted').length;
+  const pendingCount = quotes.filter(q => q.status === 'active').length;
+  const expiredCount = quotes.filter(q => q.status === 'expired').length;
+  const acceptanceRate = totalQuotes > 0 ? Math.round((acceptedCount / totalQuotes) * 100) : 0;
 
   const handleCancelRequest = (q: Quote) => {
     cancelQuoteRequest(q.id);
@@ -115,26 +121,17 @@ export const QuotesPage = () => {
   const columns: DataTableColumn<Quote>[] = [
     {
       key: 'quoteNumber',
-      header: <SortableHeader label="Quote ID" sortKey="quoteNumber" sort={sort} onSortChange={setSort} />,
+      header: <SortableHeader label="Quote #" sortKey="quoteNumber" sort={sort} onSortChange={setSort} />,
       render: q => <span className="font-mono text-sm">{q.quoteNumber}</span>,
     },
     {
-      key: 'products',
-      header: <SortableHeader label="Products" sortKey="products" sort={sort} onSortChange={setSort} />,
-      render: q => {
-        const names = q.lineItems.map(l => l.productName);
-        const label = names.length > 2 ? `${names.slice(0, 2).join(', ')} +${names.length - 2}` : names.join(', ');
-        return <div className="text-sm">{label}</div>;
-      },
-    },
-    {
       key: 'createdDate',
-      header: <SortableHeader label="Created Date" sortKey="createdDate" sort={sort} onSortChange={setSort} />,
+      header: <SortableHeader label="Date" sortKey="createdDate" sort={sort} onSortChange={setSort} />,
       render: q => <span className="text-sm">{formatShortDate(q.createdDate)}</span>,
     },
     {
       key: 'expiryDate',
-      header: <SortableHeader label="Expiry Date" sortKey="expiryDate" sort={sort} onSortChange={setSort} />,
+      header: <SortableHeader label="Valid Until" sortKey="expiryDate" sort={sort} onSortChange={setSort} />,
       render: q => {
         const expiresIn = daysUntil(q.expiryDate);
         const isExpiringSoon = q.status === 'active' && expiresIn >= 0 && expiresIn <= 3;
@@ -147,9 +144,24 @@ export const QuotesPage = () => {
       },
     },
     {
+      key: 'products',
+      header: <SortableHeader label="Product & Plan" sortKey="products" sort={sort} onSortChange={setSort} />,
+      render: q => {
+        const names = q.lineItems.map(l => l.productName);
+        const label = names.length > 2 ? `${names.slice(0, 2).join(', ')} +${names.length - 2}` : names.join(', ');
+        const seats = q.lineItems.reduce((a, l) => a + (l.licenseCount || 0), 0);
+        return (
+          <div>
+            <div className="text-sm font-medium">{label}</div>
+            <div className="text-xs text-muted-foreground">{seats} Seats</div>
+          </div>
+        );
+      },
+    },
+    {
       key: 'total',
       className: 'text-right',
-      header: <SortableHeader label="Total" sortKey="total" sort={sort} onSortChange={setSort} align="right" />,
+      header: <SortableHeader label="Amount" sortKey="total" sort={sort} onSortChange={setSort} align="right" />,
       render: q => <span className="font-medium">{formatCurrency(q.amount)}</span>,
     },
     {
@@ -157,9 +169,7 @@ export const QuotesPage = () => {
       header: <SortableHeader label="Status" sortKey="status" sort={sort} onSortChange={setSort} />,
       render: q => {
         const pill = (
-          <Badge variant="outline" className={statusColor(q.status)}>
-            {q.status === 'requested' ? 'Requested' : q.status}
-          </Badge>
+          <Badge variant="outline" className={statusColor(q.status)}>{statusLabel(q.status)}</Badge>
         );
         if (q.status !== 'requested') return pill;
         return (
@@ -173,61 +183,32 @@ export const QuotesPage = () => {
       },
     },
     {
-      key: 'actions', header: '', className: 'w-[50px] text-right',
+      key: 'actions', header: 'Action', className: 'text-right',
       render: q => (
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon" className="h-8 w-8" onClick={(e) => e.stopPropagation()}>
-              <MoreVertical className="h-4 w-4" />
+        <div className="flex items-center justify-end gap-2">
+          <Button
+            variant="outline"
+            size="icon"
+            className="h-8 w-8"
+            onClick={() => toast({ title: 'PDF download coming soon', description: q.quoteNumber })}
+          >
+            <Download className="h-4 w-4" />
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => setDetailsQuote(q)}>View Detail</Button>
+          {q.status === 'active' && canAccept && (
+            <Button size="sm" onClick={() => setAcceptQuote(q)} disabled={readOnly}>Accept</Button>
+          )}
+          {q.status === 'declined' && (
+            <Button size="sm" variant="outline" onClick={() => handleRegenerate(q)} disabled={readOnly}>
+              <RefreshCw className="h-3.5 w-3.5 mr-1" />Regenerate
             </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <DropdownMenuItem onClick={() => setNoteQuote(q)}>
-              <Eye className="h-4 w-4 mr-2" />View Quote
-            </DropdownMenuItem>
-            {q.note && (
-              <DropdownMenuItem onClick={() => setNoteQuote(q)}>
-                <Eye className="h-4 w-4 mr-2" />View Note
-              </DropdownMenuItem>
-            )}
-            {q.status === 'declined' && q.declineReason && (
-              <DropdownMenuItem onClick={() => setViewDeclineQuote(q)}>
-                <MessageSquare className="h-4 w-4 mr-2" />View Decline Reason
-              </DropdownMenuItem>
-            )}
-            {q.status === 'active' && canAccept && (
-              <DropdownMenuItem onClick={() => setAcceptQuote(q)} disabled={readOnly}>
-                <Check className="h-4 w-4 mr-2" />Accept Quote
-              </DropdownMenuItem>
-            )}
-            {q.status === 'declined' && (
-              <DropdownMenuItem onClick={() => handleRegenerate(q)} disabled={readOnly}>
-                <RefreshCw className="h-4 w-4 mr-2" />Regenerate
-              </DropdownMenuItem>
-            )}
-            {q.status !== 'requested' && (
-              <DropdownMenuItem onClick={() => toast({ title: 'PDF download coming soon', description: q.quoteNumber })}>
-                <Download className="h-4 w-4 mr-2" />Download PDF
-              </DropdownMenuItem>
-            )}
-            {q.status === 'active' && canAccept && (
-              <>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => setDeclineQuote(q)} disabled={readOnly}>
-                  <X className="h-4 w-4 mr-2" />Decline Quote
-                </DropdownMenuItem>
-              </>
-            )}
-            {q.status === 'requested' && (
-              <>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={() => handleCancelRequest(q)} disabled={readOnly}>
-                  <Trash2 className="h-4 w-4 mr-2" />Cancel Request
-                </DropdownMenuItem>
-              </>
-            )}
-          </DropdownMenuContent>
-        </DropdownMenu>
+          )}
+          {q.status === 'requested' && (
+            <Button size="sm" variant="outline" className="text-destructive" onClick={() => handleCancelRequest(q)} disabled={readOnly}>
+              <Trash2 className="h-3.5 w-3.5 mr-1" />Cancel
+            </Button>
+          )}
+        </div>
       ),
     },
   ];
@@ -237,21 +218,15 @@ export const QuotesPage = () => {
       <div className="space-y-6">
         <ListingPageHeader
           title="Quotes"
-          description="Review, accept, or decline quotes for new subscriptions and changes."
+          description="Review pricing quotes, compare subscription proposals, and track their status before purchase."
           showCompanyContext={false}
           primaryAction={
             <Tooltip>
               <TooltipTrigger asChild>
                 <span tabIndex={0}>
-                  {hasActivePaidSubscription ? (
-                    <Button onClick={() => setRequestOpen(true)} disabled={readOnly}>
-                      <MessageSquare className="h-4 w-4 mr-1" />Request Quote
-                    </Button>
-                  ) : (
-                    <Button onClick={() => navigate('/checkout')} disabled={readOnly}>
-                      <Plus className="h-4 w-4 mr-1" />New Quote
-                    </Button>
-                  )}
+                  <Button onClick={() => setRequestOpen(true)} disabled={readOnly}>
+                    <MessageSquare className="h-4 w-4 mr-1" />Request Quote
+                  </Button>
                 </span>
               </TooltipTrigger>
               {readOnly && <TooltipContent>{READ_ONLY_TOOLTIP}</TooltipContent>}
@@ -259,11 +234,48 @@ export const QuotesPage = () => {
           }
         />
 
-        {hasActivePaidSubscription && (
-          <div className="rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground">
-            You already have an active subscription. To modify or add products/licenses, please request a quote.
-          </div>
-        )}
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <Card className="p-4 flex items-center gap-3">
+            <div className="h-10 w-10 rounded-full bg-muted flex items-center justify-center shrink-0">
+              <FileText className="h-5 w-5 text-primary" />
+            </div>
+            <div>
+              <div className="text-xs text-muted-foreground">Total Quotes</div>
+              <div className="text-lg font-semibold">{totalQuotes}</div>
+              <div className="text-xs text-primary">All Time Quotes</div>
+            </div>
+          </Card>
+          <Card className="p-4 flex items-center gap-3">
+            <div className="h-10 w-10 rounded-full bg-muted flex items-center justify-center shrink-0">
+              <ClipboardCheck className="h-5 w-5 text-success" />
+            </div>
+            <div>
+              <div className="text-xs text-muted-foreground">Accepted Quotes</div>
+              <div className="text-lg font-semibold">{acceptedCount}</div>
+              <div className="text-xs text-success">{acceptanceRate}% Acceptance Rate</div>
+            </div>
+          </Card>
+          <Card className="p-4 flex items-center gap-3">
+            <div className="h-10 w-10 rounded-full bg-muted flex items-center justify-center shrink-0">
+              <Timer className="h-5 w-5 text-warning" />
+            </div>
+            <div>
+              <div className="text-xs text-muted-foreground">Pending Quotes</div>
+              <div className="text-lg font-semibold">{pendingCount}</div>
+              <div className="text-xs text-warning">Awaiting response</div>
+            </div>
+          </Card>
+          <Card className="p-4 flex items-center gap-3">
+            <div className="h-10 w-10 rounded-full bg-muted flex items-center justify-center shrink-0">
+              <Hourglass className="h-5 w-5 text-muted-foreground" />
+            </div>
+            <div>
+              <div className="text-xs text-muted-foreground">Expired Quotes</div>
+              <div className="text-lg font-semibold">{expiredCount}</div>
+              <div className="text-xs text-muted-foreground">Past expiration date</div>
+            </div>
+          </Card>
+        </div>
 
         <Card className="p-3">
           <div className="relative">
@@ -287,7 +299,8 @@ export const QuotesPage = () => {
           ) : (
             <>
               <DataTable columns={columns} data={paginated} keyExtractor={q => q.id}
-                emptyMessage="No quotes available." emptyIcon={<FileSignature className="h-12 w-12 text-muted-foreground" />}
+                emptyMessage="No Quotes yet. Quotes will appear here once they are available."
+                emptyIcon={<FileSignature className="h-12 w-12 text-muted-foreground" />}
               />
               <Card className="rounded-t-none border-t-0">
                 <PaginationControls
@@ -320,9 +333,16 @@ export const QuotesPage = () => {
         )}
       </div>
 
+      <QuoteDetailsDrawer
+        open={!!detailsQuote}
+        onOpenChange={(v) => !v && setDetailsQuote(null)}
+        quote={detailsQuote}
+        canAccept={canAccept}
+        onAccept={(q) => { setDetailsQuote(null); setAcceptQuote(q); }}
+        onDecline={(q) => { setDetailsQuote(null); setDeclineQuote(q); }}
+      />
       <AcceptQuoteDrawer open={!!acceptQuote} onOpenChange={(v) => !v && setAcceptQuote(null)} quote={acceptQuote} />
       <DeclineQuoteDialog open={!!declineQuote} onOpenChange={(v) => !v && setDeclineQuote(null)} quote={declineQuote} />
-      <ViewNoteDialog open={!!noteQuote} onOpenChange={(v) => !v && setNoteQuote(null)} quote={noteQuote} />
       <ViewDeclineReasonDialog open={!!viewDeclineQuote} onOpenChange={(v) => !v && setViewDeclineQuote(null)} quote={viewDeclineQuote} />
       <RequestQuoteDialog open={requestOpen} onOpenChange={setRequestOpen} />
     </MainLayout>

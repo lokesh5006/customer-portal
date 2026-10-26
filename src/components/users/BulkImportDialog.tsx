@@ -12,6 +12,7 @@ import {
 } from '@/components/ui/tooltip';
 import { useApp, ROLE_LABELS } from '@/contexts/AppContext';
 import { useToast } from '@/hooks/use-toast';
+import { useDirectory } from '@/hooks/useDirectory';
 import {
   parseImportData, buildTemplateBlob, triggerDownload, ParseResult, MAX_PREVIEW_ROWS,
   ExistingDirectory,
@@ -24,6 +25,7 @@ export const BulkImportDialog = ({
   open, onOpenChange,
 }: { open: boolean; onOpenChange: (v: boolean) => void }) => {
   const { getCompanyUsers, currentCompany, addUser } = useApp();
+  const directory = useDirectory();
   const { toast } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -55,6 +57,7 @@ export const BulkImportDialog = ({
     return {
       emails: new Set(users.map(u => u.email.toLowerCase())),
       usernames: new Set(users.map(u => (u.username || '').toLowerCase())),
+      straddles: (email: string) => !!currentCompany && directory.wouldStraddle(email, currentCompany.id),
     };
   };
 

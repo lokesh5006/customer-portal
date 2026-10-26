@@ -8,16 +8,15 @@ import { Input } from '@/components/ui/input';
 import {
   ListingPageHeader, DataTable, DataTableColumn, PaginationControls, SortableHeader, SortState,
 } from '@/components/listing';
-import {
-  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
-} from '@/components/ui/dropdown-menu';
 import { useApp, Invoice } from '@/contexts/AppContext';
 import { useToast } from '@/hooks/use-toast';
-import { FileText, Eye, CreditCard, Download, MoreVertical, RefreshCw, Search } from 'lucide-react';
+import { FileText, Download, RefreshCw, Search, Clipboard, AlertCircle, Package } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { RenewalFlyout } from '@/components/billing/RenewalFlyout';
 import { formatCurrency } from '@/lib/format';
+import { invoiceBillTo } from '@/lib/billTo';
+import { BillToBlock } from '@/components/billing/BillToBlock';
 import { cn } from '@/lib/utils';
 
 const formatShortDate = (iso: string) => {
@@ -82,11 +81,21 @@ const StatusPill = ({ inv, termsLabel }: { inv: Invoice; termsLabel: string }) =
 export const BillingPage = () => {
   const navigate = useNavigate();
   const location = useLocation();
-  const { getCompanyInvoices, getCompanyConfig } = useApp();
+  const { getCompanyInvoices, getCompanyConfig, getCompanySubscriptions, currentCompany } = useApp();
   const { toast } = useToast();
   const invoices = getCompanyInvoices();
   const config = getCompanyConfig();
   const termsLabel = config.terms || 'Net 30';
+
+  const productCount = getCompanySubscriptions()
+    .filter(s => s.status === 'active')
+    .reduce((a, s) => a + s.products.length, 0);
+  const unpaidInvoices = invoices.filter(i => i.status !== 'paid');
+  const outstanding = unpaidInvoices.reduce((a, i) => a + (i.balance ?? invoiceTotal(i)), 0);
+  const nextInvoice = [...unpaidInvoices].sort((a, b) => new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime())[0];
+  const lastPayment = [...invoices]
+    .filter(i => i.status === 'paid' && i.paidAt)
+    .sort((a, b) => new Date(b.paidAt!).getTime() - new Date(a.paidAt!).getTime())[0];
 
   const [searchQuery, setSearchQuery] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
@@ -215,57 +224,34 @@ export const BillingPage = () => {
     {
       key: 'status',
       header: <SortableHeader label="Status" sortKey="status" sort={sort} onSortChange={setSort} />,
+      render: (inv) => <StatusPill inv={inv} termsLabel={termsLabel} />,
+    },
+    {
+      key: 'actions',
+      header: 'Action',
+      className: 'text-right',
       render: (inv) => (
-        <div className="flex flex-wrap items-center gap-2">
-          <StatusPill inv={inv} termsLabel={termsLabel} />
-          {(inv.status === 'awaiting_payment' || inv.status === 'unpaid') && (
-            <Button size="sm" className="h-7 px-2" onClick={() => handlePay(inv)}>
-              Pay Now
-            </Button>
-          )}
-          {inv.status === 'overdue' && (
-            <Button size="sm" variant="destructive" className="h-7 px-2" onClick={() => handlePay(inv)}>
-              Pay Now
-            </Button>
+        <div className="flex items-center justify-end gap-2">
+          <Button
+            variant="outline"
+            size="icon"
+            className="h-8 w-8"
+            onClick={() => toast({ title: 'PDF download coming soon', description: inv.invoiceNumber })}
+          >
+            <Download className="h-4 w-4" />
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => { setSelectedInvoice(inv); setDetailsOpen(true); }}>
+            View Detail
+          </Button>
+          {isPayable(inv) && (
+            <Button size="sm" onClick={() => handlePay(inv)}>Pay Now</Button>
           )}
           {inv.status === 'upcoming' && inv.source === 'renewal' && (
-            <Button size="sm" variant="outline" className="h-7 px-2" onClick={() => handleRenew(inv)}>
+            <Button size="sm" variant="outline" onClick={() => handleRenew(inv)}>
               <RefreshCw className="h-3.5 w-3.5 mr-1" />Renew
             </Button>
           )}
         </div>
-      ),
-    },
-    {
-      key: 'actions',
-      header: '',
-      className: 'w-[50px] text-right',
-      render: (inv) => (
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon" className="h-8 w-8">
-              <MoreVertical className="h-4 w-4" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
-            <DropdownMenuItem onClick={() => { setSelectedInvoice(inv); setDetailsOpen(true); }}>
-              <Eye className="h-4 w-4 mr-2" />View Invoice
-            </DropdownMenuItem>
-            {isPayable(inv) && (
-              <DropdownMenuItem onClick={() => handlePay(inv)}>
-                <CreditCard className="h-4 w-4 mr-2" />Pay
-              </DropdownMenuItem>
-            )}
-            {inv.source === 'renewal' && (
-              <DropdownMenuItem onClick={() => handleRenew(inv)}>
-                <RefreshCw className="h-4 w-4 mr-2" />Renew
-              </DropdownMenuItem>
-            )}
-            <DropdownMenuItem onClick={() => toast({ title: 'PDF download coming soon', description: inv.invoiceNumber })}>
-              <Download className="h-4 w-4 mr-2" />Download PDF
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
       ),
     },
   ];
@@ -274,11 +260,56 @@ export const BillingPage = () => {
     <MainLayout>
       <div className="space-y-6">
         <ListingPageHeader
-          title="Invoices"
-          description="View and pay invoices for your subscription."
+          title="Invoices List"
+          description="View and manage all your invoices"
           showCompanyContext={false}
           secondaryAction={<Button variant="outline"><Download className="h-4 w-4 mr-2" />Export</Button>}
         />
+
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <Card className="p-4 flex items-center gap-3">
+            <div className="h-10 w-10 rounded-full bg-muted flex items-center justify-center shrink-0">
+              <FileText className="h-5 w-5 text-primary" />
+            </div>
+            <div>
+              <div className="text-xs text-muted-foreground">Next Invoice</div>
+              <div className="text-lg font-semibold">{nextInvoice ? formatCurrency(invoiceTotal(nextInvoice)) : '—'}</div>
+              <div className="text-xs text-primary">{nextInvoice ? `Due on ${formatShortDate(nextInvoice.dueDate)}` : 'No upcoming invoice'}</div>
+            </div>
+          </Card>
+          <Card className="p-4 flex items-center gap-3">
+            <div className="h-10 w-10 rounded-full bg-muted flex items-center justify-center shrink-0">
+              <Clipboard className="h-5 w-5 text-success" />
+            </div>
+            <div>
+              <div className="text-xs text-muted-foreground">Last Payment</div>
+              <div className="text-lg font-semibold">{lastPayment ? formatCurrency(invoiceTotal(lastPayment)) : '—'}</div>
+              <div className="text-xs text-success">{lastPayment ? `Paid on ${formatShortDate(lastPayment.paidAt!)}` : 'No payments yet'}</div>
+            </div>
+          </Card>
+          <Card className="p-4 flex items-center gap-3">
+            <div className="h-10 w-10 rounded-full bg-muted flex items-center justify-center shrink-0">
+              <AlertCircle className="h-5 w-5 text-destructive" />
+            </div>
+            <div>
+              <div className="text-xs text-muted-foreground">Outstanding</div>
+              <div className="text-lg font-semibold">{formatCurrency(outstanding)}</div>
+              <div className="text-xs text-destructive">
+                {unpaidInvoices.length} unpaid invoice{unpaidInvoices.length === 1 ? '' : 's'}
+              </div>
+            </div>
+          </Card>
+          <Card className="p-4 flex items-center gap-3">
+            <div className="h-10 w-10 rounded-full bg-muted flex items-center justify-center shrink-0">
+              <Package className="h-5 w-5 text-warning" />
+            </div>
+            <div>
+              <div className="text-xs text-muted-foreground">Products</div>
+              <div className="text-lg font-semibold">{productCount}</div>
+              <div className="text-xs text-warning">Active subscriptions</div>
+            </div>
+          </Card>
+        </div>
 
         {/* Search input — replaces the old SearchFilterCard with a simpler bar. */}
         <Card className="p-3">
@@ -339,6 +370,15 @@ export const BillingPage = () => {
                   <div className="col-span-2"><span className="text-muted-foreground">PO Number:</span> <span className="font-medium">{selectedInvoice.poNumber}</span></div>
                 )}
               </div>
+              {(() => {
+                const billTo = invoiceBillTo(selectedInvoice, currentCompany);
+                return billTo && (
+                  <div className="text-sm">
+                    <p className="text-xs text-muted-foreground mb-1">Bill To</p>
+                    <BillToBlock billTo={billTo} />
+                  </div>
+                );
+              })()}
               <Table>
                 <TableHeader>
                   <TableRow>

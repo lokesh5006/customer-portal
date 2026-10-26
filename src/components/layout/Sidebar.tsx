@@ -1,11 +1,12 @@
+import { useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import {
+  Building2,
   LayoutDashboard,
   Users,
   CreditCard,
   Download,
   HelpCircle,
-  LogOut,
   Newspaper,
   FileText,
   FileSignature,
@@ -14,7 +15,7 @@ import {
 } from 'lucide-react';
 import { useApp, Role } from '@/contexts/AppContext';
 import { cn } from '@/lib/utils';
-import { Button } from '@/components/ui/button';
+import { openProfileDrawer } from '@/lib/profileDrawer';
 
 interface NavItem {
   label: string;
@@ -26,11 +27,11 @@ interface NavItem {
 const navItems: NavItem[] = [
   { label: 'Dashboard', icon: LayoutDashboard, path: '/dashboard', requiredRoles: ['account_owner', 'billing_admin', 'license_admin', 'registered_contact'] },
   { label: 'Subscriptions', icon: CreditCard, path: '/subscriptions', requiredRoles: ['account_owner', 'billing_admin', 'license_admin'] },
+  { label: 'Invoices', icon: FileText, path: '/invoices', requiredRoles: ['account_owner', 'billing_admin'] },
+  { label: 'Quotes', icon: FileSignature, path: '/quotes', requiredRoles: ['account_owner', 'billing_admin'] },
   { label: 'Users & Contacts', icon: Users, path: '/users-contacts', requiredRoles: ['account_owner', 'billing_admin', 'license_admin', 'registered_contact'] },
   { label: 'Product Downloads & Links', icon: Download, path: '/downloads', requiredRoles: ['account_owner', 'billing_admin', 'license_admin', 'registered_contact'] },
   { label: 'DataNet', icon: Database, path: '/datanet', requiredRoles: ['account_owner', 'billing_admin', 'license_admin', 'registered_contact'] },
-  { label: 'Invoices', icon: FileText, path: '/invoices', requiredRoles: ['account_owner', 'billing_admin'] },
-  { label: 'Quotes', icon: FileSignature, path: '/quotes', requiredRoles: ['account_owner', 'billing_admin'] },
   { label: 'Support', icon: HelpCircle, path: '/support', requiredRoles: ['account_owner', 'billing_admin', 'license_admin', 'registered_contact'] },
   { label: 'News', icon: Newspaper, path: '/news', requiredRoles: ['account_owner', 'billing_admin', 'license_admin', 'registered_contact'] },
   { label: 'Admin Tool', icon: ShieldCheck, path: '/admin', requiredRoles: ['account_owner', 'license_admin'] },
@@ -39,15 +40,11 @@ const navItems: NavItem[] = [
 export const Sidebar = () => {
   const navigate = useNavigate();
   const location = useLocation();
-  const { hasAccess, logout, isFirstTimeCustomer, hasSentQuote, hasDeclinedQuote, isReadOnlyMode } = useApp();
+  const { hasAccess, isFirstTimeCustomer, hasSentQuote, hasDeclinedQuote, isReadOnlyMode } = useApp();
+  const [expanded, setExpanded] = useState(false);
 
   const handleNav = (path: string) => {
     navigate(path);
-  };
-
-  const handleLogout = () => {
-    logout();
-    navigate('/');
   };
 
   let visibleItems = navItems.filter(item => hasAccess(item.requiredRoles));
@@ -66,41 +63,59 @@ export const Sidebar = () => {
     }
   }
 
-  return (
-    <aside className="w-64 border-r bg-background h-[calc(100vh-4rem)] sticky top-16 flex flex-col">
-      <nav className="flex-1 p-2 space-y-0.5 overflow-y-auto">
-        {visibleItems.map(item => {
-          const isActive = location.pathname === item.path;
-          return (
-            <Button
-              key={item.path}
-              variant="ghost"
-              className={cn(
-                'w-full justify-start gap-2.5 h-9 text-sm font-medium transition-colors relative',
-                isActive
-                  ? 'bg-primary/10 text-primary hover:bg-primary/10 hover:text-primary before:absolute before:left-0 before:top-1.5 before:bottom-1.5 before:w-0.5 before:rounded-full before:bg-primary'
-                  : 'text-foreground/80 hover:bg-muted/50 hover:text-foreground'
-              )}
-              onClick={() => handleNav(item.path)}
-            >
-              <item.icon className="h-[18px] w-[18px]" />
-              {item.label}
-            </Button>
-          );
-        })}
-      </nav>
+  const rowClass = (active: boolean) => cn(
+    'flex items-center gap-3 h-10 mx-2 px-[11px] rounded-md shrink-0 transition-colors overflow-hidden',
+    active
+      ? 'bg-primary/10 text-primary'
+      : 'text-foreground/70 hover:bg-muted/60 hover:text-foreground',
+  );
 
-      <div className="p-2 border-t">
-        <Button
-          variant="ghost"
-          className="w-full justify-start gap-2.5 h-9 text-sm text-muted-foreground hover:bg-muted/50 hover:text-destructive"
-          onClick={handleLogout}
+  return (
+    <>
+      {/* Spacer reserves the collapsed rail's width in the page's flex layout —
+          the actual sidebar below is fixed-positioned so it can expand over the
+          page content on hover without shifting anything else. */}
+      <div className="w-16 shrink-0" aria-hidden="true" />
+
+      <aside
+        onMouseEnter={() => setExpanded(true)}
+        onMouseLeave={() => setExpanded(false)}
+        className={cn(
+          'fixed left-0 top-16 z-40 h-[calc(100vh-4rem)] border-r bg-background flex flex-col py-3 gap-1',
+          'transition-[width] duration-150 ease-in-out overflow-hidden',
+          expanded ? 'w-56 shadow-lg' : 'w-16',
+        )}
+      >
+        <button
+          type="button"
+          onClick={() => openProfileDrawer('profile')}
+          className={rowClass(false)}
+          aria-label="Company profile"
         >
-          <LogOut className="h-[18px] w-[18px]" />
-          Sign Out
-        </Button>
-        <p className="text-[10px] text-muted-foreground/60 text-center mt-1.5">Customer Portal · v14</p>
-      </div>
-    </aside>
+          <Building2 className="h-[18px] w-[18px] shrink-0" />
+          {expanded && <span className="text-sm whitespace-nowrap">Company profile</span>}
+        </button>
+
+        <div className="mx-4 border-t my-1" />
+
+        <nav className="flex-1 flex flex-col gap-1 overflow-y-auto overflow-x-hidden">
+          {visibleItems.map(item => {
+            const isActive = location.pathname === item.path;
+            return (
+              <button
+                type="button"
+                key={item.path}
+                onClick={() => handleNav(item.path)}
+                className={rowClass(isActive)}
+                aria-label={item.label}
+              >
+                <item.icon className="h-[18px] w-[18px] shrink-0" />
+                {expanded && <span className="text-sm whitespace-nowrap">{item.label}</span>}
+              </button>
+            );
+          })}
+        </nav>
+      </aside>
+    </>
   );
 };

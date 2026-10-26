@@ -24,6 +24,8 @@ import {
 } from '@/components/subscriptions/QuoteDialogs';
 import { AddProductDrawer } from '@/components/subscriptions/AddProductDrawer';
 import { EditBillingDetailsDialog } from '@/components/subscriptions/EditBillingDetailsDialog';
+import { BillToBlock, BilledThroughNote } from '@/components/billing/BillToBlock';
+import { companyBillTo, invoiceBillTo } from '@/lib/billTo';
 import { RenewalFlyout } from '@/components/billing/RenewalFlyout';
 import { useReadOnlyGuard } from '@/hooks/useReadOnlyGuard';
 import { formatCurrency } from '@/lib/format';
@@ -467,7 +469,7 @@ export const SubscriptionDetailPage = () => {
               <Card className="group">
                 <CardHeader className="pb-3 flex flex-row items-center justify-between">
                   <CardTitle className="text-base flex items-center gap-2"><Building2 className="h-4 w-4" />Billing Details</CardTitle>
-                  {canEditBilling && (
+                  {canEditBilling && !currentCompany?.billedThrough && (
                     <Button
                       variant="ghost" size="icon" className="h-7 w-7 opacity-0 group-hover:opacity-100 transition-opacity"
                       onClick={() => setEditBillingOpen(true)} aria-label="Edit billing details"
@@ -477,16 +479,33 @@ export const SubscriptionDetailPage = () => {
                   )}
                 </CardHeader>
                 <CardContent className="space-y-3 text-sm">
+                  {currentCompany?.billedThrough && <BilledThroughNote parentName={currentCompany.billedThrough.name} />}
                   <div>
                     <p className="text-xs text-muted-foreground">Company Name</p>
                     <p className="font-medium">{currentCompany?.name}</p>
                   </div>
-                  <div>
-                    <p className="text-xs text-muted-foreground">Address</p>
-                    {addressLines.length > 0
-                      ? addressLines.map((l, i) => <p key={i}>{l}</p>)
-                      : <p className="text-muted-foreground">Not set</p>}
-                  </div>
+                  {currentCompany?.billedThrough ? (
+                    <div>
+                      <p className="text-xs text-muted-foreground">Bill To</p>
+                      <BillToBlock billTo={companyBillTo(currentCompany)} />
+                    </div>
+                  ) : (
+                    <>
+                      {(addr?.billToName || addr?.billToAttention) && (
+                        <div>
+                          <p className="text-xs text-muted-foreground">Bill To</p>
+                          <p className="font-medium">{addr.billToName || currentCompany?.name}</p>
+                          {addr.billToAttention && <p>Attn: {addr.billToAttention}</p>}
+                        </div>
+                      )}
+                      <div>
+                        <p className="text-xs text-muted-foreground">Address</p>
+                        {addressLines.length > 0
+                          ? addressLines.map((l, i) => <p key={i}>{l}</p>)
+                          : <p className="text-muted-foreground">Not set</p>}
+                      </div>
+                    </>
+                  )}
                   <div>
                     <p className="text-xs text-muted-foreground">Company Contact(s)</p>
                     <p>{contacts.length > 0 ? contacts.map(c => `${c.firstName} ${c.lastName}`).join(', ') : 'Not set'}</p>
@@ -524,7 +543,7 @@ export const SubscriptionDetailPage = () => {
  * ========================================================== */
 const SubscriptionInvoicesTab = ({ subscriptionId }: { subscriptionId: string }) => {
   const navigate = useNavigate();
-  const { getCompanyInvoices, getCompanyConfig } = useApp();
+  const { getCompanyInvoices, getCompanyConfig, currentCompany } = useApp();
   const { toast } = useToast();
   const invoices = getCompanyInvoices().filter(i => i.subscriptionId === subscriptionId);
   const termsLabel = getCompanyConfig().terms || 'Net 30';
@@ -619,6 +638,15 @@ const SubscriptionInvoicesTab = ({ subscriptionId }: { subscriptionId: string })
           <DialogHeader><DialogTitle>Invoice {detail?.invoiceNumber}</DialogTitle></DialogHeader>
           {detail && (
             <div className="space-y-3">
+              {(() => {
+                const billTo = invoiceBillTo(detail, currentCompany);
+                return billTo && (
+                  <div className="text-sm">
+                    <p className="text-xs text-muted-foreground mb-1">Bill To</p>
+                    <BillToBlock billTo={billTo} />
+                  </div>
+                );
+              })()}
               <Table>
                 <TableHeader>
                   <TableRow>

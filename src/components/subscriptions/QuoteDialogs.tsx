@@ -41,7 +41,8 @@ import {
 import { calculateProratedAdd } from '@/lib/proration';
 import { useToast } from '@/hooks/use-toast';
 import { formatCurrency } from '@/lib/format';
-import { Plus, Minus, Info, ArrowLeft, AlertCircle, CreditCard, Landmark, UserPlus, UserMinus, Search, ArrowUp, ArrowDown, MoreVertical, RotateCw } from 'lucide-react';
+import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/table';
+import { Plus, Minus, Info, ArrowLeft, AlertCircle, CreditCard, Landmark, UserPlus, UserMinus, Search, ArrowUp, ArrowDown, MoreVertical, RotateCw, Printer, Package, Check } from 'lucide-react';
 
 /* ============================================================
  * Payment Method Picker (radio cards)
@@ -86,12 +87,13 @@ const PaymentMethodPicker = ({
  *   • Pending payment    — seats added mid-cycle whose invoice is not yet paid. They
  *                          count toward the renewal but are not assignable until paid.
  *   • New seats          — the seat count committed for the NEXT renewal. Editable in
- *                          both directions via the stepper; Apply commits immediately
- *                          to product.renewalSeatCount (no separate Save step).
+ *                          both directions via the stepper; committed to
+ *                          product.renewalSeatCount by Save changes (v28 — no Apply).
  *   • Currently assigned — live count of active assignments.
  *
- * All actions (assign / unassign / mark-renewing / Apply) commit to AppContext
- * immediately. Because callers pass a snapshot product/subscription, the drawer
+ * v28: Apply is gone. The Current Seats stepper live-syncs pending seats (floored at the
+ * paid count); Save changes is the single commit action and is gated on validity only.
+ * Assign / unassign / mark-renewing commit to AppContext immediately. Because callers pass a snapshot product/subscription, the drawer
  * re-derives the LIVE product/subscription from context by id so every render
  * reflects current state (fixes the v17 prefill + state-inconsistency bugs).
  * ========================================================== */
@@ -124,7 +126,10 @@ export const ManageLicensesDrawer = ({
     unassignUserFromPendingSeat,
     finalizePendingInvoice,
     discardPendingInvoice,
+    adjustPendingSeats,
     getAvailablePaymentMethods,
+    getCompanyConfig,
+    submitSeatRequest,
     subscriptions,
     licenses,
     invoices,
@@ -142,6 +147,14 @@ export const ManageLicensesDrawer = ({
   // is unrestricted. License Admin has canManageSeats === false already, gating both tabs.
   const isOwner = hasAccess(['account_owner']);
   const isFlooredBillingAdmin = canManageSeats && !isOwner;
+  // v27 — a "pure" Billing Admin (no license_admin, no account_owner) sees Users & Contacts
+  // but every Assign/Unassign button is disabled. A Billing Admin who ALSO holds
+  // license_admin keeps full access via that role, unaffected.
+  const isPureBillingAdmin = hasAccess(['billing_admin']) && !hasAccess(['license_admin']) && !isOwner;
+  // A "pure" License Admin (no billing_admin, no account_owner) gets assign/unassign only —
+  // no seat-count or pricing controls at all (US-SP11-SB-004), so the Current Seats/At
+  // Renewal tabs are hidden entirely rather than merely disabled.
+  const isPureLicenseAdmin = hasAccess(['license_admin']) && !hasAccess(['billing_admin']) && !isOwner;
 
   // Re-derive LIVE product/subscription from context (props are a stale snapshot).
   const liveSub = useMemo(
@@ -180,6 +193,12 @@ export const ManageLicensesDrawer = ({
     [productLicenses],
   );
 
+  // v27 — VIP/negotiated-pricing account: hide all pricing, swap Apply for a Request flow
+  // that files a ticket instead of mutating seats. hasPendingSeatRequest locks both tabs'
+  // seat-count controls (not Users & Contacts) until back office resolves the request.
+  const isVip = !!getCompanyConfig(liveSub?.companyId).hasNegotiatedPricing;
+  const hasPendingSeatRequest = !!liveProduct?.hasPendingSeatRequest;
+
   // ---- Derived counts (all from live context) ----
   const licenseCount = liveProduct?.licenseCount ?? 0;          // total seats incl. added-now
   const pendingTotalCount = pendingSeats.length;
@@ -188,13 +207,25 @@ export const ManageLicensesDrawer = ({
   // A free ACTIVE seat exists when active-assigned is below the non-pending capacity.
   const freeActiveSeats = Math.max(0, (licenseCount - pendingTotalCount) - activeAssignedCount);
   const renewalCount = liveProduct?.renewalSeatCount ?? licenseCount;       // committed renewal target
-  const initialRenewalCount = renewalCount;
+  // v28 — seats already paid for (pending-payment seats excluded). The Current Seats
+  // stepper never goes below this: no mid-cycle reduction of paid seats.
+  const paidSeatCount = licenseCount - pendingTotalCount;
 
   // ---- v26 — two independent tracks, each with its own stepper ----
   type SeatTab = 'current' | 'renewal';
   const [activeTab, setActiveTab] = useState<SeatTab>('current');
+  // v28 — Current Seats target. Non-VIP: live-synced to pending seats (see effect below),
+  // so new seats are assignable immediately — there is no Apply step.
   const [currentStepperInput, setCurrentStepperInput] = useState(licenseCount);
-  const [renewalStepperInput, setRenewalStepperInput] = useState(initialRenewalCount);
+  // v28 — At Renewal is a draft committed by Save changes. Stored as an offset from the
+  // committed renewal count so it survives renewal-count bumps from Current Seats edits.
+  const [renewalDraftDelta, setRenewalDraftDelta] = useState(0);
+  const renewalStepperInput = renewalCount + renewalDraftDelta;
+  const setRenewalStepperInput = (next: number | ((v: number) => number)) =>
+    setRenewalDraftDelta(d => {
+      const cur = renewalCount + d;
+      return (typeof next === 'function' ? next(cur) : next) - renewalCount;
+    });
 
   // ---- Dialog / overlay state ----
   const [overlayOpen, setOverlayOpen] = useState(false);
@@ -203,38 +234,28 @@ export const ManageLicensesDrawer = ({
   const [unassignTarget, setUnassignTarget] = useState<AssignedRecord | null>(null);
   const [assignWarningUser, setAssignWarningUser] = useState<User | null>(null);
   // v20 — shopping-cart footer state.
-  const [dirty, setDirty] = useState(false);                 // any committed in-session change
   const [payOpen, setPayOpen] = useState(false);             // PaymentMethodDialog
   const [payMethod, setPayMethod] = useState<PaymentMethod>('pay_immediately');
   const [discardConfirmOpen, setDiscardConfirmOpen] = useState(false);
+  // v28 — live sync is armed only after the open/product reset below has landed, so a
+  // stale stepper value from a previous session can never add or release seats.
+  const [syncedProductId, setSyncedProductId] = useState<string | null>(null);
 
-  // Section A2/D3 — full reset ONLY on open / product switch. v22: this effect must NOT
-  // depend on initialRenewalCount — Apply commits update the live renewal count, and a
-  // reset here was wiping `dirty` right after the handlers set it (Save never enabled).
+  // Section A2/D3 — full reset ONLY on open / product switch.
   useEffect(() => {
+    setSyncedProductId(open ? liveProduct?.id ?? null : null);
     setActiveTab('current');
     setCurrentStepperInput(licenseCount);
-    setRenewalStepperInput(initialRenewalCount);
+    setRenewalDraftDelta(0);
     setOverlayOpen(false);
     setOverlaySelected(new Set());
     setReduceConfirmOpen(false);
     setUnassignTarget(null);
     setAssignWarningUser(null);
-    setDirty(false);
     setPayOpen(false);
     setDiscardConfirmOpen(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, liveProduct?.id]);
-
-  // Re-snap each stepper to its committed baseline whenever the live counts change (e.g.
-  // after an Apply commits) — WITHOUT resetting the in-session dirty flag, so Save changes
-  // stays enabled after a per-tab edit.
-  useEffect(() => {
-    setCurrentStepperInput(licenseCount);
-  }, [licenseCount]);
-  useEffect(() => {
-    setRenewalStepperInput(initialRenewalCount);
-  }, [initialRenewalCount]);
 
   // ---- Pricing helpers ----
   const catalog = liveProduct ? getCatalogProduct(liveProduct.name) : undefined;
@@ -279,31 +300,61 @@ export const ManageLicensesDrawer = ({
   const availableMethods = getAvailablePaymentMethods(liveSub?.companyId);
 
   // ============================================================
-  // v26 — CURRENT SEATS tab (immediate, increase-only)
+  // v26 — CURRENT SEATS tab (immediate, increase-only below the paid count)
   // ============================================================
+  // VIP: the stepper is a draft for the Request flow (no seats are created).
   const currentDelta = Math.max(0, currentStepperInput - licenseCount);
-  const currentProratedToday = prorate(currentDelta);
+  // Non-VIP: seats are live-synced, so the order summary reflects the pending invoice.
+  const currentNewSeats = isVip ? currentDelta : pendingTotalCount;
+  const currentProratedToday = prorate(currentNewSeats);
   const currentOrderSubtotal = currentProratedToday;
   const currentOrderTax = round2(currentOrderSubtotal * TAX_RATE);
   const currentOrderTotal = round2(currentOrderSubtotal + currentOrderTax);
-  const currentApplyDisabled = !canManageSeats || currentDelta === 0;
+  const currentRequestDisabled = !canManageSeats || currentDelta === 0 || hasPendingSeatRequest;
 
-  const clampCurrentStepper = (v: number) => Math.max(licenseCount, v);
+  const currentFloor = isVip ? licenseCount : paidSeatCount;
+  const clampCurrentStepper = (v: number) => Math.max(currentFloor, v);
+  useEffect(() => {
+    setCurrentStepperInput(v => Math.max(currentFloor, v));
+  }, [currentFloor]);
 
-  const handleApplyCurrent = () => {
-    if (currentApplyDisabled || !liveSub || !liveProduct) return;
-    // v20 — add the seats now (provisional). The drawer STAYS open so the admin can
-    // pre-assign users; the footer Pay button is where they pick how to pay.
-    const res = addSeatsPendingPayment({
+  // v28 — live sync (replaces Apply): grow/shrink pending seats to match the stepper.
+  // Only EMPTY pending seats are released; seats holding pre-assigned users stay until
+  // those users are unassigned — at which point this re-runs and releases them.
+  useEffect(() => {
+    if (!open || isVip || !canManageSeats || hasPendingSeatRequest || !liveSub || !liveProduct) return;
+    if (syncedProductId !== liveProduct.id) return;
+    if (currentStepperInput > licenseCount) {
+      adjustPendingSeats({ subscriptionId: liveSub.id, productId: liveProduct.id, delta: currentStepperInput - licenseCount });
+    } else if (currentStepperInput < licenseCount && (emptyPendingSeats.length > 0 || freeActiveSeats > 0)) {
+      // The context releases only what it safely can (empty pending seats, or pending
+      // users moved onto freed paid seats); anything left is the invalid state below.
+      adjustPendingSeats({ subscriptionId: liveSub.id, productId: liveProduct.id, delta: currentStepperInput - licenseCount });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, syncedProductId, isVip, canManageSeats, hasPendingSeatRequest, currentStepperInput, licenseCount, emptyPendingSeats.length, freeActiveSeats]);
+
+  // v28 — invalid in-progress reduction: target is below the number of assigned users.
+  // Save changes stays disabled until enough users are unassigned (clears automatically).
+  const currentInvalid = !isVip && currentStepperInput < assignedCount;
+  const usersToUnassign = Math.max(0, assignedCount - currentStepperInput);
+  // PLACEHOLDER COPY — pending final client sign-off.
+  const currentInvalidMessage = canAssign && !isPureBillingAdmin
+    ? `Unassign ${usersToUnassign} user${usersToUnassign === 1 ? '' : 's'} in Users & Contacts to reduce to ${currentStepperInput} seat${currentStepperInput === 1 ? '' : 's'}.`
+    : `${usersToUnassign} user${usersToUnassign === 1 ? '' : 's'} must be unassigned by a License Admin or Account Owner to reduce to ${currentStepperInput} seat${currentStepperInput === 1 ? '' : 's'}.`;
+
+  // v27 — VIP path: file a request instead of billing. No seat mutation, no invoice.
+  const handleRequestCurrent = () => {
+    if (currentRequestDisabled || !liveSub || !liveProduct) return;
+    const ok = submitSeatRequest({
       subscriptionId: liveSub.id,
       productId: liveProduct.id,
-      additionalSeats: currentDelta,
+      description: `Customer requested +${currentDelta} seat${currentDelta === 1 ? '' : 's'} on ${liveProduct.name}, effective immediately.`,
     });
-    if (res) {
-      setDirty(true);
+    if (ok) {
       toast({
-        title: `${currentDelta} seat${currentDelta === 1 ? '' : 's'} added.`,
-        description: 'Assign users below, then choose how to pay.',
+        title: 'Request submitted.',
+        description: "This account has custom pricing. Our team will follow up with you directly.",
       });
     }
   };
@@ -325,26 +376,65 @@ export const ManageLicensesDrawer = ({
 
   const renewalDelta = renewalStepperInput - renewalCount;
   const renewalNewAnnualTotal = renewalStepperInput * pricePerSeatPerYear;
-  const renewalApplyDisabled = !canManageSeats || renewalDelta === 0;
+  const renewalRequestDisabled = !canManageSeats || renewalDelta === 0 || hasPendingSeatRequest;
   // Show the "no refund" note while actively reducing OR when a committed renewal
   // reduction is standing (renewal below the current paid count, no active edit).
   const showReductionNote = renewalDelta < 0 || (renewalDelta === 0 && renewalCount < licenseCount);
   const overlayRequired = Math.max(0, assignedCount - renewalStepperInput - alreadyExpiringCount);
 
-  const handleApplyRenewal = () => {
-    if (renewalApplyDisabled || !liveSub || !liveProduct) return;
-    if (renewalDelta > 0) {
-      updateRenewalSeatCount(liveSub.id, liveProduct.id, renewalStepperInput);
-      setDirty(true);
-      toast({
-        title: 'Renewal count updated.',
-        description: `${renewalDelta} seat${renewalDelta === 1 ? '' : 's'} will be added at renewal on ${renewalDateLabel}.`,
-      });
-    } else if (overlayRequired > 0) {
-      setOverlaySelected(new Set());
-      setOverlayOpen(true);
+  // ============================================================
+  // v28 — SAVE CHANGES (single commit action; Apply removed from both tabs)
+  // ============================================================
+  // Enabled on validity only — never on whether new seats have been assigned.
+  const saveDisabled = currentInvalid;
+
+  // Last step of Save: hand off to the existing Pay flow if seats were added, else close.
+  const finishSave = () => {
+    if (pendingInvoice && !isVip) {
+      setPayMethod(availableMethods[0] ?? 'pay_immediately');
+      setPayOpen(true);
     } else {
-      setReduceConfirmOpen(true);
+      onOpenChange(false);
+    }
+  };
+
+  const handleSave = () => {
+    if (saveDisabled || !liveSub || !liveProduct) return;
+    // Commit the At Renewal draft (non-VIP; VIP changes go through Request instead).
+    if (!isVip && canManageSeats && !hasPendingSeatRequest && renewalDelta !== 0) {
+      if (renewalDelta > 0) {
+        updateRenewalSeatCount(liveSub.id, liveProduct.id, renewalStepperInput);
+        setRenewalDraftDelta(0);
+        toast({
+          title: 'Renewal count updated.',
+          description: `${renewalDelta} seat${renewalDelta === 1 ? '' : 's'} will be added at renewal on ${renewalDateLabel}.`,
+        });
+      } else if (overlayRequired > 0) {
+        // Unchanged "Expire at renewal" overlay; its Confirm continues via finishSave.
+        setOverlaySelected(new Set());
+        setOverlayOpen(true);
+        return;
+      } else {
+        setReduceConfirmOpen(true);
+        return;
+      }
+    }
+    finishSave();
+  };
+
+  // v27 — VIP path: file a request instead of scheduling/billing. No seat mutation.
+  const handleRequestRenewal = () => {
+    if (renewalRequestDisabled || !liveSub || !liveProduct) return;
+    const amount = Math.abs(renewalDelta);
+    const description = renewalDelta > 0
+      ? `Customer requested +${amount} seat${amount === 1 ? '' : 's'} on ${liveProduct.name}, effective at renewal on ${renewalDateLabel}.`
+      : `Customer requested to reduce seats by ${amount} on ${liveProduct.name}, effective at renewal on ${renewalDateLabel}.`;
+    const ok = submitSeatRequest({ subscriptionId: liveSub.id, productId: liveProduct.id, description });
+    if (ok) {
+      toast({
+        title: 'Request submitted.',
+        description: "This account has custom pricing. Our team will follow up with you directly.",
+      });
     }
   };
 
@@ -353,12 +443,13 @@ export const ManageLicensesDrawer = ({
   const handleReduceConfirm = () => {
     if (!liveSub || !liveProduct) return;
     updateRenewalSeatCount(liveSub.id, liveProduct.id, renewalStepperInput);
+    setRenewalDraftDelta(0);
     setReduceConfirmOpen(false);
-    setDirty(true);
     toast({
       title: 'Renewal count updated.',
       description: 'Reducing renewal seat count. No refund issued for current cycle.',
     });
+    finishSave();
   };
 
   // ---- Per-user "expire at renewal" overlay (reduce below assigned) — single mode,
@@ -377,13 +468,14 @@ export const ManageLicensesDrawer = ({
     if (!overlayMatched || !liveSub || !liveProduct) return;
     markLicensesExpiringAtRenewal(liveSub.id, liveProduct.id, Array.from(overlaySelected), true);
     updateRenewalSeatCount(liveSub.id, liveProduct.id, renewalStepperInput);
+    setRenewalDraftDelta(0);
     setOverlayOpen(false);
     setOverlaySelected(new Set());
-    setDirty(true);
     toast({
       title: 'Renewal change applied.',
       description: 'Reducing renewal seat count. No refund issued for current cycle.',
     });
+    finishSave();
   };
 
   // ============================================================
@@ -405,7 +497,6 @@ export const ManageLicensesDrawer = ({
       toast({ title: 'No available seats', description: 'Add seats before assigning more users.', variant: 'destructive' });
       return;
     }
-    setDirty(true);
     if (asExpiring) {
       // Tag the newly-created license as expiring at renewal. Licenses in this model
       // are keyed by (userId, subscriptionId, productId) — there are no license ids.
@@ -479,7 +570,6 @@ export const ManageLicensesDrawer = ({
     } else {
       unassignLicense(u.id, liveSub.id, liveProduct.id);
     }
-    setDirty(true);
     toast({ title: `Unassigned ${u.firstName} ${u.lastName}.`, description: 'Seat is available for reassignment.' });
     setUnassignTarget(null);
   };
@@ -490,7 +580,6 @@ export const ManageLicensesDrawer = ({
     // (we just decided to keep this seat).
     markLicensesExpiringAtRenewal(liveSub.id, liveProduct.id, [rec.user.id], false);
     updateRenewalSeatCount(liveSub.id, liveProduct.id, renewalCount + 1);
-    setDirty(true);
     toast({
       title: 'Marked as renewing',
       description: `Seat will renew at ${renewalDateLabel}. Renewal count updated.`,
@@ -534,6 +623,7 @@ export const ManageLicensesDrawer = ({
   };
   const handleDiscard = () => {
     if (pendingInvoice) discardPendingInvoice(pendingInvoice.id);
+    setCurrentStepperInput(paidSeatCount);
     setDiscardConfirmOpen(false);
     onOpenChange(false);
   };
@@ -573,9 +663,19 @@ export const ManageLicensesDrawer = ({
       </div>
       {canAssign && (
         <div className="flex flex-col items-end gap-1.5 shrink-0">
-          <Button size="sm" variant="outline" className="h-7" onClick={() => setUnassignTarget(rec)}>
-            <UserMinus className="h-3.5 w-3.5 mr-1" />Unassign
-          </Button>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span tabIndex={0}>
+                <Button size="sm" variant="outline" className={`h-7 ${isPureBillingAdmin ? 'pointer-events-none' : ''}`}
+                  disabled={isPureBillingAdmin} onClick={() => setUnassignTarget(rec)}>
+                  <UserMinus className="h-3.5 w-3.5 mr-1" />Unassign
+                </Button>
+              </span>
+            </TooltipTrigger>
+            {isPureBillingAdmin && (
+              <TooltipContent>Only License Admin or Account Owner can assign or unassign licenses.</TooltipContent>
+            )}
+          </Tooltip>
           {expiring && canRenewalStatus && (
             <Button size="sm" variant="outline" className="h-7" onClick={() => handleMarkRenewing(rec)}>
               <RotateCw className="h-3.5 w-3.5 mr-1" />Mark as renewing
@@ -590,7 +690,12 @@ export const ManageLicensesDrawer = ({
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent side="right" className="w-full sm:max-w-2xl flex flex-col p-0">
         <SheetHeader className="px-5 pt-5 pb-3 space-y-1">
-          <SheetTitle className="text-lg">Manage Licenses</SheetTitle>
+          <div className="flex items-center gap-2">
+            <SheetTitle className="text-lg">Manage Licenses</SheetTitle>
+            {isVip && (
+              <Badge variant="outline" className="bg-primary/10 text-primary border-primary/20">Custom Pricing</Badge>
+            )}
+          </div>
           <SheetDescription>{liveProduct.name} · {liveSub.planType}</SheetDescription>
         </SheetHeader>
 
@@ -615,7 +720,9 @@ export const ManageLicensesDrawer = ({
                 <div>
                   <div className="text-xs text-primary-foreground/70">Current Seats</div>
                   <div className="text-lg font-bold">{licenseCount}</div>
-                  <div className="text-[11px] text-primary-foreground/60">{formatCurrency(pricePerSeatPerYear)}/seat/yr</div>
+                  <div className="text-[11px] text-primary-foreground/60">
+                    {isVip ? 'Custom pricing' : `${formatCurrency(pricePerSeatPerYear)}/seat/yr`}
+                  </div>
                 </div>
                 <div>
                   <div className="text-xs text-primary-foreground/70">Assigned</div>
@@ -631,7 +738,9 @@ export const ManageLicensesDrawer = ({
             </div>
           </div>
 
-          {/* v26 — Current Seats / At Renewal tabs */}
+          {/* v26 — Current Seats / At Renewal tabs — hidden for a pure License Admin,
+              who gets assign/unassign only, no seat-count or pricing controls. */}
+          {!isPureLicenseAdmin && (
           <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as SeatTab)}>
             <TabsList className="grid w-full grid-cols-2">
               <TabsTrigger value="current">Current Seats</TabsTrigger>
@@ -640,146 +749,200 @@ export const ManageLicensesDrawer = ({
 
             {/* ---- Current Seats panel (immediate, increase-only) ---- */}
             <TabsContent value="current" className="space-y-4 pt-2">
-              <div>
-                <h3 className="text-sm font-medium text-center">Add seats now</h3>
-                <TooltipProvider>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <div className="mt-3 flex items-center justify-center gap-2">
-                        <Button variant="default" size="icon" disabled={!canManageSeats || currentStepperInput <= licenseCount}
-                          onClick={() => setCurrentStepperInput(v => clampCurrentStepper(v - 1))} aria-label="Decrease current seats">
-                          <Minus className="h-4 w-4" />
-                        </Button>
-                        <Input type="number" min={licenseCount} value={currentStepperInput} disabled={!canManageSeats}
-                          onChange={(e) => setCurrentStepperInput(clampCurrentStepper(parseInt(e.target.value) || licenseCount))}
-                          className="h-10 w-20 text-center text-lg font-semibold" />
-                        <Button variant="default" size="icon" disabled={!canManageSeats}
-                          onClick={() => setCurrentStepperInput(v => clampCurrentStepper(v + 1))} aria-label="Increase current seats">
-                          <Plus className="h-4 w-4" />
-                        </Button>
-                        <Button variant="default" className="ml-2" disabled={currentApplyDisabled} onClick={handleApplyCurrent}>
-                          Apply
-                        </Button>
-                      </div>
-                    </TooltipTrigger>
-                    {!canManageSeats && (
-                      <TooltipContent>Contact your Billing Admin to change seat counts.</TooltipContent>
+              {canManageSeats ? (
+                <>
+                  <div>
+                    <h3 className="text-sm font-medium text-center">Add seats now</h3>
+                    <TooltipProvider>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <div className="mt-3 flex items-center justify-center gap-2">
+                            <Button variant="default" size="icon" disabled={currentStepperInput <= currentFloor || hasPendingSeatRequest}
+                              onClick={() => setCurrentStepperInput(v => clampCurrentStepper(v - 1))} aria-label="Decrease current seats">
+                              <Minus className="h-4 w-4" />
+                            </Button>
+                            <Input type="number" min={currentFloor} value={currentStepperInput} disabled={hasPendingSeatRequest}
+                              onChange={(e) => setCurrentStepperInput(clampCurrentStepper(parseInt(e.target.value) || currentFloor))}
+                              aria-invalid={currentInvalid}
+                              aria-describedby={currentInvalid ? 'current-seats-error' : undefined}
+                              className={`h-10 w-20 text-center text-lg font-semibold ${currentInvalid ? 'border-destructive text-destructive focus-visible:ring-destructive' : ''}`} />
+                            <Button variant="default" size="icon" disabled={hasPendingSeatRequest}
+                              onClick={() => setCurrentStepperInput(v => clampCurrentStepper(v + 1))} aria-label="Increase current seats">
+                              <Plus className="h-4 w-4" />
+                            </Button>
+                            {/* v28 — Apply removed; VIP keeps its (unchanged) Request flow */}
+                            {isVip && (
+                              <Button variant="default" className="ml-2" disabled={currentRequestDisabled}
+                                onClick={handleRequestCurrent}>
+                                Request
+                              </Button>
+                            )}
+                          </div>
+                        </TooltipTrigger>
+                        {hasPendingSeatRequest && (
+                          <TooltipContent>A seat change request is already pending review. Our team will follow up with you.</TooltipContent>
+                        )}
+                      </Tooltip>
+                    </TooltipProvider>
+                    {currentInvalid && (
+                      <p id="current-seats-error" role="alert" className="mt-2 text-xs text-destructive text-center">
+                        {currentInvalidMessage}
+                      </p>
                     )}
-                  </Tooltip>
-                </TooltipProvider>
-                <p className="mt-2 text-xs text-muted-foreground text-center">
-                  Current seats only ever increase mid-cycle. To reduce seats, use the At Renewal tab.
-                </p>
-              </div>
+                    <p className="mt-2 text-xs text-muted-foreground text-center">
+                      Current seats only ever increase mid-cycle. To reduce seats, use the At Renewal tab.
+                    </p>
+                    {isVip && (
+                      <p className="mt-2 text-xs text-muted-foreground text-center">
+                        This account has custom pricing. Submitting this request will notify our team, and they'll follow up with you directly.
+                      </p>
+                    )}
+                  </div>
 
-              {currentDelta > 0 && (
-                <div className="rounded-lg border bg-muted/30 p-4 space-y-1.5">
-                  <div className="text-xs uppercase tracking-wide text-muted-foreground">Order Summary</div>
-                  <div className="flex justify-between text-sm">
-                    <span>{liveProduct.name} × {currentDelta}</span>
-                    <span className="font-medium">{formatCurrency(currentOrderSubtotal)}</span>
-                  </div>
-                  <div className="text-[11px] text-muted-foreground">
-                    Prorated for {daysRemaining} of 365 days
-                  </div>
-                  <div className="flex justify-between text-sm pt-1">
-                    <span className="text-muted-foreground">Subtotal</span>
-                    <span>{formatCurrency(currentOrderSubtotal)}</span>
-                  </div>
-                  <div className="flex justify-between text-sm">
-                    <span className="text-muted-foreground">Tax (7%)</span>
-                    <span>{formatCurrency(currentOrderTax)}</span>
-                  </div>
-                  <div className="flex justify-between text-base font-semibold pt-1.5 border-t">
-                    <span>Total Due</span>
-                    <span>{formatCurrency(currentOrderTotal)}</span>
-                  </div>
-                </div>
+                  {!isVip && currentNewSeats > 0 && (
+                    <div className="rounded-lg border bg-muted/30 p-4 space-y-1.5">
+                      <div className="text-xs uppercase tracking-wide text-muted-foreground">Order Summary</div>
+                      <div className="flex justify-between text-sm">
+                        <span>{liveProduct.name} × {currentNewSeats}</span>
+                        <span className="font-medium">{formatCurrency(currentOrderSubtotal)}</span>
+                      </div>
+                      <div className="text-[11px] text-muted-foreground">
+                        Prorated for {daysRemaining} of 365 days
+                      </div>
+                      <div className="flex justify-between text-sm pt-1">
+                        <span className="text-muted-foreground">Subtotal</span>
+                        <span>{formatCurrency(currentOrderSubtotal)}</span>
+                      </div>
+                      <div className="flex justify-between text-sm">
+                        <span className="text-muted-foreground">Tax (7%)</span>
+                        <span>{formatCurrency(currentOrderTax)}</span>
+                      </div>
+                      <div className="flex justify-between text-base font-semibold pt-1.5 border-t">
+                        <span>Total Due</span>
+                        <span>{formatCurrency(currentOrderTotal)}</span>
+                      </div>
+                    </div>
+                  )}
+                  {isVip && currentDelta > 0 && (
+                    <div className="rounded-lg border bg-muted/30 p-4 text-sm text-muted-foreground">
+                      Requesting {currentDelta} additional seat{currentDelta === 1 ? '' : 's'} on {liveProduct.name}.
+                    </div>
+                  )}
+                </>
+              ) : (
+                <p className="text-sm text-muted-foreground text-center py-6">
+                  Only a Billing Admin or Account Owner can update seat counts.
+                </p>
               )}
             </TabsContent>
 
             {/* ---- At Renewal panel (deferred, full range, floored for Billing Admin) ---- */}
             <TabsContent value="renewal" className="space-y-4 pt-2">
-              <div>
-                <h3 className="text-sm font-medium text-center">Update seats at renewal</h3>
-                <TooltipProvider>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <div className="mt-3 flex items-center justify-center gap-2">
-                        <Button variant="default" size="icon" disabled={!canManageSeats || renewalStepperInput <= renewalFloor}
-                          onClick={() => setRenewalStepperInput(v => clampRenewalStepper(v - 1))} aria-label="Decrease renewal seats">
-                          <Minus className="h-4 w-4" />
-                        </Button>
-                        <Input type="number" min={renewalFloor} value={renewalStepperInput} disabled={!canManageSeats}
-                          onChange={(e) => setRenewalStepperInput(clampRenewalStepper(parseInt(e.target.value) || renewalFloor))}
-                          className="h-10 w-20 text-center text-lg font-semibold" />
-                        <Button variant="default" size="icon" disabled={!canManageSeats}
-                          onClick={() => setRenewalStepperInput(v => clampRenewalStepper(v + 1))} aria-label="Increase renewal seats">
-                          <Plus className="h-4 w-4" />
-                        </Button>
-                        <Button variant="default" className="ml-2" disabled={renewalApplyDisabled} onClick={handleApplyRenewal}>
-                          Apply
-                        </Button>
+              {canManageSeats ? (
+                <>
+                  <div>
+                    <h3 className="text-sm font-medium text-center">Update seats at renewal</h3>
+                    <TooltipProvider>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <div className="mt-3 flex items-center justify-center gap-2">
+                            <Button variant="default" size="icon" disabled={renewalStepperInput <= renewalFloor || hasPendingSeatRequest}
+                              onClick={() => setRenewalStepperInput(v => clampRenewalStepper(v - 1))} aria-label="Decrease renewal seats">
+                              <Minus className="h-4 w-4" />
+                            </Button>
+                            <Input type="number" min={renewalFloor} value={renewalStepperInput} disabled={hasPendingSeatRequest}
+                              onChange={(e) => setRenewalStepperInput(clampRenewalStepper(parseInt(e.target.value) || renewalFloor))}
+                              className="h-10 w-20 text-center text-lg font-semibold" />
+                            <Button variant="default" size="icon" disabled={hasPendingSeatRequest}
+                              onClick={() => setRenewalStepperInput(v => clampRenewalStepper(v + 1))} aria-label="Increase renewal seats">
+                              <Plus className="h-4 w-4" />
+                            </Button>
+                            {/* v28 — Apply removed; the draft commits on Save changes. VIP keeps Request. */}
+                            {isVip && (
+                              <Button variant="default" className="ml-2" disabled={renewalRequestDisabled}
+                                onClick={handleRequestRenewal}>
+                                Request
+                              </Button>
+                            )}
+                          </div>
+                        </TooltipTrigger>
+                        {hasPendingSeatRequest && (
+                          <TooltipContent>A seat change request is already pending review. Our team will follow up with you.</TooltipContent>
+                        )}
+                        {!hasPendingSeatRequest && isFlooredBillingAdmin && (
+                          <TooltipContent>As a Billing Admin, you can reduce down to the currently assigned count. An Account Owner can choose specific users to remove.</TooltipContent>
+                        )}
+                      </Tooltip>
+                    </TooltipProvider>
+                    {isVip && (
+                      <p className="mt-2 text-xs text-muted-foreground text-center">
+                        This account has custom pricing. Submitting this request will notify our team, and they'll follow up with you directly.
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Decrease info note — non-VIP only; a VIP change isn't applied here, it's requested */}
+                  {!isVip && showReductionNote && (
+                    <Alert>
+                      <Info className="h-4 w-4" />
+                      <AlertDescription>
+                        Reducing renewal seat count. No refund issued for current cycle.
+                      </AlertDescription>
+                    </Alert>
+                  )}
+
+                  {!isVip && renewalDelta > 0 && (
+                    <div className="rounded-lg border bg-muted/30 p-4 space-y-1.5">
+                      <div className="text-xs uppercase tracking-wide text-muted-foreground">Renewal Order Summary</div>
+                      <div className="flex justify-between text-sm">
+                        <span>At-renewal seats</span>
+                        <span className="font-medium">{renewalStepperInput}</span>
                       </div>
-                    </TooltipTrigger>
-                    {!canManageSeats && (
-                      <TooltipContent>Contact your Billing Admin to change seat counts.</TooltipContent>
-                    )}
-                    {canManageSeats && isFlooredBillingAdmin && (
-                      <TooltipContent>As a Billing Admin, you can reduce down to the currently assigned count. An Account Owner can choose specific users to remove.</TooltipContent>
-                    )}
-                  </Tooltip>
-                </TooltipProvider>
-              </div>
-
-              {/* Decrease info note */}
-              {showReductionNote && (
-                <Alert>
-                  <Info className="h-4 w-4" />
-                  <AlertDescription>
-                    Reducing renewal seat count. No refund issued for current cycle.
-                  </AlertDescription>
-                </Alert>
-              )}
-
-              {renewalDelta > 0 && (
-                <div className="rounded-lg border bg-muted/30 p-4 space-y-1.5">
-                  <div className="text-xs uppercase tracking-wide text-muted-foreground">Renewal Order Summary</div>
-                  <div className="flex justify-between text-sm">
-                    <span>At-renewal seats</span>
-                    <span className="font-medium">{renewalStepperInput}</span>
-                  </div>
-                  <div className="flex justify-between text-sm">
-                    <span className="text-muted-foreground">Additional seats</span>
-                    <span>+{renewalDelta}</span>
-                  </div>
-                  <div className="flex justify-between text-base font-semibold pt-1.5 border-t">
-                    <span>New renewal total</span>
-                    <span>{formatCurrency(renewalNewAnnualTotal)}/yr</span>
-                  </div>
-                  <div className="text-[11px] text-muted-foreground">
-                    Full annual price, not prorated. Effective {renewalDateLabel} — no charge today.
-                  </div>
-                </div>
-              )}
-              {renewalDelta < 0 && (
-                <div className="rounded-lg border bg-muted/30 p-4 space-y-1.5">
-                  <div className="text-xs uppercase tracking-wide text-muted-foreground">Renewal Order Summary</div>
-                  <div className="flex justify-between text-sm">
-                    <span>At-renewal seats</span>
-                    <span className="font-medium">{renewalStepperInput}</span>
-                  </div>
-                  <div className="flex justify-between text-sm">
-                    <span className="text-muted-foreground">Fewer seats</span>
-                    <span>{renewalDelta}</span>
-                  </div>
-                  <div className="text-sm text-muted-foreground pt-1">
-                    Annual cost drops by {formatCurrency(Math.abs(reduceDelta))}/year starting {renewalDateLabel}.
-                  </div>
-                </div>
+                      <div className="flex justify-between text-sm">
+                        <span className="text-muted-foreground">Additional seats</span>
+                        <span>+{renewalDelta}</span>
+                      </div>
+                      <div className="flex justify-between text-base font-semibold pt-1.5 border-t">
+                        <span>New renewal total</span>
+                        <span>{formatCurrency(renewalNewAnnualTotal)}/yr</span>
+                      </div>
+                      <div className="text-[11px] text-muted-foreground">
+                        Full annual price, not prorated. Effective {renewalDateLabel} — no charge today.
+                      </div>
+                    </div>
+                  )}
+                  {!isVip && renewalDelta < 0 && (
+                    <div className="rounded-lg border bg-muted/30 p-4 space-y-1.5">
+                      <div className="text-xs uppercase tracking-wide text-muted-foreground">Renewal Order Summary</div>
+                      <div className="flex justify-between text-sm">
+                        <span>At-renewal seats</span>
+                        <span className="font-medium">{renewalStepperInput}</span>
+                      </div>
+                      <div className="flex justify-between text-sm">
+                        <span className="text-muted-foreground">Fewer seats</span>
+                        <span>{renewalDelta}</span>
+                      </div>
+                      <div className="text-sm text-muted-foreground pt-1">
+                        Annual cost drops by {formatCurrency(Math.abs(reduceDelta))}/year starting {renewalDateLabel}.
+                      </div>
+                    </div>
+                  )}
+                  {isVip && renewalDelta !== 0 && (
+                    <div className="rounded-lg border bg-muted/30 p-4 text-sm text-muted-foreground">
+                      {renewalDelta > 0
+                        ? `Requesting +${renewalDelta} seat${renewalDelta === 1 ? '' : 's'} on ${liveProduct.name}, effective at renewal on ${renewalDateLabel}.`
+                        : `Requesting to reduce seats by ${Math.abs(renewalDelta)} on ${liveProduct.name}, effective at renewal on ${renewalDateLabel}.`}
+                    </div>
+                  )}
+                </>
+              ) : (
+                <p className="text-sm text-muted-foreground text-center py-6">
+                  Only a Billing Admin or Account Owner can update seat counts.
+                </p>
               )}
             </TabsContent>
           </Tabs>
+          )}
 
           {/* Unified Users list (Section B) */}
           <div>
@@ -812,7 +975,7 @@ export const ManageLicensesDrawer = ({
                       </div>
                       {canAssign && (
                         <div className="shrink-0">
-                          {noSeatsAvailable ? (
+                          {isPureBillingAdmin || noSeatsAvailable ? (
                             <TooltipProvider>
                               <Tooltip>
                                 <TooltipTrigger asChild>
@@ -823,7 +986,9 @@ export const ManageLicensesDrawer = ({
                                   </span>
                                 </TooltipTrigger>
                                 <TooltipContent className="max-w-[240px]">
-                                  All paid seats are assigned. Increase seats at renewal or add seats now to assign more users.
+                                  {isPureBillingAdmin
+                                    ? 'Only License Admin or Account Owner can assign or unassign licenses.'
+                                    : 'All paid seats are assigned. Increase seats at renewal or add seats now to assign more users.'}
                                 </TooltipContent>
                               </Tooltip>
                             </TooltipProvider>
@@ -844,21 +1009,19 @@ export const ManageLicensesDrawer = ({
 
         {/* Footer — Pay button appears when a provisional charge is pending (Section B) */}
         <SheetFooter className="border-t px-5 py-4 sm:flex-col sm:items-stretch sm:space-x-0 gap-2">
-          {pendingInvoice ? (
-            <>
-              <div className="text-xs text-muted-foreground">Pending charge from added seats</div>
-              <div className="flex flex-row justify-end gap-2">
-                <Button variant="outline" onClick={handleCancelClick}>Cancel</Button>
-                <Button onClick={() => { setPayMethod(availableMethods[0] ?? 'pay_immediately'); setPayOpen(true); }}>
-                  Pay {formatCurrency(pendingAmount)}
-                </Button>
-              </div>
-            </>
-          ) : (
-            <div className="flex flex-row justify-end gap-2">
-              <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-              <Button onClick={() => onOpenChange(false)} disabled={!dirty}>Save changes</Button>
-            </div>
+          {/* v28 — Save changes is the single commit action, gated on validity only. With
+              added seats it hands off to the existing Pay flow. */}
+          {pendingInvoice && (
+            <div className="text-xs text-muted-foreground">Pending charge from added seats: {formatCurrency(pendingAmount)}</div>
+          )}
+          <div className="flex flex-row justify-end gap-2">
+            <Button variant="outline" onClick={handleCancelClick}>Cancel</Button>
+            <Button onClick={handleSave} disabled={saveDisabled}>
+              {pendingInvoice && !isVip ? `Save & pay ${formatCurrency(pendingAmount)}` : 'Save changes'}
+            </Button>
+          </div>
+          {saveDisabled && (
+            <div className="text-xs text-destructive text-right">{currentInvalidMessage}</div>
           )}
         </SheetFooter>
 
@@ -1252,111 +1415,56 @@ function useMemoCompanyUsers(
 export const AcceptQuoteDrawer = ({
   open, onOpenChange, quote,
 }: { open: boolean; onOpenChange: (v: boolean) => void; quote: Quote | null }) => {
-  const navigate = useNavigate();
-  const { acceptQuote, getCompanyConfig, getAvailablePaymentMethods } = useApp();
+  const { acceptQuote } = useApp();
   const { toast } = useToast();
-  const cfg = getCompanyConfig(quote?.companyId);
-  const available = getAvailablePaymentMethods(quote?.companyId);
-  const defaultMethod: PaymentMethod = available.includes('pay_on_terms') ? 'pay_on_terms' : 'pay_on_receipt';
   const [poNumber, setPoNumber] = useState('');
-  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>(defaultMethod);
 
   useEffect(() => {
     if (open) {
       setPoNumber(quote?.poNumber || '');
-      setPaymentMethod(defaultMethod);
     }
-  }, [open, quote?.poNumber, defaultMethod]);
+  }, [open, quote?.poNumber]);
 
   if (!quote) return null;
 
-  const subtotal = quote.amount;
-  const tax = Math.round(subtotal * 0.07 * 100) / 100;
-  const total = Math.round((subtotal + tax) * 100) / 100;
-
   const handleConfirm = () => {
-    if (paymentMethod === 'pay_immediately') {
-      onOpenChange(false);
-      navigate('/pay', {
-        state: {
-          source: 'quote',
-          quoteId: quote.id,
-          lineItems: quote.lineItems,
-          subtotal,
-          tax,
-          totalAmount: total,
-          returnTo: '/quotes',
-          poNumber: poNumber || undefined,
-        },
-      });
-      return;
-    }
-    const result = acceptQuote(quote.id, { poNumber: poNumber || undefined, paymentMethod });
+    const result = acceptQuote(quote.id, { poNumber: poNumber || undefined });
     if (!result) {
       toast({ title: 'Unable to accept quote', description: 'This quote has expired.', variant: 'destructive' });
       return;
     }
-    if (paymentMethod === 'pay_on_terms') {
-      toast({ title: 'Quote accepted under approved payment terms.', description: `Subscription activated. Invoice ${result.invoice.invoiceNumber}.` });
-      onOpenChange(false);
-      return;
-    }
-    // Pay on Receipt — route to Invoices so the user can pay the new invoice.
-    toast({
-      title: 'Invoice generated',
-      description: 'Pay your invoice to activate your subscription.',
-    });
+    toast({ title: `Quote ${quote.quoteNumber} accepted.` });
     onOpenChange(false);
-    navigate('/invoices');
   };
 
   return (
-    <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent side="right" className="w-full sm:max-w-xl flex flex-col">
-        <SheetHeader>
-          <SheetTitle>Accept Quote</SheetTitle>
-          <SheetDescription>Review and confirm acceptance of this quote.</SheetDescription>
-        </SheetHeader>
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Accept Quote - {quote.quoteNumber}</DialogTitle>
+          <DialogDescription>
+            Accepting will mark this quote as Accepted. Our team will follow up with the invoice and
+            subscription setup separately.
+          </DialogDescription>
+        </DialogHeader>
 
-        <div className="flex-1 overflow-y-auto space-y-4 py-4">
-          <div className="rounded-md border p-3 text-sm space-y-1">
-            <div className="flex justify-between"><span className="text-muted-foreground">Quote #</span><span className="font-medium">{quote.quoteNumber}</span></div>
-            <div className="flex justify-between"><span className="text-muted-foreground">Products</span><span className="font-medium text-right">{quote.lineItems.map(l => `${l.productName} (${l.licenseCount})`).join(', ')}</span></div>
-            <div className="flex justify-between"><span className="text-muted-foreground">Amount</span><span className="font-medium">${quote.amount.toLocaleString()}</span></div>
-            <div className="flex justify-between"><span className="text-muted-foreground">Created</span><span className="font-medium">{new Date(quote.createdDate).toLocaleDateString()}</span></div>
-            <div className="flex justify-between"><span className="text-muted-foreground">Expires</span><span className="font-medium">{new Date(quote.expiryDate).toLocaleDateString()}</span></div>
-            {quote.note && <div className="pt-1 text-xs text-muted-foreground">Note: {quote.note}</div>}
-          </div>
-
-          <div>
-            <Label htmlFor="po">PO Number (optional)</Label>
-            <p className="text-xs text-muted-foreground mb-1.5">
-              Provide a purchase order reference if required by your company.
-            </p>
-            <Input id="po" value={poNumber} onChange={(e) => setPoNumber(e.target.value)} placeholder="Enter PO number if applicable" />
-          </div>
-
-          <div>
-            <Label>Payment Method</Label>
-            <div className="mt-2">
-              <PaymentMethodPicker
-                value={paymentMethod}
-                onChange={setPaymentMethod}
-                available={available}
-                terms={cfg.terms}
-              />
-            </div>
-          </div>
+        <div>
+          <Label htmlFor="po">PO Number (optional)</Label>
+          <Input
+            id="po"
+            className="mt-1.5"
+            value={poNumber}
+            onChange={(e) => setPoNumber(e.target.value)}
+            placeholder="e.g. PO-2026-0421"
+          />
         </div>
 
-        <SheetFooter className="gap-2">
+        <DialogFooter className="gap-2">
           <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-          <Button onClick={handleConfirm}>
-            {paymentMethod === 'pay_immediately' ? 'Continue to Payment' : 'Confirm Acceptance'}
-          </Button>
-        </SheetFooter>
-      </SheetContent>
-    </Sheet>
+          <Button onClick={handleConfirm}>Accept Quote</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 };
 
@@ -1439,6 +1547,133 @@ export const ViewDeclineReasonDialog = ({
 /* ============================================================
  * View Note Dialog
  * ========================================================== */
+const QUOTE_DETAILS_STATUS_CLASS: Record<Quote['status'], string> = {
+  requested: 'bg-warning/10 text-warning border-warning/30',
+  active: 'bg-warning/10 text-warning border-warning/30',
+  accepted: 'bg-success/10 text-success border-success/30',
+  declined: 'text-muted-foreground border-muted-foreground/40',
+  expired: 'bg-warning/10 text-warning border-warning/30',
+};
+const QUOTE_DETAILS_STATUS_LABEL: Record<Quote['status'], string> = {
+  requested: 'Requested', active: 'Pending', accepted: 'Accepted', declined: 'Declined', expired: 'Expired',
+};
+
+export const QuoteDetailsDrawer = ({
+  open, onOpenChange, quote, canAccept, onAccept, onDecline,
+}: {
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
+  quote: Quote | null;
+  canAccept: boolean;
+  onAccept: (q: Quote) => void;
+  onDecline: (q: Quote) => void;
+}) => {
+  const { currentUser } = useApp();
+  const { toast } = useToast();
+  if (!quote) return null;
+
+  const tax = Math.round(quote.amount * 0.07 * 100) / 100;
+  const total = Math.round((quote.amount + tax) * 100) / 100;
+
+  return (
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent side="right" className="w-full sm:max-w-2xl flex flex-col">
+        <SheetHeader>
+          <SheetTitle>Quote Details</SheetTitle>
+          <SheetDescription>View detailed information about the quote including line items and totals.</SheetDescription>
+        </SheetHeader>
+
+        <div className="flex-1 overflow-y-auto space-y-6 py-4">
+          <div className="border-b">
+            <span className="inline-block border-b-2 border-primary pb-2 text-sm font-semibold text-primary">
+              Quotation
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+            <div className="space-y-2">
+              <h4 className="text-sm font-semibold">Quote Information</h4>
+              <div className="text-sm space-y-1.5">
+                <div className="flex justify-between"><span className="text-muted-foreground">Quote #:</span><span className="font-medium">{quote.quoteNumber}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">Title:</span><span className="font-medium">-</span></div>
+                <div className="flex justify-between items-center"><span className="text-muted-foreground">Status:</span>
+                  <Badge variant="outline" className={QUOTE_DETAILS_STATUS_CLASS[quote.status]}>{QUOTE_DETAILS_STATUS_LABEL[quote.status]}</Badge>
+                </div>
+                <div className="flex justify-between"><span className="text-muted-foreground">Created:</span><span className="font-medium">{new Date(quote.createdDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">Expiry:</span><span className="font-medium">{new Date(quote.expiryDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}</span></div>
+              </div>
+            </div>
+            <div className="space-y-2">
+              <h4 className="text-sm font-semibold">Contact Information</h4>
+              <div className="text-sm space-y-1.5">
+                <div className="flex justify-between"><span className="text-muted-foreground">Contact:</span><span className="font-medium">{currentUser ? `${currentUser.firstName} ${currentUser.lastName}` : '—'}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">Email:</span><span className="font-medium">{currentUser?.email || '—'}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">Site:</span><span className="font-medium">Main</span></div>
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <h4 className="text-sm font-semibold">Line Items</h4>
+            <div className="rounded-md border">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Item</TableHead>
+                    <TableHead>Description</TableHead>
+                    <TableHead className="text-center">Qty</TableHead>
+                    <TableHead className="text-right">Unit Price</TableHead>
+                    <TableHead className="text-right">Total</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {quote.lineItems.map((l, i) => (
+                    <TableRow key={i}>
+                      <TableCell>
+                        <div className="flex items-center gap-2">
+                          <Package className="h-4 w-4 text-muted-foreground" />
+                          {l.productName}
+                        </div>
+                      </TableCell>
+                      <TableCell className="text-muted-foreground">-</TableCell>
+                      <TableCell className="text-center">{l.licenseCount}</TableCell>
+                      <TableCell className="text-right">{formatCurrency(l.unitPrice)}</TableCell>
+                      <TableCell className="text-right">{formatCurrency(l.total)}</TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+              <div className="p-4 space-y-1.5 text-sm border-t">
+                <div className="flex justify-between"><span className="text-muted-foreground">Subtotal:</span><span>{formatCurrency(quote.amount)}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">Tax:</span><span>{formatCurrency(tax)}</span></div>
+                <div className="flex justify-between font-semibold pt-1.5 border-t"><span>Total:</span><span>{formatCurrency(total)}</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <SheetFooter className="gap-2">
+          <Button variant="outline" onClick={() => onOpenChange(false)}>Close</Button>
+          <Button
+            variant="outline"
+            onClick={() => toast({ title: 'Print preview coming soon', description: quote.quoteNumber })}
+          >
+            <Printer className="h-4 w-4 mr-2" />Print Preview
+          </Button>
+          {quote.status === 'active' && canAccept && (
+            <>
+              <Button variant="destructive" onClick={() => onDecline(quote)}>Decline</Button>
+              <Button onClick={() => onAccept(quote)}>
+                <Check className="h-4 w-4 mr-2" />Accept
+              </Button>
+            </>
+          )}
+        </SheetFooter>
+      </SheetContent>
+    </Sheet>
+  );
+};
+
 export const ViewNoteDialog = ({
   open, onOpenChange, quote,
 }: { open: boolean; onOpenChange: (v: boolean) => void; quote: Quote | null }) => {
@@ -1473,14 +1708,28 @@ const REQUEST_REASONS: QuoteRequestReason[] = [
 export const RequestQuoteDialog = ({
   open, onOpenChange,
 }: { open: boolean; onOpenChange: (v: boolean) => void }) => {
-  const { createQuote, notify } = useApp();
+  const { createQuote, notify, getCompanySubscriptions } = useApp();
   const { toast } = useToast();
   const [selected, setSelected] = useState<Record<string, number>>({});
   const [note, setNote] = useState('');
+  const [contactNotes, setContactNotes] = useState('');
   const [reason, setReason] = useState<QuoteRequestReason | ''>('');
+  const [addr1, setAddr1] = useState('');
+  const [addr2, setAddr2] = useState('');
+  const [addrCityState, setAddrCityState] = useState('');
+  const [addrPostal, setAddrPostal] = useState('');
+
+  // DataNet auto-attaches to any purchased product, so it's only quote-able
+  // while the company doesn't already have it.
+  const alreadyHasDataNet = getCompanySubscriptions()
+    .some(s => s.status === 'active' && s.products.some(p => p.name === 'DataNet'));
+  const quotableProducts = PRODUCT_CATALOG.filter(p => p.name !== 'DataNet' || !alreadyHasDataNet);
 
   useEffect(() => {
-    if (open) { setSelected({}); setNote(''); setReason(''); }
+    if (open) {
+      setSelected({}); setNote(''); setContactNotes(''); setReason('');
+      setAddr1(''); setAddr2(''); setAddrCityState(''); setAddrPostal('');
+    }
   }, [open]);
 
   const toggle = (name: string) => {
@@ -1518,11 +1767,15 @@ export const RequestQuoteDialog = ({
         total: unitPrice * count,
       };
     });
+    const contactAddress = [addr1, addr2, addrCityState, addrPostal]
+      .map(s => s.trim()).filter(Boolean).join(', ');
     createQuote({
       lineItems,
       note: note.trim(),
       status: 'requested',
       requestReason: reason || undefined,
+      contactNotes: contactNotes.trim() || undefined,
+      contactAddress: contactAddress || undefined,
     });
     notify({
       type: 'quote.received',
@@ -1557,7 +1810,7 @@ export const RequestQuoteDialog = ({
           <div className="space-y-2">
             <Label>Product Requirement</Label>
             <div className="space-y-2">
-              {PRODUCT_CATALOG.map(p => {
+              {quotableProducts.map(p => {
                 const isSel = p.name in selected;
                 const isDN = p.name === 'DataNet';
                 return (
@@ -1575,6 +1828,22 @@ export const RequestQuoteDialog = ({
                 );
               })}
             </div>
+            {Object.keys(selected).length > 0 && (
+              <div className="flex items-center justify-between text-sm border-t pt-2">
+                <span className="font-medium">
+                  {Object.keys(selected).length} PRODUCT{Object.keys(selected).length === 1 ? '' : 'S'} SELECTED
+                </span>
+                <span className="text-muted-foreground">
+                  <span className="font-semibold text-foreground">
+                    {formatCurrency(Object.entries(selected).reduce((sum, [name, qty]) => {
+                      const cat = PRODUCT_CATALOG.find(p => p.name === name);
+                      const count = name === 'DataNet' ? 1 : qty;
+                      return sum + (cat?.defaultPrice ?? 0) * count;
+                    }, 0))}
+                  </span> Estimated per year · Sales will confirm final pricing
+                </span>
+              </div>
+            )}
           </div>
 
           <div>
@@ -1591,16 +1860,38 @@ export const RequestQuoteDialog = ({
             </Select>
           </div>
 
-          <div>
-            <Label htmlFor="qrnote">Note (optional)</Label>
-            <Textarea
-              id="qrnote"
-              value={note}
-              onChange={(e) => setNote(e.target.value.slice(0, 500))}
-              placeholder="Describe what product, license count, or change you are expecting."
-              maxLength={500}
-            />
-            <p className="text-xs text-muted-foreground mt-1">{note.length}/500</p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <Label htmlFor="qrnote">Notes (optional)</Label>
+              <Textarea
+                id="qrnote"
+                value={note}
+                onChange={(e) => setNote(e.target.value.slice(0, 500))}
+                placeholder="Describe what product, license count, or change you are expecting."
+                maxLength={500}
+              />
+              <p className="text-xs text-muted-foreground mt-1">{note.length}/500</p>
+            </div>
+            <div>
+              <Label htmlFor="qr-contact-notes">Contact notes (Optional)</Label>
+              <Textarea
+                id="qr-contact-notes"
+                value={contactNotes}
+                onChange={(e) => setContactNotes(e.target.value.slice(0, 500))}
+                placeholder="Preferred contact time, timezone, etc."
+                maxLength={500}
+              />
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <Label>Contact address (optional — falls back to your site address)</Label>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <Input placeholder="Address Line 1" value={addr1} onChange={(e) => setAddr1(e.target.value)} />
+              <Input placeholder="Address Line 2" value={addr2} onChange={(e) => setAddr2(e.target.value)} />
+              <Input placeholder="City / State" value={addrCityState} onChange={(e) => setAddrCityState(e.target.value)} />
+              <Input placeholder="Postal Code" value={addrPostal} onChange={(e) => setAddrPostal(e.target.value)} />
+            </div>
           </div>
         </div>
 

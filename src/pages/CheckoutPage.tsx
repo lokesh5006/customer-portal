@@ -25,8 +25,12 @@ import {
   DialogDescription,
   DialogFooter,
 } from '@/components/ui/dialog';
-import { useApp, PaymentMethod } from '@/contexts/AppContext';
+import { useApp, PaymentMethod, InvoiceBillTo } from '@/contexts/AppContext';
+import { BilledThroughNote } from '@/components/billing/BillToBlock';
+import { ALLOW_FIRM_EDIT_BILL_TO, addressLines, companyBillTo, validateBillTo } from '@/lib/billTo';
 import { useToast } from '@/hooks/use-toast';
+import { useDirectory } from '@/hooks/useDirectory';
+import { REGISTRATION_BLOCK_COPY, RegistrationBlockedActions } from '@/components/auth/RegistrationBlocked';
 import { cn } from '@/lib/utils';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 
@@ -58,7 +62,13 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
 interface BillingInfo {
   company: string;
   email: string;
+  phone: string;
+  taxId: string;
+  /** v19 — optional bill-to label and Attention line (never replaces the company name). */
+  billToName: string;
+  billToAttention: string;
   address1: string;
+  address2: string;
   city: string;
   state: string;
   zip: string;
@@ -66,7 +76,7 @@ interface BillingInfo {
 }
 
 const billingAddressLine = (b: BillingInfo) =>
-  [b.address1, b.city, [b.state, b.zip].filter(Boolean).join(' '), b.country]
+  [b.address1, b.address2, b.city, [b.state, b.zip].filter(Boolean).join(' '), b.country]
     .filter(s => s && s.trim())
     .join(', ');
 
@@ -74,7 +84,8 @@ export const CheckoutPage = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const [searchParams] = useSearchParams();
-  const { currentCompany, currentUser, createQuote, checkoutPurchase, getAvailablePaymentMethods, getCompanyConfig } = useApp();
+  const { currentCompany, currentUser, createQuote, checkoutPurchase, getAvailablePaymentMethods, getCompanyConfig, isFirstTimeCustomer, logout } = useApp();
+  const directory = useDirectory();
   const { toast } = useToast();
   const availableMethods = getAvailablePaymentMethods();
   const config = getCompanyConfig();
@@ -149,18 +160,42 @@ export const CheckoutPage = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // v19 — seeded from the firm's saved billing details (falls back to the old placeholders
+  // when the firm has no address on file).
+  const companyAddr = currentCompany?.address;
   const [billing, setBilling] = useState<BillingInfo>({
     company: currentCompany?.name || 'Company Name',
     email: currentUser?.email || 'user@example.com',
-    address1: '123 Main St',
-    city: 'Anytown',
-    state: 'NY',
-    zip: '10001',
-    country: 'USA',
+    phone: currentUser?.phone || '',
+    taxId: '',
+    billToName: companyAddr?.billToName || '',
+    billToAttention: companyAddr?.billToAttention || '',
+    address1: companyAddr?.line1 ?? '123 Main St',
+    address2: companyAddr?.line2 ?? '',
+    city: companyAddr?.city ?? 'Anytown',
+    state: companyAddr?.state ?? 'NY',
+    zip: companyAddr?.postalCode ?? '10001',
+    country: companyAddr?.country ?? 'USA',
   });
+
+  // v19 — billed-through (SHI-style) firms: billing comes from the parent, read-only.
+  const billedThrough = currentCompany?.billedThrough;
+  const billTo: InvoiceBillTo = billedThrough && currentCompany
+    ? companyBillTo(currentCompany)
+    : {
+        name: billing.billToName.trim() || billing.company,
+        attention: billing.billToAttention.trim() || undefined,
+        line1: billing.address1, line2: billing.address2, city: billing.city,
+        state: billing.state, postalCode: billing.zip, country: billing.country,
+      };
+  const displayedAddressLine = billedThrough ? addressLines(billTo).join(', ') : billingAddressLine(billing);
+  const showBillToLines = !!billedThrough || !!billing.billToName.trim() || !!billing.billToAttention.trim();
 
   const [editBillingOpen, setEditBillingOpen] = useState(false);
   const [billingDraft, setBillingDraft] = useState<BillingInfo>(billing);
+  // v20 — a new customer entering an address already registered to another firm.
+  const [addressBlocked, setAddressBlocked] = useState(false);
+  const draftBillToErrors = validateBillTo(billingDraft.billToName, billingDraft.billToAttention);
 
   const [quoteOpen, setQuoteOpen] = useState(false);
   const [quoteRecipients, setQuoteRecipients] = useState('');
@@ -235,7 +270,20 @@ export const CheckoutPage = () => {
   };
 
   const saveBilling = () => {
-    setBilling(billingDraft);
+    if (draftBillToErrors.name || draftBillToErrors.attention) return;
+    // v20 — duplicate-company address check (rules in src/lib/directory.ts). This is where a
+    // new customer first enters their address; existing firms editing billing are unaffected.
+    if (isFirstTimeCustomer() && directory.findCompanyByAddress({
+      line1: billingDraft.address1, city: billingDraft.city, state: billingDraft.state, postalCode: billingDraft.zip,
+    }, currentCompany?.id)) {
+      setAddressBlocked(true);
+      return;
+    }
+    setBilling({
+      ...billingDraft,
+      billToName: billingDraft.billToName.trim(),
+      billToAttention: billingDraft.billToAttention.trim(),
+    });
     setEditBillingOpen(false);
     toast({ title: 'Billing information updated.' });
   };
@@ -258,6 +306,7 @@ export const CheckoutPage = () => {
         state: {
           source: 'checkout',
           lineItems: buildLineItems(),
+          billTo,
           subtotal,
           tax,
           totalAmount: total,
@@ -267,7 +316,7 @@ export const CheckoutPage = () => {
       return;
     }
     if (paymentMethod === 'pay_on_receipt') {
-      checkoutPurchase({ lineItems: buildLineItems(), paymentMethod: 'pay_on_receipt' });
+      checkoutPurchase({ lineItems: buildLineItems(), paymentMethod: 'pay_on_receipt', billTo });
       toast({
         title: 'Invoice generated',
         description: 'Pay your invoice to activate your subscription.',
@@ -276,7 +325,7 @@ export const CheckoutPage = () => {
       return;
     }
     if (paymentMethod === 'pay_on_terms') {
-      checkoutPurchase({ lineItems: buildLineItems(), paymentMethod: 'pay_on_terms' });
+      checkoutPurchase({ lineItems: buildLineItems(), paymentMethod: 'pay_on_terms', billTo });
       toast({ title: 'Subscription activated under approved payment terms.' });
       navigate('/subscriptions');
     }
@@ -442,13 +491,16 @@ export const CheckoutPage = () => {
           <div className="pt-2">
             <div className="flex items-center justify-between mb-3">
               <h2 className="text-xl font-semibold text-foreground">2. Billing Information</h2>
-              <Button variant="link" className="gap-1.5 text-primary" onClick={openEditBilling}>
-                <Pencil className="h-3.5 w-3.5" />
-                Edit Details
-              </Button>
+              {!billedThrough && (
+                <Button variant="link" className="gap-1.5 text-primary" onClick={openEditBilling}>
+                  <Pencil className="h-3.5 w-3.5" />
+                  Edit Details
+                </Button>
+              )}
             </div>
             <Card>
               <CardContent className="p-5 space-y-4">
+                {billedThrough && <BilledThroughNote parentName={billedThrough.name} />}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>
                     <div className="text-[11px] uppercase tracking-wide text-muted-foreground flex items-center gap-1.5">
@@ -467,10 +519,22 @@ export const CheckoutPage = () => {
                 </div>
                 <div>
                   <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                    Phone
+                  </div>
+                  <div className="font-medium text-foreground mt-1">{billing.phone || 'NA'}</div>
+                </div>
+                <div>
+                  <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
                     Billing Address
                   </div>
                   <div className="font-medium text-foreground mt-1">
-                    {billingAddressLine(billing) || '—'}
+                    {showBillToLines && (
+                      <>
+                        <div>{billTo.name}</div>
+                        {billTo.attention && <div>Attn: {billTo.attention}</div>}
+                      </>
+                    )}
+                    {displayedAddressLine || '—'}
                   </div>
                 </div>
               </CardContent>
@@ -591,12 +655,12 @@ export const CheckoutPage = () => {
       <Dialog open={editBillingOpen} onOpenChange={setEditBillingOpen}>
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
-            <DialogTitle>Edit Billing Information</DialogTitle>
-            <DialogDescription>Update your company and billing contact details.</DialogDescription>
+            <DialogTitle>Edit Billing Details</DialogTitle>
+            <DialogDescription>Update your company and billing information below.</DialogDescription>
           </DialogHeader>
           <div className="space-y-3 py-2">
             <div>
-              <Label htmlFor="bi-company">Company Name</Label>
+              <Label htmlFor="bi-company">Company <span className="text-destructive">*</span></Label>
               <Input
                 id="bi-company"
                 value={billingDraft.company}
@@ -604,7 +668,7 @@ export const CheckoutPage = () => {
               />
             </div>
             <div>
-              <Label htmlFor="bi-email">Email</Label>
+              <Label htmlFor="bi-email">Billing Email</Label>
               <Input
                 id="bi-email"
                 type="email"
@@ -613,11 +677,61 @@ export const CheckoutPage = () => {
               />
             </div>
             <div>
+              <Label htmlFor="bi-phone">Phone Number</Label>
+              <Input
+                id="bi-phone"
+                placeholder="Enter billing phone number"
+                value={billingDraft.phone}
+                onChange={(e) => setBillingDraft({ ...billingDraft, phone: e.target.value })}
+              />
+            </div>
+            <div>
+              <Label htmlFor="bi-taxid">Tax ID</Label>
+              <Input
+                id="bi-taxid"
+                placeholder="Enter tax registration number"
+                value={billingDraft.taxId}
+                onChange={(e) => setBillingDraft({ ...billingDraft, taxId: e.target.value })}
+              />
+            </div>
+            <div>
+              <Label htmlFor="bi-bill-to-name">Bill-to Name <span className="text-muted-foreground">(optional)</span></Label>
+              <Input
+                id="bi-bill-to-name"
+                placeholder={billingDraft.company || currentCompany?.name}
+                value={billingDraft.billToName}
+                onChange={(e) => setBillingDraft({ ...billingDraft, billToName: e.target.value })}
+                disabled={!ALLOW_FIRM_EDIT_BILL_TO}
+                aria-invalid={!!draftBillToErrors.name}
+              />
+              {draftBillToErrors.name && <p className="text-xs text-destructive mt-1">{draftBillToErrors.name}</p>}
+            </div>
+            <div>
+              <Label htmlFor="bi-bill-to-attention">Attention <span className="text-muted-foreground">(optional)</span></Label>
+              <Input
+                id="bi-bill-to-attention"
+                value={billingDraft.billToAttention}
+                onChange={(e) => setBillingDraft({ ...billingDraft, billToAttention: e.target.value })}
+                disabled={!ALLOW_FIRM_EDIT_BILL_TO}
+                aria-invalid={!!draftBillToErrors.attention}
+              />
+              {draftBillToErrors.attention && <p className="text-xs text-destructive mt-1">{draftBillToErrors.attention}</p>}
+            </div>
+            <div>
               <Label htmlFor="bi-address1">Address Line 1</Label>
               <Input
                 id="bi-address1"
                 value={billingDraft.address1}
                 onChange={(e) => setBillingDraft({ ...billingDraft, address1: e.target.value })}
+              />
+            </div>
+            <div>
+              <Label htmlFor="bi-address2">Address Line 2 <span className="text-muted-foreground">(optional)</span></Label>
+              <Input
+                id="bi-address2"
+                placeholder="Apartment, suite, etc. (optional)"
+                value={billingDraft.address2}
+                onChange={(e) => setBillingDraft({ ...billingDraft, address2: e.target.value })}
               />
             </div>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -657,7 +771,7 @@ export const CheckoutPage = () => {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setEditBillingOpen(false)}>Cancel</Button>
-            <Button onClick={saveBilling}>Save</Button>
+            <Button onClick={saveBilling} disabled={!!(draftBillToErrors.name || draftBillToErrors.attention)}>Save</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -740,6 +854,23 @@ export const CheckoutPage = () => {
             <Button variant="outline" onClick={() => setQuoteOpen(false)}>Cancel</Button>
             <Button onClick={handleSendQuote}>Send Quote</Button>
           </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* v20 — address duplicate block */}
+      <Dialog open={addressBlocked} onOpenChange={setAddressBlocked}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>{REGISTRATION_BLOCK_COPY.address.title}</DialogTitle>
+            <DialogDescription>{REGISTRATION_BLOCK_COPY.address.body}</DialogDescription>
+          </DialogHeader>
+          <RegistrationBlockedActions
+            reason="address"
+            onRegisterExisting={() => {
+              logout();
+              navigate('/signup?path=existing');
+            }}
+          />
         </DialogContent>
       </Dialog>
     </MainLayout>

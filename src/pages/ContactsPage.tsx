@@ -26,6 +26,8 @@ import { useApp } from '@/contexts/AppContext';
 import { useToast } from '@/hooks/use-toast';
 import { ToastAction } from '@/components/ui/toast';
 import { useReadOnlyGuard, READ_ONLY_TOOLTIP } from '@/hooks/useReadOnlyGuard';
+import { useDirectory } from '@/hooks/useDirectory';
+import { normalizeEmail, STRADDLE_EMAIL_ERROR } from '@/lib/directory';
 import {
   Contact as ContactIcon, Plus, MoreVertical, Edit, Star, UserX, Users as UsersIcon,
   Briefcase, Wrench, Phone, Mail, MapPin, FileText, CreditCard, Receipt,
@@ -84,7 +86,8 @@ const contactTypeColor: Record<ContactType, string> = {
 };
 
 export const ContactsPage = () => {
-  const { hasAccess } = useApp();
+  const { hasAccess, currentCompany } = useApp();
+  const directory = useDirectory();
   const { toast } = useToast();
   const { readOnly } = useReadOnlyGuard();
   const canModify = hasAccess(['account_owner', 'billing_admin', 'license_admin']) && !readOnly;
@@ -120,10 +123,21 @@ export const ContactsPage = () => {
   const totalPages = Math.ceil(filtered.length / pageSize);
   const paginated = filtered.slice((currentPage - 1) * pageSize, currentPage * pageSize);
 
+  // v20 — block linking a new/changed email to a second firm (same firm, any Site, is fine).
+  const draftEmailStraddles = (original?: string) => {
+    const email = draft.email?.trim() ?? '';
+    if (!currentCompany || !email.includes('@')) return false;
+    if (original && normalizeEmail(original) === normalizeEmail(email)) return false;
+    return directory.wouldStraddle(email, currentCompany.id);
+  };
+  const editEmailStraddles = editOpen && draftEmailStraddles(selected?.email);
+  const addEmailStraddles = addOpen && draftEmailStraddles();
+
   const openPanel = (c: PortalContact) => { setSelected(c); setPanelOpen(true); };
   const openEdit = (c: PortalContact) => { setSelected(c); setDraft({ ...c }); setEditOpen(true); };
   const handleSave = () => {
     if (!selected) return;
+    if (editEmailStraddles) return;
     setContacts(prev => prev.map(c => c.id === selected.id ? { ...c, ...draft } as PortalContact : c));
     toast({ title: 'Contact updated', description: `${draft.name || selected.name} has been updated.` });
     setEditOpen(false);
@@ -133,6 +147,7 @@ export const ContactsPage = () => {
       toast({ title: 'Missing fields', description: 'Name and email are required.', variant: 'destructive' });
       return;
     }
+    if (addEmailStraddles) return;
     const newContact: PortalContact = {
       id: `c-${Date.now()}`,
       name: draft.name!,
@@ -450,7 +465,11 @@ export const ContactsPage = () => {
             <div className="space-y-1.5"><Label>Name</Label><Input value={draft.name || ''} onChange={e => setDraft({ ...draft, name: e.target.value })} /></div>
             <div className="space-y-1.5"><Label>Username</Label><Input value={draft.username || ''} onChange={e => setDraft({ ...draft, username: e.target.value })} /></div>
             <div className="space-y-1.5"><Label>Title</Label><Input value={draft.title || ''} onChange={e => setDraft({ ...draft, title: e.target.value })} /></div>
-            <div className="space-y-1.5"><Label>Email</Label><Input value={draft.email || ''} onChange={e => setDraft({ ...draft, email: e.target.value })} /></div>
+            <div className="space-y-1.5">
+              <Label>Email</Label>
+              <Input value={draft.email || ''} onChange={e => setDraft({ ...draft, email: e.target.value })} aria-invalid={editEmailStraddles} />
+              {editEmailStraddles && <p className="text-xs text-destructive">{STRADDLE_EMAIL_ERROR}</p>}
+            </div>
             <div className="space-y-1.5"><Label>Phone</Label><Input value={draft.phone || ''} onChange={e => setDraft({ ...draft, phone: e.target.value })} /></div>
             <div className="flex items-center justify-between gap-3">
               <Label htmlFor="edit-dn" className="text-sm">DataNet Email</Label>
@@ -460,7 +479,7 @@ export const ContactsPage = () => {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setEditOpen(false)}>Cancel</Button>
-            <Button onClick={handleSave}>Save</Button>
+            <Button onClick={handleSave} disabled={editEmailStraddles}>Save</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -476,7 +495,11 @@ export const ContactsPage = () => {
             <div className="space-y-1.5"><Label>Name *</Label><Input value={draft.name || ''} onChange={e => setDraft({ ...draft, name: e.target.value })} /></div>
             <div className="space-y-1.5"><Label>Username</Label><Input value={draft.username || ''} placeholder="Auto-generated from name if blank" onChange={e => setDraft({ ...draft, username: e.target.value })} /></div>
             <div className="space-y-1.5"><Label>Title</Label><Input value={draft.title || ''} onChange={e => setDraft({ ...draft, title: e.target.value })} /></div>
-            <div className="space-y-1.5"><Label>Email *</Label><Input value={draft.email || ''} onChange={e => setDraft({ ...draft, email: e.target.value })} /></div>
+            <div className="space-y-1.5">
+              <Label>Email *</Label>
+              <Input value={draft.email || ''} onChange={e => setDraft({ ...draft, email: e.target.value })} aria-invalid={addEmailStraddles} />
+              {addEmailStraddles && <p className="text-xs text-destructive">{STRADDLE_EMAIL_ERROR}</p>}
+            </div>
             <div className="space-y-1.5"><Label>Phone</Label><Input value={draft.phone || ''} onChange={e => setDraft({ ...draft, phone: e.target.value })} /></div>
             <div className="space-y-1.5">
               <Label>Contact Type</Label>
@@ -497,7 +520,7 @@ export const ContactsPage = () => {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setAddOpen(false)}>Cancel</Button>
-            <Button onClick={handleAdd}>Add Contact</Button>
+            <Button onClick={handleAdd} disabled={addEmailStraddles}>Add Contact</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

@@ -2,6 +2,7 @@
 // Kept separate from the dialog UI so the rules are unit-testable.
 import * as XLSX from 'xlsx';
 import { Role } from '@/contexts/AppContext';
+import { STRADDLE_EMAIL_ERROR } from '@/lib/directory';
 
 export const MAX_IMPORT_ROWS = 500;
 export const MAX_PREVIEW_ROWS = 100;
@@ -45,6 +46,8 @@ export interface ParseResult {
 export interface ExistingDirectory {
   emails: Set<string>;     // lowercased existing company emails
   usernames: Set<string>;  // lowercased existing company usernames
+  /** v20 — true when the email is linked to another firm (directory wouldStraddle). */
+  straddles?: (email: string) => boolean;
 }
 
 const REQUIRED_COLUMNS: Array<{ key: keyof ColumnMap; label: string }> = [
@@ -186,6 +189,7 @@ export function parseImportData(
     if (!email) errors.push('Email is required');
     else if (!EMAIL_RE.test(email)) errors.push('Email is not a valid format');
     else if (existing.emails.has(emailLc)) errors.push('Email already exists in company');
+    else if (existing.straddles?.(email)) errors.push(STRADDLE_EMAIL_ERROR);
     else if (seenEmails.has(emailLc)) errors.push(`Duplicate email in file (row ${seenEmails.get(emailLc)})`);
 
     const usernameLc = username.toLowerCase();

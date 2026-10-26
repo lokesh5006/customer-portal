@@ -406,8 +406,8 @@ export const SubscriptionsPage = () => {
     <MainLayout>
       <div className="space-y-6">
         <ListingPageHeader
-          title="Subscriptions"
-          description="Manage your active products, renewal options, invoices, and billing details."
+          title="Subscription & License"
+          description="Manage your active subscriptions, product licenses, renewal options, and billing preferences."
         />
 
         {subscriptions.length === 0 ? (

@@ -1,20 +1,26 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { Eye, EyeOff, Zap } from 'lucide-react';
 import { useApp } from '@/contexts/AppContext';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useToast } from '@/hooks/use-toast';
+import { AuthBackground } from '@/components/layout/AuthBackground';
+import { useDirectory } from '@/hooks/useDirectory';
+import { SUPPORT_EMAIL } from '@/lib/support';
 
 const DEMO_EMAIL = 'john.smith@abcaccounting.com';
 
 export const Login = () => {
   const navigate = useNavigate();
+  const location = useLocation();
   const { login } = useApp();
+  const directory = useDirectory();
   const { toast } = useToast();
 
-  const [email, setEmail] = useState('');
+  // Prefilled after the existing-customer registration success screen.
+  const [email, setEmail] = useState((location.state as { email?: string } | null)?.email ?? '');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -25,6 +31,14 @@ export const Login = () => {
     setError('');
     setIsLoading(true);
     await new Promise(resolve => setTimeout(resolve, 300));
+    // v20 — an email linked to two or more firms: chooser with the exception, else blocked.
+    if (directory.findFirmsByEmail(email).length > 1) {
+      setIsLoading(false);
+      navigate(directory.hasStraddlingException(email) ? '/choose-account' : '/sign-in-blocked', {
+        state: { email: email.trim() },
+      });
+      return;
+    }
     const success = login(email, password);
     setIsLoading(false);
     if (success) {
@@ -46,14 +60,14 @@ export const Login = () => {
   const handleForgotPassword = () => {
     toast({
       title: 'Password reset',
-      description: 'Password reset is not yet available in this build. Please contact support@leimberg.com for assistance.',
+      description: `Password reset is not yet available in this build. Please contact ${SUPPORT_EMAIL} for assistance.`,
     });
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-muted/30 p-4">
+    <AuthBackground>
       <div className="w-full max-w-[440px] animate-fade-in">
-        <div className="bg-card border rounded-xl shadow-lg p-8">
+        <div className="bg-card border rounded-xl shadow-2xl p-8">
           <div className="text-center mb-6">
             <img
               src="/leimberg-logo.png"
@@ -144,17 +158,17 @@ export const Login = () => {
           </Button>
         </div>
 
-        <p className="mt-5 text-center text-sm text-muted-foreground">
+        <p className="mt-5 text-center text-sm text-white/80">
           New customer?{' '}
           <button
             type="button"
             onClick={() => navigate('/signup')}
-            className="font-medium text-primary hover:underline"
+            className="font-medium text-white hover:underline"
           >
             Create account
           </button>
         </p>
       </div>
-    </div>
+    </AuthBackground>
   );
 };

@@ -16,7 +16,7 @@ import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription,
 } from '@/components/ui/dialog';
-import { useApp, Invoice, QuoteLineItem, SavedPaymentMethod } from '@/contexts/AppContext';
+import { useApp, Invoice, QuoteLineItem, SavedPaymentMethod, InvoiceBillTo } from '@/contexts/AppContext';
 import { useToast } from '@/hooks/use-toast';
 import { cn } from '@/lib/utils';
 import { openProfileDrawer } from '@/lib/profileDrawer';
@@ -33,6 +33,8 @@ interface PaymentIntentBase {
 interface CheckoutIntent extends PaymentIntentBase {
   source: 'checkout';
   lineItems: QuoteLineItem[];
+  /** v19 — bill-to shown at checkout, snapshotted onto the invoice. */
+  billTo?: InvoiceBillTo;
 }
 
 interface QuoteIntent extends PaymentIntentBase {
@@ -187,6 +189,7 @@ export const PaymentPage = () => {
     state: 'NY',
     zip: '10001',
     country: 'USA',
+    phone: currentUser?.phone || '',
   }), [currentUser, currentCompany]);
 
   const [billing, setBilling] = useState(defaultBilling);
@@ -303,11 +306,11 @@ export const PaymentPage = () => {
           lineItems: intent.lineItems,
           paymentMethod: 'pay_immediately',
           poNumber: trimmedPo || undefined,
+          billTo: intent.billTo,
         });
       } else if (intent.source === 'quote') {
         const result = acceptQuote(intent.quoteId, {
           poNumber: trimmedPo || intent.poNumber || undefined,
-          paymentMethod: 'pay_immediately',
         });
         if (!result) {
           toast({ title: 'Quote could not be processed', description: 'It may have expired.', variant: 'destructive' });
@@ -726,6 +729,14 @@ export const PaymentPage = () => {
                 <Label htmlFor="bi-country">Country</Label>
                 <Input id="bi-country" value={billing.country}
                   onChange={(e) => setBilling({ ...billing, country: e.target.value })}
+                  className="mt-1.5"
+                />
+              </div>
+
+              <div>
+                <Label htmlFor="bi-phone">Phone Number</Label>
+                <Input id="bi-phone" value={billing.phone}
+                  onChange={(e) => setBilling({ ...billing, phone: e.target.value })}
                   className="mt-1.5"
                 />
               </div>

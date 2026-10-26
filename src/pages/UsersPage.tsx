@@ -31,6 +31,8 @@ import { useToast } from '@/hooks/use-toast';
 import { ToastAction } from '@/components/ui/toast';
 import { useReadOnlyGuard, READ_ONLY_TOOLTIP } from '@/hooks/useReadOnlyGuard';
 import { BulkImportDialog } from '@/components/users/BulkImportDialog';
+import { useDirectory } from '@/hooks/useDirectory';
+import { normalizeEmail, STRADDLE_EMAIL_ERROR } from '@/lib/directory';
 import {
   Plus, MoreVertical, Download, Edit, UserX, UserCheck, ExternalLink, Clock, Upload, RotateCw,
 } from 'lucide-react';
@@ -74,6 +76,7 @@ export const UsersPage = () => {
     getCompanyUsers, getCompanySubscriptions,
     deactivateUser, reactivateUser, hasAccess, can, startProxySession,
     licenses, updateUser, markLicensesExpiringAtRenewal, updateRenewalSeatCount,
+    currentUser,
   } = useApp();
   const { toast } = useToast();
   const { readOnly } = useReadOnlyGuard();
@@ -95,11 +98,12 @@ export const UsersPage = () => {
   const allUsers = getCompanyUsers();
   const subscriptions = getCompanySubscriptions().filter(s => s.status !== 'cancelled' && s.status !== 'expired');
 
-  // Registered Contacts see only Account Owners, Billing Admins, and License Admins.
+  // Registered Contacts see only Account Owners, Billing Admins, License Admins, and
+  // themselves — never other Registered Contacts (Andrew's "only elevated roles visible" rule).
   const isOnlyRegisteredContact = hasAccess(['registered_contact']) &&
     !hasAccess(['account_owner', 'billing_admin', 'license_admin']);
   const users = isOnlyRegisteredContact
-    ? allUsers.filter(u => u.roles.some(r => r !== 'registered_contact'))
+    ? allUsers.filter(u => u.id === currentUser?.id || u.roles.some(r => r !== 'registered_contact'))
     : allUsers;
 
   const productsForUser = (userId: string): { name: string; licenseType: LicenseType }[] => {
@@ -142,7 +146,10 @@ export const UsersPage = () => {
   // v20 Section F3 — mark ALL of a user's expiring licenses as renewing (per product:
   // clear the flag and bump that product's renewal count by the number unflagged).
   const handleMarkUserRenewing = (user: User) => {
-    const userExpiring = licenses.filter(l => l.userId === user.id && l.expiringAtRenewal && !l.deactivatedAt);
+    // v18 — only this Site's licenses (the user may hold seats on another Site too).
+    const userExpiring = licenses.filter(l =>
+      l.userId === user.id && l.expiringAtRenewal && !l.deactivatedAt &&
+      subscriptions.some(s => s.id === l.subscriptionId));
     const byProduct = new Map<string, { subId: string; prodId: string; count: number }>();
     userExpiring.forEach(l => {
       const k = `${l.subscriptionId}:${l.productId}`;
@@ -529,6 +536,7 @@ const UserEditDrawer = ({ open, onOpenChange, mode, user, readOnly, onSaved }: U
     markLicensesExpiringAtRenewal,
     addUser, updateUser, isUsernameTaken,
   } = useApp();
+  const directory = useDirectory();
   const { toast } = useToast();
 
   const editorIsAccountOwner = hasAccess(['account_owner']);
@@ -639,6 +647,14 @@ const UserEditDrawer = ({ open, onOpenChange, mode, user, readOnly, onSaved }: U
     return isUsernameTaken(username.trim(), currentCompany.id, user?.id);
   }, [username, currentCompany, isUsernameTaken, user?.id]);
 
+  // v20 — block linking this email to a second firm. Only checked when the email is new or
+  // changed, so saving other fields on an existing record is never blocked.
+  const emailStraddles = useMemo(() => {
+    if (!currentCompany || !email.includes('@')) return false;
+    if (user && normalizeEmail(user.email) === normalizeEmail(email)) return false;
+    return directory.wouldStraddle(email, currentCompany.id);
+  }, [email, user, currentCompany, directory]);
+
   const isLastActiveOwner = (() => {
     if (!user) return false;
     if (!user.roles.includes('account_owner')) return false;
@@ -653,6 +669,7 @@ const UserEditDrawer = ({ open, onOpenChange, mode, user, readOnly, onSaved }: U
     if (!firstName.trim() || !lastName.trim()) return false;
     if (!username.trim() || usernameDuplicate) return false;
     if (!email.trim() || !email.includes('@')) return false;
+    if (emailStraddles) return false;
     if (roles.length === 0) return false;
     return true;
   })();
@@ -854,7 +871,11 @@ const UserEditDrawer = ({ open, onOpenChange, mode, user, readOnly, onSaved }: U
             <div className="space-y-1.5">
               <Label htmlFor="user-email">Email Address *</Label>
               <Input id="user-email" type="email" value={email}
-                onChange={(e) => setEmail(e.target.value)} disabled={isReadOnlyView} />
+                onChange={(e) => setEmail(e.target.value)} disabled={isReadOnlyView}
+                aria-invalid={emailStraddles} />
+              {emailStraddles && (
+                <p className="text-xs text-destructive">{STRADDLE_EMAIL_ERROR}</p>
+              )}
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="user-phone">Phone Number</Label>
@@ -879,7 +900,9 @@ const UserEditDrawer = ({ open, onOpenChange, mode, user, readOnly, onSaved }: U
             </section>
           )}
 
-          {/* Section C — Assign Role */}
+          {/* Section C — Assign Role (hidden when the editor has no real role choice to make,
+              e.g. a License Admin can only ever add Registered Contacts) */}
+          {visibleRoles.length > 1 && (
           <section className="space-y-2">
             <h3 className="text-sm font-semibold">Assign Role</h3>
             <div className="grid grid-cols-2 gap-2">
@@ -908,6 +931,7 @@ const UserEditDrawer = ({ open, onOpenChange, mode, user, readOnly, onSaved }: U
               })}
             </div>
           </section>
+          )}
 
           {/* Section D — Subscriptions & Products */}
           {subscriptions.length > 0 && (

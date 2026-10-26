@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useLocation, useSearchParams } from 'react-router-dom';
-import { ChevronDown, LogOut, Settings, AlertTriangle, Bell } from 'lucide-react';
+import { ChevronDown, LogOut, Settings, AlertTriangle, Bell, ArrowLeftRight } from 'lucide-react';
 import { useApp, Role, ROLE_LABELS, ROLE_BADGE_CLASS, User as AppUser } from '@/contexts/AppContext';
 import { Button } from '@/components/ui/button';
 import {
@@ -20,6 +20,8 @@ import { Label } from '@/components/ui/label';
 import { ProfileSettingsDrawer } from '@/components/profile/ProfileSettingsDrawer';
 import { PROFILE_DRAWER_EVENT, openProfileDrawer, ProfileDrawerTab } from '@/lib/profileDrawer';
 import { NotificationPanel } from '@/components/notifications/NotificationPanel';
+import { SiteSwitcher } from './SiteSwitcher';
+import { useDirectory } from '@/hooks/useDirectory';
 
 const roleLabels = ROLE_LABELS;
 const roleColors = ROLE_BADGE_CLASS;
@@ -51,6 +53,13 @@ export const Header = () => {
     markNotificationRead,
     markAllNotificationsRead,
   } = useApp();
+  const directory = useDirectory();
+
+  // v20 — a login with allowStraddlingException that is linked to several firms can
+  // reopen the "Choose an account" screen to switch firms.
+  const canSwitchAccount = !!currentUser && !isProxySession &&
+    directory.hasStraddlingException(currentUser.email) &&
+    directory.findFirmsByEmail(currentUser.email).length > 1;
 
   const [profileDrawerOpen, setProfileDrawerOpen] = useState(false);
   const [profileDrawerTab, setProfileDrawerTab] = useState<ProfileDrawerTab>('profile');
@@ -154,6 +163,8 @@ export const Header = () => {
               className="h-7 dark:brightness-0 dark:invert"
             />
           </div>
+          {/* v18 — Site switcher (renders only for users with access to >1 Site) */}
+          <SiteSwitcher />
         </div>
 
         <div className="flex items-center gap-2">
@@ -295,6 +306,12 @@ export const Header = () => {
                 <Settings className="h-4 w-4 mr-2" />
                 Profile Settings
               </DropdownMenuItem>
+              {canSwitchAccount && (
+                <DropdownMenuItem onClick={() => navigate('/choose-account', { state: { email: currentUser!.email } })}>
+                  <ArrowLeftRight className="h-4 w-4 mr-2" />
+                  Switch account
+                </DropdownMenuItem>
+              )}
               <DropdownMenuSeparator />
               <DropdownMenuItem
                 onClick={handleLogout}

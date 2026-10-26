@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
+import { Switch } from '@/components/ui/switch';
 import { ListingPageHeader } from '@/components/listing';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -46,6 +47,7 @@ export const AdminPage = () => {
   const cfg = getCompanyConfig(companyId);
   const [eligibility, setEligibility] = useState<'pay_on_receipt' | 'pay_on_terms'>(cfg.paymentEligibility);
   const [terms, setTerms] = useState<PaymentTerms>(cfg.terms || 'Net 30');
+  const [hasNegotiatedPricing, setHasNegotiatedPricing] = useState(!!cfg.hasNegotiatedPricing);
 
   // Re-sync when company changes
   const onCompanyChange = (id: string) => {
@@ -53,6 +55,7 @@ export const AdminPage = () => {
     const c = getCompanyConfig(id);
     setEligibility(c.paymentEligibility);
     setTerms(c.terms || 'Net 30');
+    setHasNegotiatedPricing(!!c.hasNegotiatedPricing);
   };
 
   const handleSave = () => {
@@ -62,6 +65,7 @@ export const AdminPage = () => {
       payOnTermsEnabled,
       terms: payOnTermsEnabled ? terms : undefined,
       defaultBillingMethod: payOnTermsEnabled ? 'pay_on_terms' : 'pay_on_receipt',
+      hasNegotiatedPricing,
     });
     toast({ title: 'Payment eligibility updated successfully.' });
   };
@@ -135,6 +139,20 @@ export const AdminPage = () => {
               <div className="flex justify-between"><span className="text-muted-foreground">Pay on Terms Enabled</span><span>{cfg.payOnTermsEnabled ? 'Yes' : 'No'}</span></div>
               {cfg.terms && <div className="flex justify-between"><span className="text-muted-foreground">Terms</span><span>{cfg.terms}</span></div>}
               <div className="flex justify-between"><span className="text-muted-foreground">Default Billing Method</span><span>{cfg.defaultBillingMethod.replace(/_/g, ' ')}</span></div>
+            </div>
+
+            {/* v27 — VIP/negotiated-pricing flag. Production source of truth is the backend
+                CRM; exposed here only so this demo environment can exercise the Request flow. */}
+            <div className="flex items-start justify-between gap-4 rounded-md border p-3">
+              <div>
+                <div className="text-sm font-medium">Custom (negotiated) pricing</div>
+                <div className="text-xs text-muted-foreground mt-0.5">
+                  Normally set by the CRM, not this app. When on, this company's Manage
+                  Licenses drawer hides pricing and routes seat changes through a back-office
+                  Request instead of billing directly.
+                </div>
+              </div>
+              <Switch checked={hasNegotiatedPricing} onCheckedChange={setHasNegotiatedPricing} disabled={readOnly} />
             </div>
 
             <div className="flex justify-end">
